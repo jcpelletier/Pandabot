@@ -59,8 +59,9 @@ WATCHDOG_SERVICES          = [s.strip() for s in os.environ.get("WATCHDOG_SERVIC
 WEEKLY_DIGEST_DAY          = int(os.environ.get("WEEKLY_DIGEST_DAY", "6"))   # 0=Mon … 6=Sun
 WEEKLY_DIGEST_HOUR         = int(os.environ.get("WEEKLY_DIGEST_HOUR", "9"))  # server local time
 
-SYSTEM_PROMPT = textwrap.dedent(f"""\
+SYSTEM_PROMPT_BASE = textwrap.dedent("""\
     You are Panda, a helpful assistant for a home Ubuntu Server 24.04 machine.
+    Current server date/time: {now}.
     The server runs:
       - Jellyfin (Docker, port 8096) — media server with NVIDIA NVENC transcoding
       - Jenkins (Docker, port 8080) — CI server running these jobs:
@@ -93,7 +94,11 @@ SYSTEM_PROMPT = textwrap.dedent(f"""\
 
     Be concise. When reporting log extracts, summarise rather than quoting
     everything unless the user asks for raw output.
-""")
+"""
+
+def _build_system_prompt() -> str:
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M %Z")
+    return SYSTEM_PROMPT_BASE.format(now=now)
 
 DISCORD_MSG_LIMIT = 1900  # leave headroom below the 2000-char limit
 
@@ -157,11 +162,12 @@ def _run_claude_loop(user_message: str, history: list[dict] | None = None) -> st
     """Synchronous Claude agentic loop (run in a thread executor)."""
     messages = (history or []) + [{"role": "user", "content": user_message}]
 
+    system_prompt = _build_system_prompt()
     for _ in range(10):  # safety: max 10 tool-call rounds
         response = claude.messages.create(
             model="claude-haiku-4-5",
             max_tokens=2048,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             tools=TOOL_DEFINITIONS,
             messages=messages,
         )
