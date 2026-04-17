@@ -11,8 +11,10 @@ A Discord bot for the Panda home server backed by Claude Haiku. Mention it in Di
 - **Natural language queries** — ask in plain English, Claude decides which tools to call
 - **Conversation context** — remembers the last 10 messages so follow-up questions work naturally
 - **Jenkins failure notifications** — Jenkins POSTs to a local webhook; bot formats and forwards to Discord
-- **Proactive alerts** — disk space threshold, service watchdog (Jellyfin + Sunshine)
-- **Weekly digest** — every Sunday 9am: performance summary, content added, Jenkins health, system notes
+- **Process_Movies alerts** — notified when Sort_Rips.py can't match a ripped file to TMDB
+- **Disk space alert** — polls every 4h, posts to Discord if `/mnt/media` exceeds threshold (default 85%)
+- **Service watchdog** — polls every 10min, alerts when Jellyfin or Sunshine goes down or recovers
+- **Weekly digest** — every Sunday 9am Eastern: performance summary, Jellyfin additions, Jenkins health, system notes
 
 ## Tools
 
@@ -27,7 +29,7 @@ A Discord bot for the Panda home server backed by Claude Haiku. Mention it in Di
 | `get_jenkins_build_history` | Last N builds with timing and result |
 | `get_jenkins_build_log` | Console log for a specific build |
 | `query_jellyfin` | Library stats, recently added, active streams, watch history |
-| `query_ripping` | Staging area contents, subtitle sidecar coverage, recent rip history |
+| `query_ripping` | Staging area contents, subtitle sidecar coverage, recent rip history (App Insights) |
 
 ## Example queries
 
