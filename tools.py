@@ -14,8 +14,12 @@ import requests
 JENKINS_URL    = os.environ.get("JENKINS_URL", "http://localhost:8080")
 JENKINS_USER   = os.environ.get("JENKINS_USER", "admin")
 JENKINS_TOKEN  = os.environ.get("JENKINS_TOKEN", "")
-JELLYFIN_URL   = os.environ.get("JELLYFIN_URL", "http://localhost:8096")
-JELLYFIN_TOKEN = os.environ.get("JELLYFIN_API_KEY", "")
+JELLYFIN_URL        = os.environ.get("JELLYFIN_URL", "http://localhost:8096")
+JELLYFIN_TOKEN      = os.environ.get("JELLYFIN_API_KEY", "")
+APPINSIGHTS_APP_ID  = os.environ.get("APPINSIGHTS_APP_ID", "")
+APPINSIGHTS_API_KEY = os.environ.get("APPINSIGHTS_API_KEY", "")
+STAGING_PATH        = os.environ.get("STAGING_PATH", "/mnt/media/Video")
+MEDIA_PATH          = os.environ.get("MEDIA_PATH", "/mnt/media/Media")
 
 # Whitelist of logs the bot is allowed to tail
 ALLOWED_FILE_LOGS = {
@@ -345,6 +349,139 @@ def query_jellyfin(query_type: str = "stats") -> str:
         return f"Jellyfin API error: {e}"
 
 
+def query_ripping(query_type: str = "staging") -> str:
+    """Query the disc ripping and media pipeline."""
+    import os, time
+
+    if query_type == "staging":
+        # Files/folders in the staging area waiting to be processed by Sort_Rips
+        try:
+            entries = []
+            for name in os.listdir(STAGING_PATH):
+                if name.lower() == "processed":
+                    continue
+                full = os.path.join(STAGING_PATH, name)
+                try:
+                    stat = os.stat(full)
+                    age_h = (time.time() - stat.st_mtime) / 3600
+                    if os.path.isdir(full):
+                        r = subprocess.run(["du", "-sh", full],
+                                           capture_output=True, text=True, timeout=15)
+                        size = r.stdout.split()[0] if r.returncode == 0 else "?"
+                    else:
+                        size = _fmt_bytes(stat.st_size)
+                    entries.append((name, size, age_h))
+                except Exception:
+                    entries.append((name, "?", 0))
+
+            if not entries:
+                return f"Staging area is empty — nothing waiting to be processed."
+            lines = [f"Staging area ({STAGING_PATH}) — {len(entries)} item(s) pending Sort_Rips:"]
+            for name, size, age_h in sorted(entries, key=lambda x: -x[2]):
+                age_str = f"{age_h:.0f}h ago" if age_h < 48 else f"{age_h/24:.1f}d ago"
+                lines.append(f"  {name}  [{size}]  added {age_str}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error reading staging area: {e}"
+
+    elif query_type == "subtitles":
+        # Video files missing subtitle sidecar files in Movies and Shows
+        VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".m4v", ".mov"}
+        SIDECAR_EXTS = {".srt", ".sup", ".sub", ".ass", ".vtt"}
+        results = {}
+        for library in ["Movies", "Shows"]:
+            lib_path = os.path.join(MEDIA_PATH, library)
+            if not os.path.isdir(lib_path):
+                continue
+            missing, total = [], 0
+            for root, _, files in os.walk(lib_path):
+                for f in files:
+                    base, ext = os.path.splitext(f)
+                    if ext.lower() not in VIDEO_EXTS:
+                        continue
+                    total += 1
+                    full_base = os.path.join(root, base)
+                    # Sidecars match {base}.* or {base}.{lang}.*
+                    has_sidecar = any(
+                        any(os.path.exists(f"{full_base}{sep}{sc}")
+                            for sep in (".", ".en.", ".fr.", ".es.", ".de."))
+                        for sc in ("srt", "sup", "sub", "ass", "vtt")
+                    ) or any(
+                        fname.startswith(base + ".") and
+                        os.path.splitext(fname)[1].lower() in SIDECAR_EXTS
+                        for fname in files
+                    )
+                    if not has_sidecar:
+                        missing.append(os.path.relpath(os.path.join(root, f), lib_path))
+            results[library] = {"total": total, "missing": len(missing), "files": missing}
+
+        lines = ["Subtitle sidecar status:"]
+        for library, data in results.items():
+            have = data["total"] - data["missing"]
+            lines.append(f"\n  {library}: {have}/{data['total']} have subtitles "
+                         f"({data['missing']} missing)")
+            for f in sorted(data["files"])[:10]:
+                lines.append(f"    - {f}")
+            if data["missing"] > 10:
+                lines.append(f"    … and {data['missing'] - 10} more")
+        return "\n".join(lines)
+
+    elif query_type == "recent_rips":
+        if not APPINSIGHTS_APP_ID or not APPINSIGHTS_API_KEY:
+            return (
+                "App Insights query credentials not configured.\n"
+                "Add APPINSIGHTS_APP_ID and APPINSIGHTS_API_KEY to .env.\n"
+                "(App Insights → Configure → API Access → create a read-only key)"
+            )
+        try:
+            query = (
+                "customEvents "
+                "| where name == 'RipCompleted' "
+                "| where timestamp > ago(30d) "
+                "| extend title  = tostring(customDimensions.disc_title), "
+                "         artist = tostring(customDimensions.artist), "
+                "         album  = tostring(customDimensions.album), "
+                "         tracks = tostring(customDimensions.track_count), "
+                "         size   = tostring(customDimensions.final_size), "
+                "         role   = cloud_RoleName "
+                "| project timestamp, role, title, artist, album, tracks, size "
+                "| order by timestamp desc "
+                "| take 20"
+            )
+            resp = requests.post(
+                f"https://api.applicationinsights.io/v1/apps/{APPINSIGHTS_APP_ID}/query",
+                headers={"x-api-key": APPINSIGHTS_API_KEY, "Content-Type": "application/json"},
+                json={"query": query},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            rows = resp.json()["tables"][0]["rows"]
+            if not rows:
+                return "No rip events found in the last 30 days."
+            lines = [f"Last {len(rows)} rips (30-day window):"]
+            for row in rows:
+                ts, role, title, artist, album, tracks, size = row
+                date = ts[:10]
+                if role == "rip-cd":
+                    lines.append(f"  [{date}] 🎵 {artist} — {album} ({tracks} tracks)")
+                else:
+                    lines.append(f"  [{date}] 🎬 {title}  {size}")
+            return "\n".join(lines)
+        except requests.RequestException as e:
+            return f"App Insights query error: {e}"
+
+    else:
+        return f"Unknown query_type '{query_type}'. Available: staging, subtitles, recent_rips"
+
+
+def _fmt_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
 def get_performance_history(metric: str = "cpu", hours: int = 1) -> str:
     """
     Query PCP pmlogger for historical performance data (same source as Cockpit graphs).
@@ -639,6 +776,28 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "query_ripping",
+        "description": (
+            "Query the disc ripping and media pipeline. "
+            "staging: files/folders currently in the staging area waiting to be processed by Sort_Rips. "
+            "subtitles: which movies and shows are missing subtitle sidecar files (.srt/.sup). "
+            "recent_rips: last 20 rip events from App Insights (video and CD, last 30 days) — "
+            "requires APPINSIGHTS_APP_ID and APPINSIGHTS_API_KEY to be configured."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query_type": {
+                    "type": "string",
+                    "enum": ["staging", "subtitles", "recent_rips"],
+                    "description": "What to query.",
+                    "default": "staging",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_performance_history",
         "description": (
             "Query historical performance metrics from PCP/pmlogger — the same data "
@@ -700,6 +859,8 @@ def execute_tool(name: str, inputs: dict) -> str:
         return get_system_stats()
     if name == "query_jellyfin":
         return query_jellyfin(inputs.get("query_type", "stats"))
+    if name == "query_ripping":
+        return query_ripping(inputs.get("query_type", "staging"))
     if name == "get_performance_history":
         return get_performance_history(
             metric=inputs.get("metric", "cpu"),
