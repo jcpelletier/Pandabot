@@ -9,7 +9,10 @@ import subprocess
 import os
 import json
 import datetime
+import logging
 import requests
+
+logger = logging.getLogger("panda-bot")
 
 JENKINS_URL    = os.environ.get("JENKINS_URL", "http://localhost:8080")
 JENKINS_USER   = os.environ.get("JENKINS_USER", "admin")
@@ -46,6 +49,7 @@ def _get_appinsights_token() -> str:
     data = resp.json()
     cache["token"]   = data["access_token"]
     cache["expires"] = time.time() + int(data.get("expires_in", 3600))
+    logger.info("App Insights token refreshed (expires in %ss)", data.get("expires_in", "?"))
     return cache["token"]
 STAGING_PATH        = os.environ.get("STAGING_PATH", "/mnt/media/Video")
 MEDIA_PATH          = os.environ.get("MEDIA_PATH", "/mnt/media/Media")
@@ -501,6 +505,7 @@ def query_ripping(query_type: str = "staging") -> str:
                     lines.append(f"  [{date}] 🎬 {title}  {size}")
             return "\n".join(lines)
         except requests.RequestException as e:
+            logger.error("App Insights query_ripping failed: %s", e)
             return f"App Insights query error: {e}"
 
     else:
