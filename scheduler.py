@@ -153,29 +153,40 @@ def list_pending() -> list[sqlite3.Row]:
 # ---------------------------------------------------------------------------
 
 def schedule_next_recurring(task: sqlite3.Row) -> None:
-    """Insert a fresh row for the next recurrence after the task that just fired."""
+    """Insert a fresh row for the next recurrence after the task that just fired.
+
+    Always produces a future fire time — if the calculated next occurrence is
+    already in the past (e.g. initial fire_at was wrong), keep advancing until
+    it lands in the future.
+    """
     rule = task["recurrence_rule"]
     if not rule:
         return
 
     fired_utc = datetime.datetime.fromisoformat(task["fire_at"])
     fired_local = fired_utc.astimezone()  # server local time
+    now_local = datetime.datetime.now().astimezone()
 
     if rule.startswith("monthly:"):
         day = int(rule.split(":")[1])
-        m = fired_local.month + 1
-        y = fired_local.year + (1 if m > 12 else 0)
-        m = m if m <= 12 else 1
-        try:
-            next_local = fired_local.replace(year=y, month=m, day=day)
-        except ValueError:
-            # day doesn't exist (e.g. Feb 30) — skip to 1st of following month
-            m2 = m + 1 if m < 12 else 1
-            y2 = y + (1 if m == 12 else 0)
-            next_local = fired_local.replace(year=y2, month=m2, day=1)
+        next_local = fired_local
+        while next_local <= now_local:
+            m = next_local.month + 1
+            y = next_local.year + (1 if m > 12 else 0)
+            m = m if m <= 12 else 1
+            try:
+                next_local = next_local.replace(year=y, month=m, day=day)
+            except ValueError:
+                m2 = m + 1 if m < 12 else 1
+                y2 = y + (1 if m == 12 else 0)
+                next_local = next_local.replace(year=y2, month=m2, day=1)
 
     elif rule.startswith("weekly:"):
         next_local = fired_local + datetime.timedelta(weeks=1)
+        # Skip past dates in one step rather than looping week by week
+        if next_local <= now_local:
+            weeks_behind = int((now_local - next_local).days / 7) + 1
+            next_local += datetime.timedelta(weeks=weeks_behind)
 
     else:
         return
