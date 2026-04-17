@@ -901,8 +901,7 @@ TOOL_DEFINITIONS = [
             "Query the disc ripping and media pipeline. "
             "staging: files/folders currently in the staging area waiting to be processed by Sort_Rips. "
             "subtitles: which movies and shows are missing subtitle sidecar files (.srt/.sup). "
-            "recent_rips: last 20 rip events from App Insights (video and CD, last 30 days) — "
-            "requires APPINSIGHTS_APP_ID and APPINSIGHTS_API_KEY to be configured."
+            "recent_rips: last 20 rip events from App Insights (video and CD, last 30 days)."
         ),
         "input_schema": {
             "type": "object",
