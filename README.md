@@ -58,7 +58,7 @@ The server runs directly from this repo. To deploy changes:
 git push
 
 # Pull and restart on the server
-ssh genesis@panda "sudo git -C /opt/discord-bot pull origin main && sudo systemctl restart discord-bot"
+ssh panda "sudo git -C /opt/discord-bot pull origin main && sudo systemctl restart discord-bot"
 ```
 
 ## Configuration

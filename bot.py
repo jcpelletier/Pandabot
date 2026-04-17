@@ -48,8 +48,9 @@ DISCORD_CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
 WEBHOOK_PORT       = int(os.environ.get("WEBHOOK_PORT", "8765"))
 WEBHOOK_SECRET     = os.environ.get("WEBHOOK_SECRET", "")
+TAILSCALE_IP       = os.environ.get("TAILSCALE_IP", "")
 
-SYSTEM_PROMPT = textwrap.dedent("""\
+SYSTEM_PROMPT = textwrap.dedent(f"""\
     You are Panda, a helpful assistant for a home Ubuntu Server 24.04 machine.
     The server runs:
       - Jellyfin (Docker, port 8096) — media server with NVIDIA NVENC transcoding
@@ -59,7 +60,7 @@ SYSTEM_PROMPT = textwrap.dedent("""\
           • Nightly_Convert (3 am) — re-encodes video to h264_nvenc
       - Sunshine (bare metal, systemd) — game streaming (Moonlight / Shield TV)
       - Cockpit (port 9090), Portainer (port 9000) — admin UIs
-      - Tailscale VPN (IP 100.65.72.102)
+      - Tailscale VPN{f" (IP {TAILSCALE_IP})" if TAILSCALE_IP else ""}
       - MakeMKV + abcde for disc ripping (udev auto-rip pipeline)
 
     Hardware: NVIDIA GTX 970 (4 GB VRAM), 2 TB NTFS HDD at /mnt/media.

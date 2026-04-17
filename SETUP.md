@@ -17,7 +17,7 @@
 
 ## 2. Get a Jenkins API Token
 
-1. Browse to http://panda:8080 (Tailscale) or http://192.168.1.100:8080
+1. Browse to http://panda:8080
 2. Top-right → your username → **Configure**
 3. **API Token** section → **Add new Token** → generate → copy it
 4. Paste into `.env` as `JENKINS_TOKEN`
@@ -27,13 +27,9 @@
 ## 3. Install on the Server
 
 ```bash
-# From your Windows machine — copy the files
-scp -i ~/.ssh/id_ed25519 -r discord-bot/ genesis@192.168.1.100:/tmp/discord-bot
-
-# On the server
-ssh genesis@192.168.1.100
-cd /tmp/discord-bot
-sudo bash install.sh
+# SSH into the server and run the installer
+ssh panda
+curl -fsSL https://raw.githubusercontent.com/jcpelletier/Pandabot/main/install.sh | sudo bash
 ```
 
 The installer will:
