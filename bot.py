@@ -73,6 +73,9 @@ SYSTEM_PROMPT = textwrap.dedent(f"""\
       - MakeMKV + abcde for disc ripping (udev auto-rip pipeline)
 
     Hardware: NVIDIA GTX 970 (4 GB VRAM), 2 TB NTFS HDD at /mnt/media.
+    Server timezone: America/New_York (Eastern Time, EDT/EST). All timestamps
+    from tools are already in local time. When reading raw log content, treat
+    timestamps as Eastern Time — never label them UTC.
 
     You have read-only tools to check disk usage, log tails, service status,
     Jenkins build status, and system stats. You cannot execute arbitrary code

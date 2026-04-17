@@ -88,10 +88,11 @@ def _fmt_duration(ms: int) -> str:
     return f"{s // 60}m {s % 60}s"
 
 def _fmt_timestamp(ms: int) -> str:
+    """Format a Jenkins millisecond epoch timestamp in server local time."""
     if not ms:
         return "unknown"
-    dt = datetime.datetime.utcfromtimestamp(ms / 1000)
-    return dt.strftime("%Y-%m-%d %H:%M UTC")
+    dt = datetime.datetime.fromtimestamp(ms / 1000)  # local time (server TZ)
+    return dt.strftime("%Y-%m-%d %H:%M %Z")
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +499,13 @@ def query_ripping(query_type: str = "staging") -> str:
             lines = [f"Last {len(rows)} rips (30-day window):"]
             for row in rows:
                 ts, role, title, artist, album, tracks, size = row
-                date = ts[:10]
+                # App Insights returns UTC ISO 8601 — convert to server local time
+                try:
+                    utc_dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    local_dt = utc_dt.astimezone()
+                    date = local_dt.strftime("%Y-%m-%d")
+                except Exception:
+                    date = ts[:10]
                 if role == "rip-cd":
                     lines.append(f"  [{date}] 🎵 {artist} — {album} ({tracks} tracks)")
                 else:
