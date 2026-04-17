@@ -3,6 +3,7 @@
 # Usage: sudo bash install.sh
 set -euo pipefail
 
+REPO_URL="https://github.com/jcpelletier/Pandabot.git"
 BOT_DIR="/opt/discord-bot"
 BOT_USER="discord-bot"
 
@@ -15,11 +16,14 @@ fi
 # Add to docker group so it can call `docker logs`
 usermod -aG docker "$BOT_USER"
 
-echo "==> Creating $BOT_DIR"
-mkdir -p "$BOT_DIR"
-cp -n "$(dirname "$0")"/*.py "$BOT_DIR/"
-cp -n "$(dirname "$0")"/requirements.txt "$BOT_DIR/"
-cp -n "$(dirname "$0")"/notify-discord.sh "$BOT_DIR/"
+echo "==> Cloning / updating repo"
+if [ -d "$BOT_DIR/.git" ]; then
+  git -C "$BOT_DIR" fetch origin
+  git -C "$BOT_DIR" checkout main
+  git -C "$BOT_DIR" reset --hard origin/main
+else
+  git clone -b main "$REPO_URL" "$BOT_DIR"
+fi
 chmod +x "$BOT_DIR/notify-discord.sh"
 
 echo "==> Creating Python venv"
