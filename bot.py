@@ -43,12 +43,15 @@ log = logging.getLogger("panda-bot")
 # Config
 # ---------------------------------------------------------------------------
 
-DISCORD_TOKEN      = os.environ["DISCORD_TOKEN"]
-DISCORD_CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
-ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
-WEBHOOK_PORT       = int(os.environ.get("WEBHOOK_PORT", "8765"))
-WEBHOOK_SECRET     = os.environ.get("WEBHOOK_SECRET", "")
-TAILSCALE_IP       = os.environ.get("TAILSCALE_IP", "")
+DISCORD_TOKEN              = os.environ["DISCORD_TOKEN"]
+DISCORD_CHANNEL_ID         = int(os.environ["DISCORD_CHANNEL_ID"])
+ANTHROPIC_API_KEY          = os.environ["ANTHROPIC_API_KEY"]
+WEBHOOK_PORT               = int(os.environ.get("WEBHOOK_PORT", "8765"))
+WEBHOOK_SECRET             = os.environ.get("WEBHOOK_SECRET", "")
+TAILSCALE_IP               = os.environ.get("TAILSCALE_IP", "")
+DISK_ALERT_THRESHOLD_PCT   = int(os.environ.get("DISK_ALERT_THRESHOLD_PCT", "85"))
+DISK_ALERT_PATH            = os.environ.get("DISK_ALERT_PATH", "/mnt/media")
+WATCHDOG_SERVICES          = [s.strip() for s in os.environ.get("WATCHDOG_SERVICES", "jellyfin,sunshine").split(",") if s.strip()]
 
 SYSTEM_PROMPT = textwrap.dedent(f"""\
     You are Panda, a helpful assistant for a home Ubuntu Server 24.04 machine.
@@ -292,11 +295,97 @@ async def start_webhook_server():
 
 
 # ---------------------------------------------------------------------------
+# Proactive background tasks
+# ---------------------------------------------------------------------------
+
+# Tracks whether an alert is already active — prevents repeated messages
+# each polling cycle. Cleared when the condition resolves.
+_alert_state: dict = {}
+
+
+def _get_disk_pct(path: str) -> int | None:
+    """Return used% for the filesystem containing `path`, or None on error."""
+    try:
+        import subprocess
+        r = subprocess.run(["df", path], capture_output=True, text=True, timeout=10)
+        # df output: Filesystem 1K-blocks Used Available Use% Mounted on
+        lines = r.stdout.strip().splitlines()
+        if len(lines) >= 2:
+            pct_str = lines[1].split()[4].rstrip("%")
+            return int(pct_str)
+    except Exception:
+        pass
+    return None
+
+
+async def task_disk_alert():
+    """Post a Discord alert when media disk usage exceeds DISK_ALERT_THRESHOLD_PCT."""
+    await bot.wait_until_ready()
+    log.info("Disk alert task started (threshold=%d%%, path=%s)", DISK_ALERT_THRESHOLD_PCT, DISK_ALERT_PATH)
+    while not bot.is_closed():
+        try:
+            loop = asyncio.get_running_loop()
+            pct = await loop.run_in_executor(None, _get_disk_pct, DISK_ALERT_PATH)
+            if pct is not None:
+                key = f"disk_{DISK_ALERT_PATH}"
+                if pct >= DISK_ALERT_THRESHOLD_PCT and not _alert_state.get(key):
+                    _alert_state[key] = True
+                    await post_notification(
+                        f"⚠️ **Disk space alert** — `{DISK_ALERT_PATH}` is **{pct}% full** "
+                        f"(threshold: {DISK_ALERT_THRESHOLD_PCT}%)"
+                    )
+                    log.warning("Disk alert fired: %s at %d%%", DISK_ALERT_PATH, pct)
+                elif pct < DISK_ALERT_THRESHOLD_PCT and _alert_state.get(key):
+                    _alert_state[key] = False
+                    await post_notification(
+                        f"✅ **Disk space recovered** — `{DISK_ALERT_PATH}` is now {pct}% full"
+                    )
+                    log.info("Disk alert cleared: %s at %d%%", DISK_ALERT_PATH, pct)
+        except Exception:
+            log.exception("task_disk_alert error")
+        await asyncio.sleep(4 * 3600)  # check every 4 hours
+
+
+async def task_service_watchdog():
+    """Alert when a watched service goes down, and again when it recovers."""
+    await bot.wait_until_ready()
+    log.info("Service watchdog started (watching: %s)", ", ".join(WATCHDOG_SERVICES))
+
+    # Allow a short startup delay so services have time to come up after a reboot
+    await asyncio.sleep(60)
+
+    while not bot.is_closed():
+        try:
+            loop = asyncio.get_running_loop()
+            for svc in WATCHDOG_SERVICES:
+                from tools import get_service_status
+                status_text = await loop.run_in_executor(None, get_service_status, svc)
+                # Determine if the service is up — look for positive signals in the output
+                is_up = any(word in status_text.lower() for word in ("up ", "active", "running"))
+                key = f"svc_{svc}"
+                was_down = _alert_state.get(key, False)
+
+                if not is_up and not was_down:
+                    _alert_state[key] = True
+                    await post_notification(f"🔴 **{svc}** appears to be **down**\n> {status_text[:200]}")
+                    log.warning("Watchdog: %s is down", svc)
+                elif is_up and was_down:
+                    _alert_state[key] = False
+                    await post_notification(f"✅ **{svc}** has **recovered**")
+                    log.info("Watchdog: %s recovered", svc)
+        except Exception:
+            log.exception("task_service_watchdog error")
+        await asyncio.sleep(10 * 60)  # check every 10 minutes
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 async def main():
     await start_webhook_server()
+    asyncio.create_task(task_disk_alert())
+    asyncio.create_task(task_service_watchdog())
     await bot.start(DISCORD_TOKEN)
 
 
