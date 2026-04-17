@@ -137,9 +137,8 @@ def _run_claude_loop(user_message: str, history: list[dict] | None = None) -> st
 
     for _ in range(10):  # safety: max 10 tool-call rounds
         response = claude.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=4096,
-            thinking={"type": "adaptive"},
+            model="claude-haiku-4-5",
+            max_tokens=2048,
             system=SYSTEM_PROMPT,
             tools=TOOL_DEFINITIONS,
             messages=messages,

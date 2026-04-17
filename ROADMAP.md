@@ -1,255 +1,202 @@
 # PandaBot — Feature Roadmap
 
-This document tracks planned tools, data sources, and capabilities for PandaBot.
-Work through these in any order — each item is self-contained.
+This document tracks planned tools and capabilities for PandaBot.
+
+## Model
+
+**`claude-haiku-4-5`** — fast and cheap for a home server assistant. Haiku handles
+tool use reliably up to ~12 tools. The consolidated tool design below stays within
+that limit regardless of how many features are added.
 
 ---
 
-## 1. Jellyfin API Tools
+## Tool surface design
 
-Jellyfin exposes a full REST API on port 8096. All calls need an API key
-(generate one in Jellyfin → Dashboard → API Keys).
+Haiku's tool selection degrades noticeably above ~12 tools. The strategy is
+**one tool per domain, with a `type` parameter** to select the specific query
+within that domain. This keeps the total tool count flat as new capabilities
+are added.
 
-Add `JELLYFIN_URL` and `JELLYFIN_API_KEY` to `.env` and `.env.example`.
+### Current tools (8) — keep as-is
 
-### 1a. Library stats
-**Tool:** `get_jellyfin_library_stats`
-**What:** Total count of movies, shows, episodes, music albums. Total library size.
-**API:** `GET /Items/Counts` + `GET /Library/VirtualFolders`
-**No dependencies.**
+| Tool | Notes |
+|---|---|
+| `get_log_tail` | Already narrow, stays separate |
+| `get_service_status` | Already narrow, stays separate |
+| `get_performance_history` | Already narrow, stays separate |
+| `get_jenkins_build_status` | |
+| `get_jenkins_build_history` | |
+| `get_jenkins_build_log` | |
+| `get_disk_usage` | → fold into `query_storage` when that tool is built |
+| `get_system_stats` | → fold into `query_system_health` when that tool is built |
 
-### 1b. Recently added
-**Tool:** `get_jellyfin_recent` (param: `count`, default 10)
-**What:** Items added in the last N days — title, type, date added.
-**API:** `GET /Items?SortBy=DateCreated&SortOrder=Descending&Limit=N`
-**No dependencies.**
+### Target tool list (10 total once roadmap is complete)
 
-### 1c. Active streams
-**Tool:** `get_jellyfin_streams`
-**What:** Current playback sessions — user, title, play method (DirectPlay vs Transcode),
-video codec, whether NVENC is in use, progress.
-**API:** `GET /Sessions?ControllableByUserId=&ActiveWithinSeconds=30`
-**No dependencies. High value — tells you if GPU is busy before doing anything heavy.**
+| # | Tool | Replaces / covers |
+|---|---|---|
+| 1 | `get_log_tail` | unchanged |
+| 2 | `get_service_status` | unchanged |
+| 3 | `get_performance_history` | unchanged |
+| 4 | `query_jenkins(type, job_name, ...)` | status + history + log merged |
+| 5 | `query_storage(type)` | disk_usage + media breakdown + largest files |
+| 6 | `query_system_health(aspect)` | system_stats + temps + SMART + failed + updates + top procs |
+| 7 | `query_jellyfin(type)` | library stats + recent + streams + history |
+| 8 | `query_ripping(type)` | staging + queue + recent rips + subtitle status |
+| 9 | `query_network(type)` | Tailscale + external IP + listening ports |
+| 10 | `take_action(action, ...)` | all write operations behind one confirmed tool |
 
-### 1d. Playback history
-**Tool:** `get_jellyfin_history` (params: `user`, `days`, default 7)
-**What:** What has been watched recently. Most played titles.
-**API:** `GET /Users/{userId}/Items?Filters=IsPlayed&SortBy=DatePlayed`
-**No dependencies.**
-
----
-
-## 2. Ripping Pipeline Tools
-
-### 2a. Staging area status
-**Tool:** `get_staging_status`
-**What:** List of folders/files currently in `/mnt/media/Video` (unprocessed rips),
-with size and age. Answers "do I have anything waiting to be sorted?"
-**Implementation:** `subprocess` — `du -sh /mnt/media/Video/*` + `ls -lt`
-**No dependencies.**
-
-### 2b. Conversion queue
-**Tool:** `get_conversion_queue`
-**What:** Count and total size of MKV files under `/mnt/media/Media` that have not
-yet been converted (i.e., are not h264/hevc encoded). Uses ffprobe to check codec.
-**Implementation:** Walk directory, run `ffprobe -v quiet -print_format json
--show_streams` on each MKV, filter by video codec != h264/hevc.
-**Note:** Can be slow on large libraries — consider limiting to a sample or caching.
-**Dependency:** `ffprobe` (already installed for subtitle extraction).
-
-### 2c. Recently ripped (App Insights)
-**Tool:** `get_recent_rips` (param: `days`, default 7)
-**What:** Query App Insights custom events for `RipCompleted` (both rip-video and
-rip-cd roles) in the last N days. Returns a table of title/artist, date, size/tracks.
-**Implementation:** App Insights REST Query API.
-`POST https://api.applicationinsights.io/v1/apps/{appId}/query`
-Add `APPINSIGHTS_APP_ID` and `APPINSIGHTS_API_KEY` to `.env`.
-(App Insights → Configure → API Access → create a read-only key)
-**No server-side dependencies — HTTP only.**
-
-### 2d. Subtitle sidecar status
-**Tool:** `get_subtitle_status` (param: `library`, enum: movies/shows)
-**What:** Count of video files that have at least one `.srt`/`.sup`/`.sub` sidecar
-vs. those that have none. Surfaces files missing subtitles.
-**Implementation:** Walk `/mnt/media/Media/Movies` or `/mnt/media/Media/Shows`,
-check for matching sidecar filename patterns.
-**No dependencies.**
+> When adding a tool from this list, migrate the relevant existing tools into
+> the new consolidated one and remove the old entries from `TOOL_DEFINITIONS`
+> and `execute_tool()`.
 
 ---
 
-## 3. System Health Tools
+## Planned capabilities
 
-### 3a. CPU temperature
-**Tool:** `get_temperatures`
-**What:** CPU and any other thermal sensor readings.
-**Implementation:** Read `/sys/class/thermal/thermal_zone*/temp` (divide by 1000
-for °C). Optionally use `sensors` from `lm-sensors` package for labelled output.
-**Server dependency:** `sudo apt install lm-sensors && sudo sensors-detect --auto`
+### 5. `query_storage(type)`
 
-### 3b. SMART disk health
-**Tool:** `get_disk_health`
-**What:** SMART summary for the 2TB HDD — overall health, reallocated sectors,
-power-on hours, temperature, pending sectors.
-**Implementation:** `sudo smartctl -H -A /dev/sda` (or whichever device).
-**Server dependency:** `sudo apt install smartmontools`
-**Permissions:** The `discord-bot` user needs passwordless sudo for `smartctl` only.
-Add to `/etc/sudoers.d/discord-bot`:
+Consolidates `get_disk_usage`. Add `JELLYFIN_URL`/`JELLYFIN_API_KEY` to `.env` first if
+you want the Jellyfin-aware breakdown.
+
+| type | What it returns |
+|---|---|
+| `usage` | Current `get_disk_usage` output (/ and /mnt/media) — **replaces existing tool** |
+| `breakdown` | `du -sh` per top-level folder under `/mnt/media` (Movies, Shows, Music, Video staging) |
+| `largest` | Top N largest files under a given path (whitelist: /mnt/media only) |
+
+**Server deps:** none.
+
+---
+
+### 6. `query_system_health(aspect)`
+
+Consolidates `get_system_stats`. Remaining aspects need server packages first.
+
+| aspect | What it returns | Server dep |
+|---|---|---|
+| `stats` | Current `get_system_stats` output (load, mem, GPU) — **replaces existing tool** | none |
+| `temperatures` | CPU thermal zone readings + GPU temp (already in stats) | `sudo apt install lm-sensors && sudo sensors-detect --auto` |
+| `smart` | SMART summary for `/dev/sda` — health, reallocated sectors, power-on hours | `sudo apt install smartmontools` + sudoers entry (see below) |
+| `failed` | `systemctl list-units --state=failed` | none |
+| `updates` | `apt list --upgradable` count + package names | none |
+| `processes` | Top 10 procs by CPU or memory (`ps aux` sorted) | none |
+
+**Sudoers entry needed for SMART:**
 ```
+# /etc/sudoers.d/discord-bot
 discord-bot ALL=(ALL) NOPASSWD: /usr/sbin/smartctl -H -A *
 ```
 
-### 3c. Failed services sweep
-**Tool:** `get_failed_services`
-**What:** Any systemd units currently in a failed state.
-**Implementation:** `systemctl list-units --state=failed --no-legend`
-**No dependencies.**
+---
 
-### 3d. Pending system updates
-**Tool:** `get_pending_updates`
-**What:** Count and list of upgradable apt packages.
-**Implementation:** `apt list --upgradable 2>/dev/null`
-**No dependencies.**
+### 7. `query_jellyfin(type)`
 
-### 3e. Top processes
-**Tool:** `get_top_processes` (param: `by`, enum: cpu/memory, default cpu)
-**What:** Top 10 processes by CPU or memory usage.
-**Implementation:** Parse `/proc` or use `ps aux --sort=-%cpu | head -11`
-**No dependencies.**
+**New `.env` vars:** `JELLYFIN_URL=http://localhost:8096`, `JELLYFIN_API_KEY=...`
+Generate the key in Jellyfin → Dashboard → API Keys.
+
+| type | API endpoint | What it returns |
+|---|---|---|
+| `stats` | `GET /Items/Counts` | Total movies, shows, episodes, music albums |
+| `recent` | `GET /Items?SortBy=DateCreated&SortOrder=Descending&Limit=10` | Recently added titles |
+| `streams` | `GET /Sessions?ActiveWithinSeconds=30` | Active playback — user, title, DirectPlay vs Transcode, NVENC in use |
+| `history` | `GET /Users/{id}/Items?Filters=IsPlayed&SortBy=DatePlayed` | Recently watched |
+
+**High value:** `streams` tells you if NVENC is in use before triggering Nightly_Convert.
+**No server deps** beyond the API key.
 
 ---
 
-## 4. Storage Detail Tools
+### 8. `query_ripping(type)`
 
-### 4a. Media folder breakdown
-**Tool:** `get_media_breakdown`
-**What:** Size of each top-level folder under `/mnt/media` — Movies, Shows, Music,
-Video (staging), etc. Answers "where is all my space going?"
-**Implementation:** `du -sh /mnt/media/*`
-**No dependencies.**
+| type | What it returns | Notes |
+|---|---|---|
+| `staging` | Files/folders in `/mnt/media/Video` with size and age | Answers "anything waiting to be processed?" |
+| `queue` | Count + size of unconverted MKVs in `/mnt/media/Media` | Uses ffprobe to check codec; can be slow on large libraries — sample or limit depth |
+| `recent_rips` | Last N `RipCompleted` events from App Insights | Needs `APPINSIGHTS_APP_ID` + `APPINSIGHTS_API_KEY` (read-only key from App Insights → API Access) |
+| `subtitles` | Files missing sidecar `.srt`/`.sup`/`.sub` in Movies or Shows | Walk directory, check for matching sidecar filenames |
 
-### 4b. Largest files
-**Tool:** `get_largest_files` (params: `path`, `count`, default 10)
-**What:** The N largest files under a given path.
-**Implementation:** `find /mnt/media -type f -printf '%s %p\n' | sort -rn | head -N`
-**No dependencies. Restrict allowed paths to a whitelist.**
+**New `.env` vars for `recent_rips`:** `APPINSIGHTS_APP_ID`, `APPINSIGHTS_API_KEY`
 
 ---
 
-## 5. Network / Connectivity Tools
+### 9. `query_network(type)`
 
-### 5a. Tailscale status
-**Tool:** `get_tailscale_status`
-**What:** Current Tailscale IP, online peers, last seen times.
-**Implementation:** `tailscale status --json` — parse peer list.
-**Permissions:** `tailscale` CLI is already accessible.
+| type | What it returns | Notes |
+|---|---|---|
+| `tailscale` | Peer list, online status, IPs | `tailscale status --json` |
+| `external_ip` | Current public IP | HTTP GET `https://api.ipify.org` |
+| `ports` | Non-loopback listening ports + process names | `ss -tlnp` |
 
-### 5b. External IP
-**Tool:** `get_external_ip`
-**What:** Current public-facing IP address.
-**Implementation:** HTTP GET to `https://api.ipify.org` or `https://ifconfig.me`
-**No dependencies.**
-
-### 5c. Listening ports
-**Tool:** `get_listening_ports`
-**What:** Summary of services listening on open ports.
-**Implementation:** `ss -tlnp` — filter to non-loopback listeners.
-**No dependencies.**
+**No server deps.**
 
 ---
 
-## 6. Write Actions
+### 4. `query_jenkins(type, job_name, build_number, lines)`
 
-> **Before implementing:** Add a confirmation pattern to the bot. Claude should
-> state the action it's about to take and ask "confirm?" before executing any
-> write tool. This prevents accidents from misunderstood queries.
+Merges the three existing Jenkins tools into one. Claude uses the `type` param
+to pick the right query. Keeps all current functionality.
 
-### 6a. Trigger Jenkins build
-**Tool:** `trigger_jenkins_build` (param: `job_name`)
-**What:** Start a Jenkins job manually.
-**Implementation:** Jenkins API — POST with crumb:
-```
-GET  /crumbIssuer/api/json          → get crumb
-POST /job/{job_name}/build
-```
-**No server dependencies — uses existing Jenkins credentials.**
+| type | Equivalent current tool |
+|---|---|
+| `status` | `get_jenkins_build_status` |
+| `history` | `get_jenkins_build_history` |
+| `log` | `get_jenkins_build_log` |
 
-### 6b. Restart a service
-**Tool:** `restart_service` (param: `service_name`, whitelist only)
-**What:** Restart a whitelisted service (Jellyfin, discord-bot, sunshine).
-**Implementation:** `sudo systemctl restart {service}`
-**Permissions:** Add to `/etc/sudoers.d/discord-bot`:
+**Migration:** remove `get_jenkins_build_status`, `get_jenkins_build_history`,
+`get_jenkins_build_log` from `TOOL_DEFINITIONS` and `execute_tool()` when adding this.
+
+---
+
+### 10. `take_action(action, target, confirm)`
+
+> **Implement last.** Add a confirmation guard before any write tool is executed:
+> Claude must state the action and the user must reply "yes" or "confirm" before
+> the call goes through. Implement as a two-message flow in `_run_claude_loop`.
+
+| action | What it does | Server dep |
+|---|---|---|
+| `restart_service` | `sudo systemctl restart {target}` (whitelist only) | sudoers entry |
+| `trigger_jenkins` | POST to Jenkins build API with crumb | none (uses existing creds) |
+| `jellyfin_scan` | `POST /Library/Refresh` | none (uses Jellyfin API key) |
+| `eject_drive` | `eject /dev/sr0` | sudoers or device permission |
+
+**Sudoers for restart + eject:**
 ```
 discord-bot ALL=(ALL) NOPASSWD: /bin/systemctl restart jellyfin
 discord-bot ALL=(ALL) NOPASSWD: /bin/systemctl restart sunshine
+discord-bot ALL=(ALL) NOPASSWD: /usr/bin/eject /dev/sr0
 ```
 
-### 6c. Trigger Jellyfin library scan
-**Tool:** `trigger_jellyfin_scan` (param: `library`, optional)
-**What:** Tell Jellyfin to scan for new media.
-**API:** `POST /Library/Refresh`
-**No server dependencies — uses existing Jellyfin credentials.**
+---
 
-### 6d. Eject disc drive
-**Tool:** `eject_drive` (param: `drive`, default `/dev/sr0`)
-**What:** Eject the optical drive.
-**Implementation:** `eject /dev/sr0`
-**Permissions:** Add eject to sudoers for discord-bot user (or chmod the device).
+## Proactive / scheduled notifications
+
+These are background `asyncio` tasks in `bot.py`, not tools. They post to Discord
+automatically without a user prompt.
+
+| Feature | Trigger | New `.env` var |
+|---|---|---|
+| **Disk space alert** | Poll every 4h, alert if `/mnt/media` > threshold | `DISK_ALERT_THRESHOLD_PCT=85` |
+| **Service watchdog** | Poll every 10 min, alert on Jellyfin/Sunshine going down | none |
+| **Temperature alert** | Poll every 15 min, alert if CPU/GPU exceed threshold | `TEMP_ALERT_CPU_C=80`, `TEMP_ALERT_GPU_C=85` |
+| **Morning digest** | Fire at configured hour, post overnight summary | `MORNING_DIGEST_HOUR=8` |
+
+Morning digest content: overnight Jenkins results, disk usage, failed services,
+GPU temp. Reuses existing tool functions — no new server calls needed.
+
+**Implement disk alert and watchdog first** (simplest polling loops),
+then morning digest, then temperature alert (needs `query_system_health` → `temperatures` first).
 
 ---
 
-## 7. Proactive / Scheduled Notifications
+## Suggested implementation order
 
-These run on a timer inside the bot — no user prompt needed.
-
-### 7a. Morning digest
-**What:** Daily summary posted to Discord at a configured time (e.g. 8am).
-Posts: overnight Jenkins results, disk usage, any failed services, GPU temp.
-**Implementation:** Add an `asyncio` background task in `bot.py` that fires at
-a scheduled time. Reuse existing tool functions to gather data, format a summary
-message, call `post_notification()`.
-Add `MORNING_DIGEST_HOUR` (0–23) to `.env`.
-
-### 7b. Disk space alert
-**What:** Post to Discord when `/mnt/media` exceeds a threshold (e.g. 85% full).
-**Implementation:** Background task polling `df` every N hours (e.g. every 4h).
-Add `DISK_ALERT_THRESHOLD_PCT` to `.env` (default 85).
-
-### 7c. Service watchdog
-**What:** Alert if Jellyfin or Sunshine goes down outside of Login_Test coverage.
-**Implementation:** Background task polling `get_service_status` every 10 minutes.
-Track last known state, alert on transition to down. De-duplicate — only alert
-once until the service recovers.
-
-### 7d. Temperature alert
-**What:** Alert if CPU or GPU temperature exceeds a threshold.
-**Implementation:** Background task reading temps every 15 minutes.
-Add `TEMP_ALERT_CPU_C` and `TEMP_ALERT_GPU_C` to `.env` (defaults: 80, 85).
-Requires 3a (CPU temperatures tool) to be implemented first.
-
----
-
-## Implementation Notes
-
-### Adding `.env` variables
-Every new tool that needs config should add its variables to both:
-- `/opt/discord-bot/.env` on the server
-- `.env.example` in the repo (with placeholder values)
-
-### Permissions pattern for sudo tools
-Create `/etc/sudoers.d/discord-bot` on the server for any tool that needs
-elevated access (smartctl, systemctl restart, eject). Use the narrowest possible
-rule — specify the exact command and path, no wildcards on the command name.
-
-### Confirmation pattern for write actions
-Before implementing section 6, add this guard to `_run_claude_loop` or the
-system prompt: Claude must explicitly state the action and await a "yes/confirm"
-reply before calling any write tool. Consider a separate `WRITE_TOOLS` set and
-a two-message confirmation flow.
-
-### Suggested implementation order
-1. Read-only, no new dependencies: 2a, 3c, 3d, 3e, 4a, 5a, 5c
-2. Jellyfin API (needs API key): 1a, 1b, 1c
-3. New server packages: 3a (lm-sensors), 3b (smartmontools)
-4. App Insights query: 2c (needs app ID + read key)
-5. Proactive tasks: 7b, 7c first (simple polling), then 7a, 7d
-6. Write actions last: 6a (safest), then 6c, 6b, 6d
+1. `query_storage` — no deps, removes an existing tool, immediate value
+2. `query_system_health` (stats + failed + updates first, then add temps/SMART after apt installs)
+3. `query_jellyfin` — needs API key, high value (`streams` especially)
+4. `query_network` — no deps, straightforward
+5. Disk alert + service watchdog (proactive, no new tools needed)
+6. `query_ripping` — needs App Insights read key for `recent_rips`
+7. `query_jenkins` — consolidation of existing tools, low urgency
+8. Morning digest
+9. `take_action` — implement last, needs confirmation flow first
