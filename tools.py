@@ -693,6 +693,159 @@ def get_performance_history(metric: str = "cpu", hours: int = 1) -> str:
         return f"Error querying performance history: {e}"
 
 
+def query_system_health(aspect: str = "stats") -> str:
+    """Check various aspects of system health."""
+
+    if aspect == "stats":
+        return get_system_stats()
+
+    elif aspect == "failed":
+        try:
+            r = subprocess.run(
+                ["systemctl", "list-units", "--state=failed", "--no-pager", "--no-legend"],
+                capture_output=True, text=True, timeout=10,
+            )
+            output = r.stdout.strip()
+            if not output:
+                return "✅ No failed systemd units."
+            lines = ["Failed systemd units:"]
+            for line in output.splitlines():
+                lines.append(f"  {line.strip()}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error checking failed units: {e}"
+
+    elif aspect == "updates":
+        try:
+            r = subprocess.run(
+                ["apt", "list", "--upgradable"],
+                capture_output=True, text=True, timeout=30,
+            )
+            pkgs = [l for l in r.stdout.splitlines()
+                    if l and not l.startswith("Listing")]
+            if not pkgs:
+                return "✅ System is up to date — no upgradable packages."
+            return f"{len(pkgs)} upgradable package(s):\n" + "\n".join(f"  {p}" for p in pkgs)
+        except Exception as e:
+            return f"Error checking updates: {e}"
+
+    elif aspect == "processes":
+        try:
+            r = subprocess.run(
+                ["ps", "aux", "--sort=-%cpu"],
+                capture_output=True, text=True, timeout=10,
+            )
+            lines = r.stdout.splitlines()
+            return "\n".join(lines[:16])  # header + top 15
+        except Exception as e:
+            return f"Error listing processes: {e}"
+
+    else:
+        return f"Unknown aspect '{aspect}'. Available: stats, failed, updates, processes"
+
+
+def query_storage(query_type: str = "usage", limit: int = 20) -> str:
+    """Check disk usage and storage breakdown."""
+
+    if query_type == "usage":
+        return get_disk_usage()
+
+    elif query_type == "breakdown":
+        base = "/mnt/media"
+        try:
+            entries = []
+            for name in sorted(os.listdir(base)):
+                full = os.path.join(base, name)
+                r = subprocess.run(
+                    ["du", "-sh", "--apparent-size", full],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if r.returncode == 0:
+                    size = r.stdout.split("\t", 1)[0]
+                    entries.append((name, size))
+            if not entries:
+                return f"No entries found under {base}."
+            lines = [f"Storage breakdown for {base}:"]
+            for name, size in entries:
+                lines.append(f"  {size:>8}  {name}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error getting breakdown: {e}"
+
+    elif query_type == "largest":
+        base = "/mnt/media"
+        limit = min(max(limit, 1), 50)
+        try:
+            r = subprocess.run(
+                ["find", base, "-type", "f", "-printf", "%s\t%p\n"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if r.returncode != 0:
+                return f"Error scanning files: {r.stderr.strip()}"
+            entries = []
+            for line in r.stdout.splitlines():
+                try:
+                    size_str, fpath = line.split("\t", 1)
+                    entries.append((int(size_str), fpath))
+                except ValueError:
+                    pass
+            if not entries:
+                return "No files found."
+            entries.sort(reverse=True)
+            shown = entries[:limit]
+            lines = [f"Top {len(shown)} largest files under {base} ({len(entries)} total):"]
+            for size, fpath in shown:
+                rel = os.path.relpath(fpath, base)
+                lines.append(f"  {_fmt_bytes(size):>10}  {rel}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error finding largest files: {e}"
+
+    else:
+        return f"Unknown query_type '{query_type}'. Available: usage, breakdown, largest"
+
+
+def query_network(query_type: str = "tailscale") -> str:
+    """Query network status."""
+
+    if query_type == "tailscale":
+        try:
+            r = subprocess.run(
+                ["tailscale", "status"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0:
+                return f"Tailscale error: {(r.stderr or r.stdout).strip()}"
+            return r.stdout.strip() or "Tailscale: no output"
+        except FileNotFoundError:
+            return "tailscale CLI not found — is Tailscale installed?"
+        except Exception as e:
+            return f"Error querying Tailscale: {e}"
+
+    elif query_type == "external_ip":
+        try:
+            r = requests.get("https://api.ipify.org", timeout=5)
+            r.raise_for_status()
+            return f"External IP: {r.text.strip()}"
+        except Exception as e:
+            return f"Error getting external IP: {e}"
+
+    elif query_type == "ports":
+        try:
+            r = subprocess.run(
+                ["ss", "-tlnp"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0:
+                return f"ss error: {r.stderr.strip()}"
+            return r.stdout.strip() or "No listening TCP ports found."
+        except Exception as e:
+            return f"Error listing ports: {e}"
+
+    else:
+        return f"Unknown query_type '{query_type}'. Available: tailscale, external_ip, ports"
+
+
 DISCORD_CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0"))
 
 
@@ -941,14 +1094,28 @@ def get_system_stats() -> str:
 
 TOOL_DEFINITIONS = [
     {
-        "name": "get_disk_usage",
+        "name": "query_storage",
         "description": (
-            "Check disk space on the server. "
-            "Returns df -h output for / (SSD) and /mnt/media (2 TB HDD)."
+            "Check disk usage and storage breakdown for the server. "
+            "usage: df -h for / and /mnt/media — overall free/used space. "
+            "breakdown: du -sh per top-level folder under /mnt/media (Movies, Shows, Music, Video staging). "
+            "largest: top N largest files under /mnt/media — useful for finding space to reclaim (default 20, max 50)."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "query_type": {
+                    "type": "string",
+                    "enum": ["usage", "breakdown", "largest"],
+                    "description": "What to query. Default: usage.",
+                    "default": "usage",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "largest only: how many files to return (1–50, default 20).",
+                    "default": 20,
+                },
+            },
             "required": [],
         },
     },
@@ -1132,11 +1299,45 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "get_system_stats",
-        "description": "Get CPU load average, memory usage, and NVIDIA GPU stats.",
+        "name": "query_system_health",
+        "description": (
+            "Check system health from multiple angles. "
+            "stats: CPU load average, memory usage, NVIDIA GPU temp/VRAM/utilisation. "
+            "failed: any systemd units in a failed state. "
+            "updates: apt packages available to upgrade. "
+            "processes: top 15 processes by CPU usage."
+        ),
         "input_schema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "aspect": {
+                    "type": "string",
+                    "enum": ["stats", "failed", "updates", "processes"],
+                    "description": "Which health aspect to check. Default: stats.",
+                    "default": "stats",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "query_network",
+        "description": (
+            "Query network status. "
+            "tailscale: peer list with online/offline status and IPs. "
+            "external_ip: current public IP address of the server. "
+            "ports: listening TCP ports and the processes bound to them."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query_type": {
+                    "type": "string",
+                    "enum": ["tailscale", "external_ip", "ports"],
+                    "description": "What to query. Default: tailscale.",
+                    "default": "tailscale",
+                },
+            },
             "required": [],
         },
     },
@@ -1302,7 +1503,7 @@ TOOL_DEFINITIONS = [
 # ---------------------------------------------------------------------------
 
 def execute_tool(name: str, inputs: dict) -> str:
-    if name == "get_disk_usage":
+    if name == "get_disk_usage":            # backward compat for any saved scheduled tasks
         return get_disk_usage()
     if name == "get_log_tail":
         return get_log_tail(
@@ -1333,8 +1534,17 @@ def execute_tool(name: str, inputs: dict) -> str:
             pattern=inputs.get("pattern", ""),
             limit=inputs.get("limit", 20),
         )
-    if name == "get_system_stats":
+    if name == "get_system_stats":          # backward compat for any saved scheduled tasks
         return get_system_stats()
+    if name == "query_system_health":
+        return query_system_health(inputs.get("aspect", "stats"))
+    if name == "query_storage":
+        return query_storage(
+            query_type=inputs.get("query_type", "usage"),
+            limit=inputs.get("limit", 20),
+        )
+    if name == "query_network":
+        return query_network(inputs.get("query_type", "tailscale"))
     if name == "query_jellyfin":
         return query_jellyfin(inputs.get("query_type", "stats"))
     if name == "query_ripping":

@@ -24,15 +24,16 @@ A Discord bot for the Panda home server backed by Claude (Opus for queries, Haik
 
 | Tool | What it does |
 |---|---|
-| `get_disk_usage` | Free/used space on `/` and `/mnt/media` |
 | `get_log_tail` | Last N lines of rip-video, rip-cd, jellyfin, or jenkins logs |
 | `get_service_status` | systemd or Docker container status |
-| `get_system_stats` | CPU load, RAM, NVIDIA GPU temp/VRAM/utilisation |
 | `get_performance_history` | PCP/pmlogger time-series (up to 24h) for cpu, memory, disk, network |
 | `get_jenkins_build_status` | Latest build result for one or all jobs |
 | `get_jenkins_build_history` | Last N builds with timing and result |
 | `get_jenkins_build_log` | Console log for a specific build |
 | `trigger_jenkins_job` | Trigger a job immediately; returns estimated duration and scheduling hints |
+| `query_storage` | Disk usage, per-folder breakdown under `/mnt/media`, or top-N largest files |
+| `query_system_health` | CPU/RAM/GPU stats, failed systemd units, available updates, top processes |
+| `query_network` | Tailscale peer status, external IP, listening TCP ports |
 | `query_jellyfin` | Library stats, recently added, active streams, watch history |
 | `query_ripping` | Staging area contents, subtitle sidecar coverage, recent rip history (App Insights) |
 | `query_media_library` | File metadata (codec, bitrate, duration, resolution) and directory listings via ffprobe |
