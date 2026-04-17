@@ -11,9 +11,11 @@ import json
 import datetime
 import requests
 
-JENKINS_URL = os.environ.get("JENKINS_URL", "http://localhost:8080")
-JENKINS_USER = os.environ.get("JENKINS_USER", "admin")
-JENKINS_TOKEN = os.environ.get("JENKINS_TOKEN", "")
+JENKINS_URL    = os.environ.get("JENKINS_URL", "http://localhost:8080")
+JENKINS_USER   = os.environ.get("JENKINS_USER", "admin")
+JENKINS_TOKEN  = os.environ.get("JENKINS_TOKEN", "")
+JELLYFIN_URL   = os.environ.get("JELLYFIN_URL", "http://localhost:8096")
+JELLYFIN_TOKEN = os.environ.get("JELLYFIN_API_KEY", "")
 
 # Whitelist of logs the bot is allowed to tail
 ALLOWED_FILE_LOGS = {
@@ -240,6 +242,107 @@ def get_jenkins_build_log(
         return header + "\n".join(tail)
     except requests.RequestException as e:
         return f"Jenkins API error: {e}"
+
+
+def query_jellyfin(query_type: str = "stats") -> str:
+    """Query the Jellyfin media server API."""
+    if not JELLYFIN_TOKEN:
+        return "JELLYFIN_API_KEY not configured in .env"
+
+    headers = {"X-Emby-Token": JELLYFIN_TOKEN, "Accept": "application/json"}
+
+    try:
+        if query_type == "stats":
+            r = requests.get(f"{JELLYFIN_URL}/Items/Counts", headers=headers, timeout=10)
+            r.raise_for_status()
+            d = r.json()
+            lines = ["Jellyfin library:"]
+            if d.get("MovieCount"):    lines.append(f"  Movies:   {d['MovieCount']}")
+            if d.get("SeriesCount"):   lines.append(f"  Shows:    {d['SeriesCount']}")
+            if d.get("EpisodeCount"):  lines.append(f"  Episodes: {d['EpisodeCount']}")
+            if d.get("SongCount"):     lines.append(f"  Songs:    {d['SongCount']}")
+            if d.get("AlbumCount"):    lines.append(f"  Albums:   {d['AlbumCount']}")
+            if d.get("BoxSetCount"):   lines.append(f"  Box sets: {d['BoxSetCount']}")
+            return "\n".join(lines)
+
+        elif query_type == "recent":
+            # Need a real user ID — fetch the first non-automation user
+            ur = requests.get(f"{JELLYFIN_URL}/Users", headers=headers, timeout=10)
+            ur.raise_for_status()
+            users = [u for u in ur.json() if u.get("Name", "").lower() != "automation"]
+            if not users:
+                return "No users found in Jellyfin."
+            uid = users[0]["Id"]
+            params = {
+                "SortBy": "DateCreated", "SortOrder": "Descending",
+                "Limit": 10, "Recursive": "true",
+                "IncludeItemTypes": "Movie,Series",
+                "Fields": "DateCreated,ProductionYear",
+            }
+            r = requests.get(f"{JELLYFIN_URL}/Users/{uid}/Items",
+                             headers=headers, params=params, timeout=10)
+            r.raise_for_status()
+            items = r.json().get("Items", [])
+            if not items:
+                return "No recently added items found."
+            lines = ["Recently added:"]
+            for item in items:
+                added = item.get("DateCreated", "")[:10]
+                year  = item.get("ProductionYear", "")
+                itype = item.get("Type", "")
+                lines.append(f"  [{itype}] {item['Name']} ({year})  added {added}")
+            return "\n".join(lines)
+
+        elif query_type == "streams":
+            r = requests.get(f"{JELLYFIN_URL}/Sessions",
+                             headers=headers, params={"ActiveWithinSeconds": 60}, timeout=10)
+            r.raise_for_status()
+            sessions = [s for s in r.json() if s.get("NowPlayingItem")]
+            if not sessions:
+                return "No active streams."
+            lines = ["Active streams:"]
+            for s in sessions:
+                item      = s.get("NowPlayingItem", {})
+                user      = s.get("UserName", "unknown")
+                title     = item.get("Name", "unknown")
+                method    = s.get("PlayState", {}).get("PlayMethod", "unknown")
+                tc        = s.get("TranscodingInfo") or {}
+                hw        = tc.get("IsVideoDirectStream", False)
+                codec_out = tc.get("VideoCodec", "")
+                nvenc     = "NVENC" if "nvenc" in codec_out.lower() else ""
+                detail    = f"{method}" + (f" → {codec_out} {nvenc}".strip() if codec_out else "")
+                lines.append(f"  {user}: {title}  [{detail}]")
+            return "\n".join(lines)
+
+        elif query_type == "history":
+            ur = requests.get(f"{JELLYFIN_URL}/Users", headers=headers, timeout=10)
+            ur.raise_for_status()
+            users = [u for u in ur.json() if u.get("Name", "").lower() != "automation"]
+            if not users:
+                return "No users found."
+            lines = ["Recently watched:"]
+            for user in users:
+                params = {
+                    "SortBy": "DatePlayed", "SortOrder": "Descending",
+                    "Limit": 5, "Filters": "IsPlayed", "Recursive": "true",
+                    "IncludeItemTypes": "Movie,Episode",
+                    "Fields": "DateLastMediaAdded",
+                }
+                r = requests.get(f"{JELLYFIN_URL}/Users/{user['Id']}/Items",
+                                 headers=headers, params=params, timeout=10)
+                r.raise_for_status()
+                items = r.json().get("Items", [])
+                if items:
+                    lines.append(f"  {user['Name']}:")
+                    for item in items:
+                        lines.append(f"    - {item['Name']} ({item.get('Type', '')})")
+            return "\n".join(lines) if len(lines) > 1 else "No watch history found."
+
+        else:
+            return f"Unknown query_type '{query_type}'. Available: stats, recent, streams, history"
+
+    except requests.RequestException as e:
+        return f"Jellyfin API error: {e}"
 
 
 def get_performance_history(metric: str = "cpu", hours: int = 1) -> str:
@@ -513,6 +616,29 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "query_jellyfin",
+        "description": (
+            "Query the Jellyfin media server. "
+            "stats: library counts (movies, shows, episodes, music). "
+            "recent: last 10 items added to the library. "
+            "streams: active playback sessions — who is watching what, "
+            "DirectPlay vs Transcode, whether NVENC is in use. "
+            "history: recently watched titles per user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query_type": {
+                    "type": "string",
+                    "enum": ["stats", "recent", "streams", "history"],
+                    "description": "What to query.",
+                    "default": "stats",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_performance_history",
         "description": (
             "Query historical performance metrics from PCP/pmlogger — the same data "
@@ -572,6 +698,8 @@ def execute_tool(name: str, inputs: dict) -> str:
         )
     if name == "get_system_stats":
         return get_system_stats()
+    if name == "query_jellyfin":
+        return query_jellyfin(inputs.get("query_type", "stats"))
     if name == "get_performance_history":
         return get_performance_history(
             metric=inputs.get("metric", "cpu"),
