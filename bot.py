@@ -17,8 +17,12 @@ Environment variables (see .env.example):
 """
 
 import asyncio
+import csv
+import datetime
+import io
 import logging
 import os
+import subprocess
 import textwrap
 
 import aiohttp
@@ -52,6 +56,8 @@ TAILSCALE_IP               = os.environ.get("TAILSCALE_IP", "")
 DISK_ALERT_THRESHOLD_PCT   = int(os.environ.get("DISK_ALERT_THRESHOLD_PCT", "85"))
 DISK_ALERT_PATH            = os.environ.get("DISK_ALERT_PATH", "/mnt/media")
 WATCHDOG_SERVICES          = [s.strip() for s in os.environ.get("WATCHDOG_SERVICES", "jellyfin,sunshine").split(",") if s.strip()]
+WEEKLY_DIGEST_DAY          = int(os.environ.get("WEEKLY_DIGEST_DAY", "6"))   # 0=Mon … 6=Sun
+WEEKLY_DIGEST_HOUR         = int(os.environ.get("WEEKLY_DIGEST_HOUR", "9"))  # server local time
 
 SYSTEM_PROMPT = textwrap.dedent(f"""\
     You are Panda, a helpful assistant for a home Ubuntu Server 24.04 machine.
@@ -379,6 +385,272 @@ async def task_service_watchdog():
 
 
 # ---------------------------------------------------------------------------
+# Weekly digest helpers
+# ---------------------------------------------------------------------------
+
+def _seconds_until_weekly(day: int, hour: int) -> float:
+    """Seconds until the next occurrence of weekday `day` at `hour` in server local time."""
+    now = datetime.datetime.now()
+    days_ahead = (day - now.weekday()) % 7
+    target = (now + datetime.timedelta(days=days_ahead)).replace(
+        hour=hour, minute=0, second=0, microsecond=0
+    )
+    if target <= now:
+        target += datetime.timedelta(weeks=1)
+    return (target - now).total_seconds()
+
+
+def _collect_performance_week() -> dict:
+    """Parse PCP pmlogger for 7-day CPU and memory peaks."""
+    result = {}
+    try:
+        ncpu = int(subprocess.check_output(["nproc"], text=True).strip())
+    except Exception:
+        ncpu = 1
+
+    # CPU — hourly samples over 7 days
+    try:
+        r = subprocess.run(
+            ["pmrep", "-S", "-168hour", "-t", "1hour", "-o", "csv",
+             "kernel.all.cpu.user", "kernel.all.cpu.sys"],
+            capture_output=True, text=True, timeout=30
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            reader = csv.reader(io.StringIO(r.stdout))
+            next(reader)  # skip header
+            peaks = []
+            for row in reader:
+                try:
+                    pct = (float(row[1]) + float(row[2])) / (ncpu * 10)
+                    peaks.append((round(pct, 1), row[0]))
+                except (IndexError, ValueError):
+                    pass
+            if peaks:
+                peak_pct, peak_time = max(peaks, key=lambda x: x[0])
+                result["cpu"] = {
+                    "peak_pct":     peak_pct,
+                    "peak_time":    peak_time,
+                    "avg_pct":      round(sum(p for p, _ in peaks) / len(peaks), 1),
+                    "hours_over80": sum(1 for p, _ in peaks if p > 80),
+                    "samples":      len(peaks),
+                }
+    except Exception as e:
+        result["cpu_error"] = str(e)
+
+    # Memory — hourly samples
+    try:
+        r = subprocess.run(
+            ["pmrep", "-S", "-168hour", "-t", "1hour", "-o", "csv", "mem.util.used"],
+            capture_output=True, text=True, timeout=30
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            reader = csv.reader(io.StringIO(r.stdout))
+            next(reader)
+            values = []
+            for row in reader:
+                try:
+                    values.append(float(row[1]))
+                except (IndexError, ValueError):
+                    pass
+            if values:
+                result["memory"] = {
+                    "peak_gb": round(max(values) / 1e9, 1),
+                    "avg_gb":  round(sum(values) / len(values) / 1e9, 1),
+                }
+    except Exception as e:
+        result["mem_error"] = str(e)
+
+    return result
+
+
+def _collect_jellyfin_week() -> dict:
+    """Items added to Jellyfin in the last 7 days, grouped by type."""
+    import requests as req
+    from tools import JELLYFIN_URL, JELLYFIN_TOKEN
+    if not JELLYFIN_TOKEN:
+        return {}
+    headers = {"X-Emby-Token": JELLYFIN_TOKEN}
+    since = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    try:
+        users = [u for u in req.get(f"{JELLYFIN_URL}/Users", headers=headers, timeout=10).json()
+                 if u.get("Name", "").lower() != "automation"]
+        if not users:
+            return {}
+        uid = users[0]["Id"]
+        result = {}
+        for item_type, key in [("Movie", "movies"), ("Series", "shows"), ("MusicAlbum", "albums")]:
+            params = {
+                "SortBy": "DateCreated", "SortOrder": "Descending",
+                "Recursive": "true", "IncludeItemTypes": item_type,
+                "Fields": "DateCreated,ProductionYear",
+                "MinDateLastSaved": since,
+            }
+            items = req.get(f"{JELLYFIN_URL}/Users/{uid}/Items",
+                            headers=headers, params=params, timeout=10).json().get("Items", [])
+            if key == "albums":
+                result[key] = [i["Name"] for i in items]
+            else:
+                result[key] = [f"{i['Name']} ({i.get('ProductionYear','?')})" for i in items]
+        return result
+    except Exception:
+        return {}
+
+
+def _collect_jenkins_week() -> dict:
+    """Pass/fail counts for each Jenkins job over the last 7 days."""
+    import requests as req
+    from tools import JENKINS_URL, JENKINS_USER, JENKINS_TOKEN
+    auth = (JENKINS_USER, JENKINS_TOKEN) if JENKINS_TOKEN else None
+    cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).timestamp() * 1000
+    result = {}
+    for job in ["Login_Test", "Process_Movies", "Nightly_Convert"]:
+        try:
+            url = f"{JENKINS_URL}/job/{job}/api/json?tree=builds[number,result,timestamp]{{0,100}}"
+            builds = [b for b in req.get(url, auth=auth, timeout=10).json().get("builds", [])
+                      if b.get("timestamp", 0) >= cutoff]
+            result[job] = {
+                "runs":    len(builds),
+                "success": sum(1 for b in builds if b.get("result") == "SUCCESS"),
+                "failure": sum(1 for b in builds if b.get("result") == "FAILURE"),
+            }
+        except Exception:
+            result[job] = {"error": True}
+    return result
+
+
+def _collect_health_notes() -> list[str]:
+    """Quick system health checks — returns a list of plain-text notes."""
+    notes = []
+    # Pending apt updates
+    try:
+        r = subprocess.run(["apt", "list", "--upgradable"],
+                           capture_output=True, text=True, timeout=15)
+        count = sum(1 for line in r.stdout.splitlines() if "/" in line)
+        if count:
+            notes.append(f"{count} pending apt update{'s' if count != 1 else ''}")
+    except Exception:
+        pass
+    # Failed systemd units
+    try:
+        r = subprocess.run(["systemctl", "list-units", "--state=failed", "--no-legend"],
+                           capture_output=True, text=True, timeout=10)
+        failed = [line.split()[0] for line in r.stdout.strip().splitlines() if line.strip()]
+        if failed:
+            notes.append(f"failed systemd units: {', '.join(failed)}")
+    except Exception:
+        pass
+    return notes
+
+
+def _render_weekly_digest(perf: dict, jellyfin: dict, jenkins: dict,
+                           disk: str, health: list[str]) -> str:
+    """Feed gathered data to Claude for a natural-language weekly digest."""
+    # --- build compact data block ---
+    lines = []
+
+    # Performance
+    if "cpu" in perf:
+        c = perf["cpu"]
+        partial = f" ({c['samples']}/168 samples — PCP still building history)" if c["samples"] < 100 else ""
+        lines.append(f"CPU: avg {c['avg_pct']}%, peak {c['peak_pct']}% at {c['peak_time']}, "
+                     f"{c['hours_over80']} hour(s) above 80%{partial}")
+    elif "cpu_error" in perf:
+        lines.append(f"CPU: data unavailable ({perf['cpu_error']})")
+    if "memory" in perf:
+        m = perf["memory"]
+        lines.append(f"Memory: avg {m['avg_gb']} GB used, peak {m['peak_gb']} GB")
+    perf_block = "\n".join(lines) or "No performance data available yet"
+
+    # Jellyfin
+    jf_lines = []
+    if jellyfin.get("movies"):
+        jf_lines.append(f"Movies ({len(jellyfin['movies'])}): {', '.join(jellyfin['movies'])}")
+    if jellyfin.get("shows"):
+        jf_lines.append(f"Shows ({len(jellyfin['shows'])}): {', '.join(jellyfin['shows'])}")
+    if jellyfin.get("albums"):
+        jf_lines.append(f"Music albums ({len(jellyfin['albums'])}): {', '.join(jellyfin['albums'])}")
+    jf_block = "\n".join(jf_lines) or "Nothing new added this week"
+
+    # Jenkins
+    jk_lines = []
+    for job, d in jenkins.items():
+        if d.get("error"):
+            jk_lines.append(f"{job}: error fetching data")
+        else:
+            rate = f"{d['success']}/{d['runs']}" if d["runs"] else "no runs"
+            fail_note = f" ⚠️ {d['failure']} failure(s)" if d.get("failure") else ""
+            jk_lines.append(f"{job}: {rate} passed{fail_note}")
+    jk_block = "\n".join(jk_lines) or "No Jenkins data"
+
+    health_block = "\n".join(f"- {n}" for n in health) if health else "Nothing to flag"
+
+    prompt = (
+        "Write a concise weekly server digest for a home Ubuntu media server called Panda.\n"
+        "Use Discord markdown. Be friendly but informative. Flag anything that needs attention.\n\n"
+        f"PERFORMANCE (7-day):\n{perf_block}\n\n"
+        f"JELLYFIN CONTENT ADDED:\n{jf_block}\n\n"
+        f"JENKINS JOB HEALTH:\n{jk_block}\n\n"
+        f"DISK USAGE:\n{disk}\n\n"
+        f"HEALTH NOTES:\n{health_block}\n\n"
+        "Format with these emoji section headers:\n"
+        "🖥️ **Performance** — highlight peaks or concerns; say 'all normal' if nothing to flag\n"
+        "🎬 **Content Added** — movies, shows, music; say 'nothing new' if empty\n"
+        "⚙️ **System** — Jenkins pass rates, disk, pending updates, failed units\n\n"
+        "Keep it tight — this is a Discord message, not a report."
+    )
+
+    response = claude.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=1200,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.content[0].text
+
+
+async def task_weekly_digest():
+    """Post a weekly digest on the configured day and local hour."""
+    await bot.wait_until_ready()
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    log.info(
+        "Weekly digest task started — every %s at %02d:00 local",
+        day_names[WEEKLY_DIGEST_DAY], WEEKLY_DIGEST_HOUR
+    )
+
+    while not bot.is_closed():
+        secs = _seconds_until_weekly(WEEKLY_DIGEST_DAY, WEEKLY_DIGEST_HOUR)
+        log.info("Weekly digest sleeping %.1fh", secs / 3600)
+        await asyncio.sleep(secs)
+
+        try:
+            log.info("Generating weekly digest…")
+            loop = asyncio.get_running_loop()
+
+            # Gather all data concurrently
+            perf, jellyfin, jenkins = await asyncio.gather(
+                loop.run_in_executor(None, _collect_performance_week),
+                loop.run_in_executor(None, _collect_jellyfin_week),
+                loop.run_in_executor(None, _collect_jenkins_week),
+            )
+            from tools import get_disk_usage
+            disk   = await loop.run_in_executor(None, get_disk_usage)
+            health = await loop.run_in_executor(None, _collect_health_notes)
+
+            # Claude writes the narrative
+            text = await loop.run_in_executor(
+                None, _render_weekly_digest, perf, jellyfin, jenkins, disk, health
+            )
+
+            week_of = datetime.datetime.utcnow().strftime("%b %d")
+            await post_notification(f"📊 **Weekly Digest — {week_of}**\n\n{text}")
+            log.info("Weekly digest posted")
+
+        except Exception:
+            log.exception("task_weekly_digest error")
+            await post_notification("⚠️ Weekly digest failed — check bot logs")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -386,6 +658,7 @@ async def main():
     await start_webhook_server()
     asyncio.create_task(task_disk_alert())
     asyncio.create_task(task_service_watchdog())
+    asyncio.create_task(task_weekly_digest())
     await bot.start(DISCORD_TOKEN)
 
 
