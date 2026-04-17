@@ -787,7 +787,9 @@ def query_system_health(aspect: str = "stats") -> str:
                     if in_table:
                         cols = line.split()
                         if len(cols) >= 10:
-                            attrs[cols[1]] = cols[-1]   # attr_name → raw_value
+                            # cols[9] is the start of RAW_VALUE; some attributes append
+                            # annotations like "(Min/Max 20/46)" — grab only the first token
+                            attrs[cols[1]] = cols[9]
 
                 health_icon = "✅" if health == "PASSED" else "🔴"
                 lines = [f"{device}  {label}", f"  Health: {health_icon} {health}"]
