@@ -127,9 +127,17 @@ sudo bash -c '
 
 ## Requirements
 
+**System** (handled by `install.sh`):
 - Ubuntu Server 24.04
 - Python 3.11+
+- `ffmpeg` — for `query_media_library` file inspection (`apt install ffmpeg`)
+
+**Optional system packages** (used if present, gracefully skipped if not):
+- `pcp` + `cockpit-pcp` — for `get_performance_history` historical metrics
+- `nvidia-smi` (NVIDIA driver) — for GPU stats in `get_system_stats`
+
+**Credentials** (all go in `.env`):
 - Discord bot token with **Message Content Intent** enabled
-- Anthropic API key (Opus-class model for queries, Haiku for scheduled tasks)
+- Anthropic API key (Opus for interactive queries, Haiku for scheduled task firing)
 - Jenkins API token
-- Azure App Registration with Monitoring Reader role on your App Insights resource (for `query_ripping: recent_rips`)
+- Azure App Registration with Monitoring Reader on your App Insights resource — for `query_ripping: recent_rips` and bot telemetry (see SETUP.md §2)

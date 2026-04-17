@@ -16,6 +16,9 @@ fi
 # Add to docker group so it can call `docker logs`
 usermod -aG docker "$BOT_USER"
 
+echo "==> Installing system dependencies"
+apt-get install -y --no-install-recommends ffmpeg
+
 echo "==> Cloning / updating repo"
 if [ -d "$BOT_DIR/.git" ]; then
   git -C "$BOT_DIR" fetch origin
