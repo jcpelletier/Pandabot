@@ -58,6 +58,66 @@ DISK_ALERT_PATH            = os.environ.get("DISK_ALERT_PATH", "/mnt/media")
 WATCHDOG_SERVICES          = [s.strip() for s in os.environ.get("WATCHDOG_SERVICES", "jellyfin,sunshine").split(",") if s.strip()]
 WEEKLY_DIGEST_DAY          = int(os.environ.get("WEEKLY_DIGEST_DAY", "6"))   # 0=Mon … 6=Sun
 WEEKLY_DIGEST_HOUR         = int(os.environ.get("WEEKLY_DIGEST_HOUR", "9"))  # server local time
+AI_IKEY                    = os.environ.get("APPINSIGHTS_IKEY", "")
+AI_ENDPOINT                = os.environ.get("APPINSIGHTS_ENDPOINT", "")
+
+# ---------------------------------------------------------------------------
+# App Insights telemetry helpers — fire-and-forget, never raise
+# ---------------------------------------------------------------------------
+
+def _ai_event(name: str, **props: str) -> None:
+    """Send a custom event to App Insights in a daemon thread."""
+    if not AI_IKEY or not AI_ENDPOINT:
+        return
+    import threading, json as _json, urllib.request
+    payload = _json.dumps([{
+        "name": "Microsoft.ApplicationInsights.Event",
+        "time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "iKey": AI_IKEY,
+        "tags": {"ai.cloud.roleName": "pandabot", "ai.device.type": "Other"},
+        "data": {"baseType": "EventData", "baseData": {
+            "ver": 2, "name": name,
+            "properties": {k: str(v) for k, v in props.items()},
+        }},
+    }]).encode()
+    def _send():
+        try:
+            urllib.request.urlopen(
+                urllib.request.Request(AI_ENDPOINT, payload, {"Content-Type": "application/json"}),
+                timeout=5,
+            )
+        except Exception:
+            pass
+    threading.Thread(target=_send, daemon=True).start()
+
+
+def _ai_trace(severity: str, message: str, **props: str) -> None:
+    """Send a trace message to App Insights. severity: Verbose|Information|Warning|Error|Critical"""
+    if not AI_IKEY or not AI_ENDPOINT:
+        return
+    import threading, json as _json, urllib.request
+    level = {"verbose": 0, "information": 1, "warning": 2, "error": 3, "critical": 4}.get(
+        severity.lower(), 1
+    )
+    payload = _json.dumps([{
+        "name": "Microsoft.ApplicationInsights.Message",
+        "time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "iKey": AI_IKEY,
+        "tags": {"ai.cloud.roleName": "pandabot", "ai.device.type": "Other"},
+        "data": {"baseType": "MessageData", "baseData": {
+            "ver": 2, "message": message, "severityLevel": level,
+            "properties": {k: str(v) for k, v in props.items()},
+        }},
+    }]).encode()
+    def _send():
+        try:
+            urllib.request.urlopen(
+                urllib.request.Request(AI_ENDPOINT, payload, {"Content-Type": "application/json"}),
+                timeout=5,
+            )
+        except Exception:
+            pass
+    threading.Thread(target=_send, daemon=True).start()
 
 def _build_system_prompt() -> str:
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M %Z")
@@ -159,7 +219,10 @@ async def build_history(channel: discord.abc.Messageable, before: discord.Messag
 
 def _run_claude_loop(user_message: str, history: list[dict] | None = None) -> str:
     """Synchronous Claude agentic loop (run in a thread executor)."""
+    import time as _time
     messages = (history or []) + [{"role": "user", "content": user_message}]
+    tools_called: list[str] = []
+    t0 = _time.monotonic()
 
     system_prompt = _build_system_prompt()
     for _ in range(10):  # safety: max 10 tool-call rounds
@@ -175,6 +238,12 @@ def _run_claude_loop(user_message: str, history: list[dict] | None = None) -> st
         if response.stop_reason == "end_turn":
             for block in response.content:
                 if hasattr(block, "text"):
+                    _ai_event(
+                        "BotQuery",
+                        message=user_message[:200],
+                        tools=",".join(tools_called) or "none",
+                        response_ms=str(int((_time.monotonic() - t0) * 1000)),
+                    )
                     return block.text
             return "(no text response)"
 
@@ -185,6 +254,7 @@ def _run_claude_loop(user_message: str, history: list[dict] | None = None) -> st
             for block in response.content:
                 if block.type == "tool_use":
                     log.info("Tool call: %s(%s)", block.name, block.input)
+                    tools_called.append(block.name)
                     result = execute_tool(block.name, block.input)
                     log.debug("Tool result (%s): %.200s", block.name, result)
                     tool_results.append({
@@ -364,12 +434,15 @@ async def task_disk_alert():
                         f"(threshold: {DISK_ALERT_THRESHOLD_PCT}%)"
                     )
                     log.warning("Disk alert fired: %s at %d%%", DISK_ALERT_PATH, pct)
+                    _ai_event("AlertFired", alert_type="disk", path=DISK_ALERT_PATH,
+                              pct=str(pct), threshold=str(DISK_ALERT_THRESHOLD_PCT))
                 elif pct < DISK_ALERT_THRESHOLD_PCT and _alert_state.get(key):
                     _alert_state[key] = False
                     await post_notification(
                         f"✅ **Disk space recovered** — `{DISK_ALERT_PATH}` is now {pct}% full"
                     )
                     log.info("Disk alert cleared: %s at %d%%", DISK_ALERT_PATH, pct)
+                    _ai_event("AlertCleared", alert_type="disk", path=DISK_ALERT_PATH, pct=str(pct))
         except Exception:
             log.exception("task_disk_alert error")
         await asyncio.sleep(4 * 3600)  # check every 4 hours
@@ -398,10 +471,12 @@ async def task_service_watchdog():
                     _alert_state[key] = True
                     await post_notification(f"🔴 **{svc}** appears to be **down**\n> {status_text[:200]}")
                     log.warning("Watchdog: %s is down", svc)
+                    _ai_event("AlertFired", alert_type="service_down", service=svc)
                 elif is_up and was_down:
                     _alert_state[key] = False
                     await post_notification(f"✅ **{svc}** has **recovered**")
                     log.info("Watchdog: %s recovered", svc)
+                    _ai_event("AlertCleared", alert_type="service_recovered", service=svc)
         except Exception:
             log.exception("task_service_watchdog error")
         await asyncio.sleep(10 * 60)  # check every 10 minutes
@@ -692,6 +767,8 @@ async def fire_scheduled_task(task: dict) -> None:
     interval   = task["check_interval_minutes"]
 
     log.info("Firing task #%d (%s): %s", task_id, task_type, task["description"])
+    import time as _time
+    t0 = _time.monotonic()
     loop = asyncio.get_running_loop()
 
     try:
@@ -726,6 +803,9 @@ async def fire_scheduled_task(task: dict) -> None:
             if met:
                 message = task["met_message"] or f"✅ Done: {task['description']}"
                 await loop.run_in_executor(None, sched.mark_done, task_id)
+                _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
+                          description=task["description"][:100], outcome="condition_met",
+                          attempt=str(new_attempt))
                 await post_notification_to(channel_id, message)
                 return
 
@@ -735,6 +815,9 @@ async def fire_scheduled_task(task: dict) -> None:
                     f"_{task['description']}_"
                 )
                 await loop.run_in_executor(None, sched.mark_done, task_id)
+                _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
+                          description=task["description"][:100], outcome="gave_up",
+                          attempt=str(new_attempt))
             else:
                 message = (
                     task["not_met_message"]
@@ -745,6 +828,9 @@ async def fire_scheduled_task(task: dict) -> None:
                     + datetime.timedelta(minutes=interval)
                 ).isoformat()
                 await loop.run_in_executor(None, sched.reschedule, task_id, next_utc, new_attempt)
+                _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
+                          description=task["description"][:100], outcome="condition_pending",
+                          attempt=str(new_attempt), next_check_min=str(interval))
 
             await post_notification_to(channel_id, message)
             return
@@ -763,10 +849,15 @@ async def fire_scheduled_task(task: dict) -> None:
             await loop.run_in_executor(None, sched.schedule_next_recurring, task)
 
         await loop.run_in_executor(None, sched.mark_done, task_id)
+        _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
+                  description=task["description"][:100], outcome="success",
+                  duration_ms=str(int((_time.monotonic() - t0) * 1000)))
         await post_notification_to(channel_id, message)
 
-    except Exception:
+    except Exception as exc:
         log.exception("fire_scheduled_task error for #%d", task_id)
+        _ai_trace("Error", f"Scheduled task #{task_id} failed: {exc}",
+                  task_id=str(task_id), description=task["description"][:100])
         await loop.run_in_executor(None, sched.mark_done, task_id)
         await post_notification_to(
             channel_id, f"⚠️ Scheduled task #{task_id} failed — check bot logs"
