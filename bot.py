@@ -158,7 +158,7 @@ def _build_system_prompt() -> str:
              separate step. Use the timing hints from the trigger response.
              tool_calls: [get_jenkins_build_status for that job]
              condition_pattern: '"result":\\s*"(SUCCESS|FAILURE|UNSTABLE|ABORTED)"'
-             generative_prompt: summarise the result in 1–2 sentences from {results}
+             generative_prompt: summarise the result in 1–2 sentences from {{results}}
           3. Tell the user the job is running and that you'll notify them when done.
 
         When the user asks for something at a future time, on a condition, or on a
