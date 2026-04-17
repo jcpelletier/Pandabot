@@ -242,6 +242,104 @@ def get_jenkins_build_log(
         return f"Jenkins API error: {e}"
 
 
+def get_performance_history(metric: str = "cpu", hours: int = 1) -> str:
+    """
+    Query PCP pmlogger for historical performance data (same source as Cockpit graphs).
+    metric: cpu | memory | disk | network
+    hours:  1–24
+    """
+    hours = max(1, min(24, int(hours)))
+
+    # Sample density: finer for short windows, coarser for long ones
+    if hours <= 2:
+        interval = "2min"
+    elif hours <= 6:
+        interval = "5min"
+    else:
+        interval = "15min"
+
+    METRIC_MAP = {
+        "cpu": {
+            "metrics": ["kernel.all.cpu.user", "kernel.all.cpu.sys", "kernel.all.cpu.idle"],
+            "note": "Values are ms/s per CPU. % ≈ (user+sys) / (ncpu × 10).",
+        },
+        "memory": {
+            "metrics": ["mem.util.used", "mem.util.free"],
+            "note": "Values in bytes. Divide by 1073741824 for GB.",
+        },
+        "disk": {
+            "metrics": ["disk.all.read_bytes", "disk.all.write_bytes"],
+            "note": "Values in bytes/s across all disks.",
+        },
+        "network": {
+            "metrics": ["network.interface.in.bytes", "network.interface.out.bytes"],
+            "note": "Values in bytes/s. Columns repeat per active interface.",
+        },
+    }
+
+    if metric not in METRIC_MAP:
+        return f"Unknown metric '{metric}'. Available: {', '.join(METRIC_MAP.keys())}"
+
+    config = METRIC_MAP[metric]
+
+    # For CPU, include ncpu so Claude can calculate percentages
+    extra_info = ""
+    if metric == "cpu":
+        try:
+            ncpu = int(subprocess.check_output(["nproc"], text=True).strip())
+            extra_info = f"  CPU count: {ncpu}\n"
+        except Exception:
+            pass
+
+    cmd = [
+        "pmrep",
+        "-S", f"-{hours}hour",
+        "-t", interval,
+        "-o", "csv",
+    ] + config["metrics"]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            err = result.stderr.strip()
+            if "Cannot connect" in err or "Connection refused" in err:
+                return "PCP daemon (pmcd) is not running — historical metrics unavailable."
+            if "No data" in err or "no data" in err:
+                return f"No {metric} data yet — pmlogger may have just started. Try again in a few minutes."
+            return f"pmrep error: {err}"
+
+        output = result.stdout.strip()
+        if not output:
+            return (
+                f"No {metric} data available for the past {hours}h. "
+                "pmlogger may have just started collecting — data builds up over time."
+            )
+
+        lines = output.splitlines()
+        # Always keep the CSV header (first line) + cap data rows at 35
+        header_line = lines[0] if lines else ""
+        data_lines  = lines[1:] if len(lines) > 1 else []
+        if len(data_lines) > 35:
+            data_lines = data_lines[-35:]
+
+        out = [
+            f"=== {metric.upper()} history — last {hours}h (sampled every {interval}) ===",
+            config["note"],
+        ]
+        if extra_info:
+            out.append(extra_info.strip())
+        out.append(header_line)
+        out.extend(data_lines)
+        return "\n".join(out)
+
+    except FileNotFoundError:
+        return "pmrep not found — PCP may not be installed (sudo apt install pcp cockpit-pcp)."
+    except subprocess.TimeoutExpired:
+        return "pmrep timed out after 30s."
+    except Exception as e:
+        return f"Error querying performance history: {e}"
+
+
 def get_system_stats() -> str:
     """CPU load, memory, and GPU stats."""
     parts = []
@@ -414,6 +512,34 @@ TOOL_DEFINITIONS = [
             "required": [],
         },
     },
+    {
+        "name": "get_performance_history",
+        "description": (
+            "Query historical performance metrics from PCP/pmlogger — the same data "
+            "source Cockpit uses for its performance graphs. Returns a time-series CSV "
+            "sampled at regular intervals. Use this to answer questions like 'was the "
+            "CPU spiking last night?' or 'how much memory was used over the past 6 hours?'. "
+            "Available metrics: cpu (user/sys/idle rates), memory (used/free bytes), "
+            "disk (read/write bytes/s), network (in/out bytes/s per interface)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "enum": ["cpu", "memory", "disk", "network"],
+                    "description": "Which metric category to query.",
+                    "default": "cpu",
+                },
+                "hours": {
+                    "type": "integer",
+                    "description": "How many hours back to look (1–24, default 1).",
+                    "default": 1,
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -446,4 +572,9 @@ def execute_tool(name: str, inputs: dict) -> str:
         )
     if name == "get_system_stats":
         return get_system_stats()
+    if name == "get_performance_history":
+        return get_performance_history(
+            metric=inputs.get("metric", "cpu"),
+            hours=inputs.get("hours", 1),
+        )
     return f"Unknown tool: {name}"
