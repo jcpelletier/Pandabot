@@ -19,10 +19,14 @@ SyslogIdentifier=discord-bot
 
 # Hardening — the bot needs network, /proc, Docker socket, and log files
 PrivateTmp=true
-NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/log
+ReadWritePaths=/var/log /opt/discord-bot
 ReadOnlyPaths=/mnt/media
+
+# Ambient capabilities let smartctl subprocesses read raw SMART data.
+# NoNewPrivileges is intentionally omitted — it blocks ambient cap inheritance.
+AmbientCapabilities=CAP_SYS_RAWIO CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_DAC_READ_SEARCH
 
 [Install]
 WantedBy=multi-user.target
