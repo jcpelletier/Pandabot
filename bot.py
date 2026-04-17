@@ -47,6 +47,9 @@ log = logging.getLogger("panda-bot")
 # Config
 # ---------------------------------------------------------------------------
 
+_VERSION_FILE = os.path.join(os.path.dirname(__file__), "VERSION")
+BOT_VERSION = int(open(_VERSION_FILE).read().strip()) if os.path.exists(_VERSION_FILE) else 0
+
 DISCORD_TOKEN              = os.environ["DISCORD_TOKEN"]
 DISCORD_CHANNEL_ID         = int(os.environ["DISCORD_CHANNEL_ID"])
 ANTHROPIC_API_KEY          = os.environ["ANTHROPIC_API_KEY"]
@@ -886,12 +889,20 @@ async def task_scheduler() -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+async def task_announce_startup():
+    """Post a one-time startup message with the current version."""
+    await bot.wait_until_ready()
+    await post_notification(f"🐼 **PandaBot v{BOT_VERSION}** online")
+    log.info("Startup announced: v%d", BOT_VERSION)
+
+
 async def main():
     await start_webhook_server()
     asyncio.create_task(task_disk_alert())
     asyncio.create_task(task_service_watchdog())
     asyncio.create_task(task_weekly_digest())
     asyncio.create_task(task_scheduler())
+    asyncio.create_task(task_announce_startup())
     await bot.start(DISCORD_TOKEN)
 
 

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Auto-increment VERSION on every commit.
+VERSION_FILE="$(git rev-parse --show-toplevel)/VERSION"
+current=$(cat "$VERSION_FILE" | tr -d '[:space:]')
+next=$((current + 1))
+printf '%s\n' "$next" > "$VERSION_FILE"
+git add "$VERSION_FILE"
+echo "Version bumped: $current -> $next"
