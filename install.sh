@@ -17,7 +17,7 @@ fi
 usermod -aG docker "$BOT_USER"
 
 echo "==> Installing system dependencies"
-apt-get install -y --no-install-recommends ffmpeg
+apt-get install -y --no-install-recommends ffmpeg smartmontools
 
 echo "==> Cloning / updating repo"
 if [ -d "$BOT_DIR/.git" ]; then

@@ -740,8 +740,111 @@ def query_system_health(aspect: str = "stats") -> str:
         except Exception as e:
             return f"Error listing processes: {e}"
 
+    elif aspect == "smart":
+        DEVICES = [
+            ("/dev/sda", "SanDisk SSD PLUS (boot)"),
+            ("/dev/sdb", "Seagate ST4000DM004 (media)"),
+        ]
+        # Attributes we care about, by name as reported by smartctl
+        KEY_ATTRS = {
+            "Reallocated_Sector_Ct", "Current_Pending_Sector", "Offline_Uncorrectable",
+            "Reported_Uncorrect", "Power_On_Hours", "Power_Cycle_Count", "Start_Stop_Count",
+            "Temperature_Celsius", "Airflow_Temperature_Cel",
+            "Program_Fail_Count", "Erase_Fail_Count", "Total_Write/Erase_Count",
+            "End-to-End_Error", "Runtime_Bad_Block",
+        }
+
+        def _parse_hours(raw: str) -> int | None:
+            """Parse power-on hours from raw value like '15674h+36m+...' or '2745'."""
+            try:
+                return int(raw.split("h")[0].replace("+", "").strip())
+            except (ValueError, IndexError):
+                return None
+
+        parts = []
+        for device, label in DEVICES:
+            try:
+                r = subprocess.run(
+                    ["sudo", "smartctl", "-H", "-A", device],
+                    capture_output=True, text=True, timeout=15,
+                )
+                out = r.stdout
+
+                # Overall health
+                health = "unknown"
+                for line in out.splitlines():
+                    if "overall-health self-assessment test result:" in line:
+                        health = line.split(":")[-1].strip()
+                        break
+
+                # Parse attribute table (lines after the ATTRIBUTE_NAME header)
+                attrs: dict[str, str] = {}
+                in_table = False
+                for line in out.splitlines():
+                    if "ATTRIBUTE_NAME" in line:
+                        in_table = True
+                        continue
+                    if in_table:
+                        cols = line.split()
+                        if len(cols) >= 10:
+                            attrs[cols[1]] = cols[-1]   # attr_name → raw_value
+
+                health_icon = "✅" if health == "PASSED" else "🔴"
+                lines = [f"{device}  {label}", f"  Health: {health_icon} {health}"]
+
+                # Sector errors — critical, flag non-zero
+                for key, label_str in [
+                    ("Reallocated_Sector_Ct",   "Reallocated sectors  "),
+                    ("Current_Pending_Sector",   "Pending sectors      "),
+                    ("Offline_Uncorrectable",    "Offline uncorrectable"),
+                    ("Reported_Uncorrect",       "Reported uncorrectable"),
+                    ("End-to-End_Error",         "End-to-end errors    "),
+                    ("Runtime_Bad_Block",        "Runtime bad blocks   "),
+                ]:
+                    if key in attrs:
+                        val = attrs[key].split("h")[0].strip()
+                        flag = " ⚠️" if val not in ("0", "") and not val.startswith("-") else ""
+                        lines.append(f"  {label_str}: {val}{flag}")
+
+                # Power-on time
+                if "Power_On_Hours" in attrs:
+                    h = _parse_hours(attrs["Power_On_Hours"])
+                    if h is not None:
+                        lines.append(f"  Power-on hours       : {h:,}h  ({h // 24:,} days / {h // 8760:.1f} yrs)")
+
+                # Temperature
+                temp_raw = attrs.get("Temperature_Celsius") or attrs.get("Airflow_Temperature_Cel")
+                if temp_raw:
+                    try:
+                        t = int(temp_raw.split()[0])
+                        flag = " ⚠️" if t > 50 else ""
+                        lines.append(f"  Temperature          : {t}°C{flag}")
+                    except ValueError:
+                        lines.append(f"  Temperature          : {temp_raw}")
+
+                # SSD-specific wear
+                for key, label_str in [
+                    ("Program_Fail_Count",       "Program fail count   "),
+                    ("Erase_Fail_Count",         "Erase fail count     "),
+                    ("Total_Write/Erase_Count",  "Total write/erase    "),
+                ]:
+                    if key in attrs:
+                        val = attrs[key]
+                        flag = " ⚠️" if key in ("Program_Fail_Count", "Erase_Fail_Count") \
+                                        and val not in ("0", "") else ""
+                        lines.append(f"  {label_str}: {val}{flag}")
+
+                parts.append("\n".join(lines))
+
+            except FileNotFoundError:
+                parts.append(f"{device}: smartctl not found — run: sudo apt install smartmontools")
+            except Exception as e:
+                parts.append(f"{device}: error — {e}")
+
+        return "\n\n".join(parts)
+
     else:
-        return f"Unknown aspect '{aspect}'. Available: stats, failed, updates, processes"
+        return f"Unknown aspect '{aspect}'. Available: stats, failed, updates, processes, smart"
 
 
 def query_storage(query_type: str = "usage", limit: int = 20) -> str:
@@ -1305,14 +1408,17 @@ TOOL_DEFINITIONS = [
             "stats: CPU load average, memory usage, NVIDIA GPU temp/VRAM/utilisation. "
             "failed: any systemd units in a failed state. "
             "updates: apt packages available to upgrade. "
-            "processes: top 15 processes by CPU usage."
+            "processes: top 15 processes by CPU usage. "
+            "smart: SMART drive health for /dev/sda (SanDisk SSD, boot) and "
+            "/dev/sdb (Seagate 4TB HDD, media) — reallocated sectors, pending sectors, "
+            "power-on hours, temperature, SSD wear counters."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "aspect": {
                     "type": "string",
-                    "enum": ["stats", "failed", "updates", "processes"],
+                    "enum": ["stats", "failed", "updates", "processes", "smart"],
                     "description": "Which health aspect to check. Default: stats.",
                     "default": "stats",
                 },
