@@ -81,6 +81,10 @@ SYSTEM_PROMPT = textwrap.dedent(f"""\
     Jenkins build status, and system stats. You cannot execute arbitrary code
     or make any changes to the server.
 
+    Always call a tool to answer questions about server state — never guess
+    or infer from training knowledge. If a tool returns an error, relay the
+    exact error text rather than paraphrasing it as a configuration problem.
+
     Be concise. When reporting log extracts, summarise rather than quoting
     everything unless the user asks for raw output.
 """)
