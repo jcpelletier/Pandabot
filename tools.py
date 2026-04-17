@@ -247,6 +247,74 @@ def get_jenkins_build_history(job_name: str, count: int = 10) -> str:
         return f"Jenkins API error: {e}"
 
 
+def trigger_jenkins_job(job_name: str) -> str:
+    """
+    Trigger a Jenkins job build immediately.
+    Returns confirmation, estimated duration, and scheduling hints for a follow-up check.
+    """
+    KNOWN_JOBS = ["Login_Test", "Process_Movies", "Nightly_Convert"]
+    auth = _jenkins_auth()
+    try:
+        # Fetch nextBuildNumber + recent durations in one call
+        meta_url = (
+            f"{JENKINS_URL}/job/{job_name}/api/json"
+            "?tree=nextBuildNumber,builds[duration,result]{0,5}"
+        )
+        mr = requests.get(meta_url, auth=auth, timeout=10)
+        if mr.status_code == 404:
+            return f"Job '{job_name}' not found. Known jobs: {', '.join(KNOWN_JOBS)}"
+        mr.raise_for_status()
+        mdata = mr.json()
+
+        next_build_num = mdata.get("nextBuildNumber")
+        builds = mdata.get("builds", [])
+        durations = [
+            b["duration"] // 1000
+            for b in builds
+            if b.get("result") and b.get("duration", 0) > 0
+        ]
+        avg_seconds = int(sum(durations) / len(durations)) if durations else None
+
+        # Trigger the build
+        trigger_url = f"{JENKINS_URL}/job/{job_name}/build"
+        r = requests.post(trigger_url, auth=auth, timeout=10)
+        if r.status_code == 404:
+            return f"Job '{job_name}' not found."
+        if r.status_code == 400:
+            return (
+                f"Job '{job_name}' requires build parameters and cannot be triggered "
+                "without them via this tool."
+            )
+        r.raise_for_status()
+
+        lines = [f"✅ '{job_name}' build #{next_build_num or '?'} queued."]
+
+        # Calculate suggested check timing
+        if avg_seconds:
+            m, s = divmod(avg_seconds, 60)
+            lines.append(f"Recent avg duration: {m}m {s}s")
+            # First check: ~80% of expected duration (gives build time to start + nearly finish)
+            initial_wait = max(2, int(avg_seconds * 0.8 / 60))
+            # Recheck interval: ~20% of expected duration, capped 1–10 min
+            check_interval = max(1, min(10, int(avg_seconds * 0.2 / 60)))
+        else:
+            initial_wait = 5
+            check_interval = 3
+
+        lines.append(
+            f"Suggested schedule: first check in {initial_wait} min, "
+            f"recheck every {check_interval} min if still building."
+        )
+        lines.append(
+            'Use condition_pattern: \'"result":\\s*"(SUCCESS|FAILURE|UNSTABLE|ABORTED)"\' '
+            "— this only matches once the build finishes (result is null while building)."
+        )
+        return "\n".join(lines)
+
+    except requests.RequestException as e:
+        return f"Jenkins trigger error: {e}"
+
+
 def get_jenkins_build_log(
     job_name: str,
     build_number: int | str | None = None,
@@ -794,6 +862,34 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "trigger_jenkins_job",
+        "description": (
+            "Trigger a Jenkins job to run immediately. "
+            "Returns a confirmation, the estimated build duration from recent history, "
+            "and scheduling hints (initial wait + recheck interval). "
+            "After triggering, ALWAYS use manage_schedule to create a condition_check task so the "
+            "user gets a follow-up notification when the build finishes — separate from any "
+            "Jenkins webhook messages. "
+            "Pattern: trigger → manage_schedule(condition_check, tool_calls=[get_jenkins_build_status], "
+            "condition_pattern='\"result\":\\s*\"(SUCCESS|FAILURE|UNSTABLE|ABORTED)\"', "
+            "generative_prompt='Jenkins job {job} finished. Status: {results}\\n\\n"
+            "In one sentence, report whether it passed or failed and the key outcome.'). "
+            "Known jobs: Login_Test (~2 min, Jellyfin login Playwright test), "
+            "Process_Movies (sorts staged rips, duration varies), "
+            "Nightly_Convert (h264_nvenc re-encode, can take hours)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_name": {
+                    "type": "string",
+                    "description": "Exact Jenkins job name (e.g. Login_Test, Process_Movies, Nightly_Convert).",
+                },
+            },
+            "required": ["job_name"],
+        },
+    },
+    {
         "name": "get_jenkins_build_status",
         "description": (
             "Quick status snapshot for Jenkins. "
@@ -1043,6 +1139,8 @@ def execute_tool(name: str, inputs: dict) -> str:
         )
     if name == "get_service_status":
         return get_service_status(inputs["service_name"])
+    if name == "trigger_jenkins_job":
+        return trigger_jenkins_job(inputs["job_name"])
     if name == "get_jenkins_build_status":
         return get_jenkins_build_status(inputs.get("job_name"))
     if name == "get_jenkins_build_history":

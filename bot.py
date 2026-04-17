@@ -144,13 +144,22 @@ def _build_system_prompt() -> str:
         from tools are already in local time. When reading raw log content, treat
         timestamps as Eastern Time — never label them UTC.
 
-        You have read-only tools to check disk usage, log tails, service status,
-        Jenkins build status, and system stats. You cannot execute arbitrary code
-        or make any changes to the server.
+        You have tools to check disk usage, log tails, service status, Jenkins build
+        status and history, system stats, and to trigger Jenkins jobs.
 
         Always call a tool to answer questions about server state — never guess
         or infer from training knowledge. If a tool returns an error, relay the
         exact error text rather than paraphrasing it as a configuration problem.
+
+        When the user asks to run or trigger a Jenkins job:
+          1. Call trigger_jenkins_job to start it.
+          2. Immediately call manage_schedule(action='create') to schedule a
+             condition_check follow-up — do this in the same response, not as a
+             separate step. Use the timing hints from the trigger response.
+             tool_calls: [get_jenkins_build_status for that job]
+             condition_pattern: '"result":\\s*"(SUCCESS|FAILURE|UNSTABLE|ABORTED)"'
+             generative_prompt: summarise the result in 1–2 sentences from {results}
+          3. Tell the user the job is running and that you'll notify them when done.
 
         When the user asks for something at a future time, on a condition, or on a
         recurring schedule, call manage_schedule(action='create') rather than
@@ -815,7 +824,17 @@ async def fire_scheduled_task(task: dict) -> None:
             new_attempt = attempt + 1
 
             if met:
-                message = task["met_message"] or f"✅ Done: {task['description']}"
+                # generative_prompt takes priority over met_message when condition is satisfied
+                if task["generative_prompt"]:
+                    prompt = task["generative_prompt"].replace("{results}", combined)
+                    resp = await loop.run_in_executor(None, lambda: claude.messages.create(
+                        model="claude-haiku-4-5",
+                        max_tokens=400,
+                        messages=[{"role": "user", "content": prompt}],
+                    ))
+                    message = resp.content[0].text
+                else:
+                    message = task["met_message"] or f"✅ Done: {task['description']}"
                 await loop.run_in_executor(None, sched.mark_done, task_id)
                 _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
                           description=task["description"][:100], outcome="condition_met",
