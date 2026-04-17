@@ -39,6 +39,18 @@ if [ ! -f "$BOT_DIR/.env" ]; then
   echo ""
 fi
 
+echo "==> Publishing webhook helper files (world-readable, safe for Jenkins)"
+# Extract just the values Jenkins needs into separate 644 files so Jenkins
+# can read them without access to .env (which contains API keys).
+if [ -f "$BOT_DIR/.env" ]; then
+  secret=$(grep '^WEBHOOK_SECRET=' "$BOT_DIR/.env" | cut -d= -f2- | tr -d '[:space:]')
+  port=$(grep '^WEBHOOK_PORT=' "$BOT_DIR/.env" | cut -d= -f2- | tr -d '[:space:]')
+  [ -n "$secret" ] && printf '%s\n' "$secret" > "$BOT_DIR/webhook.secret"
+  [ -n "$port"   ] && printf '%s\n' "$port"   > "$BOT_DIR/webhook.port"
+fi
+# webhook.secret/.port are world-readable; .env stays 600
+chmod 644 "$BOT_DIR/webhook.secret" "$BOT_DIR/webhook.port" 2>/dev/null || true
+
 echo "==> Setting ownership"
 chown -R "$BOT_USER:$BOT_USER" "$BOT_DIR"
 chmod 600 "$BOT_DIR/.env" 2>/dev/null || true

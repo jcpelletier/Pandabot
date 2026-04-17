@@ -6,7 +6,8 @@
 #   /opt/discord-bot/notify-discord.sh "$JOB_NAME" "$BUILD_RESULT" \
 #       "$BUILD_NUMBER" "$BUILD_URL" "optional extra message"
 #
-# Or source the WEBHOOK_SECRET from the .env file automatically.
+# The webhook secret is read from /opt/discord-bot/webhook.secret (644),
+# a separate file that Jenkins can read without exposing .env API keys.
 
 JOB_NAME="${1:-Unknown}"
 STATUS="${2:-UNKNOWN}"
@@ -14,27 +15,35 @@ BUILD_NUMBER="${3:-0}"
 BUILD_URL="${4:-}"
 MESSAGE="${5:-}"
 
-# Load the secret from the bot's .env
+# Read secret from dedicated world-readable file (not .env which contains API keys)
 WEBHOOK_SECRET=""
-if [ -f /opt/discord-bot/.env ]; then
-  WEBHOOK_SECRET=$(grep '^WEBHOOK_SECRET=' /opt/discord-bot/.env | cut -d= -f2-)
+if [ -f /opt/discord-bot/webhook.secret ]; then
+  WEBHOOK_SECRET=$(cat /opt/discord-bot/webhook.secret | tr -d '[:space:]')
 fi
 
-WEBHOOK_PORT=$(grep '^WEBHOOK_PORT=' /opt/discord-bot/.env 2>/dev/null | cut -d= -f2-)
-WEBHOOK_PORT="${WEBHOOK_PORT:-8765}"
+WEBHOOK_PORT=8765
+if [ -f /opt/discord-bot/webhook.port ]; then
+  WEBHOOK_PORT=$(cat /opt/discord-bot/webhook.port | tr -d '[:space:]')
+fi
+
+# Build JSON with Python (avoids jq dependency)
+PAYLOAD=$(python3 - "$WEBHOOK_SECRET" "$JOB_NAME" "$STATUS" "$BUILD_NUMBER" "$BUILD_URL" "$MESSAGE" <<'PYEOF'
+import json, sys
+_, secret, job, status, build_num, url, msg = sys.argv
+print(json.dumps({
+    "secret":       secret,
+    "job_name":     job,
+    "status":       status,
+    "build_number": int(build_num) if build_num.isdigit() else 0,
+    "build_url":    url,
+    "message":      msg,
+}))
+PYEOF
+)
 
 curl -sf \
   -X POST \
   -H "Content-Type: application/json" \
-  -d "$(jq -n \
-    --arg secret       "$WEBHOOK_SECRET" \
-    --arg job_name     "$JOB_NAME" \
-    --arg status       "$STATUS" \
-    --argjson build_number "$BUILD_NUMBER" \
-    --arg build_url    "$BUILD_URL" \
-    --arg message      "$MESSAGE" \
-    '{secret: $secret, job_name: $job_name, status: $status,
-      build_number: $build_number, build_url: $build_url,
-      message: $message}')" \
+  -d "$PAYLOAD" \
   "http://127.0.0.1:${WEBHOOK_PORT}/notify" \
 || echo "WARNING: Discord notification failed (bot may be down)"
