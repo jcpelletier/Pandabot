@@ -31,7 +31,7 @@ import anthropic
 import discord
 from discord.ext import commands
 
-from tools import TOOL_DEFINITIONS, execute_tool
+from tools import TOOL_DEFINITIONS, execute_tool  # noqa: E402 (used in fire_scheduled_task too)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -84,6 +84,12 @@ SYSTEM_PROMPT = textwrap.dedent(f"""\
     Always call a tool to answer questions about server state — never guess
     or infer from training knowledge. If a tool returns an error, relay the
     exact error text rather than paraphrasing it as a configuration problem.
+
+    When the user asks for something at a future time, on a condition, or on a
+    recurring schedule, call manage_schedule(action='create') rather than
+    answering immediately. Decide at schedule time which tools to run and what
+    message to post — the task fires mechanically with no LLM unless you set
+    generative_prompt. Use static_message for pre-written content like jokes.
 
     Be concise. When reporting log extracts, summarise rather than quoting
     everything unless the user asks for raw output.
@@ -240,9 +246,14 @@ async def on_message(message: discord.Message):
 
 async def post_notification(text: str):
     """Send a notification to the configured Discord channel."""
-    channel = bot.get_channel(DISCORD_CHANNEL_ID)
+    await post_notification_to(DISCORD_CHANNEL_ID, text)
+
+
+async def post_notification_to(channel_id: int, text: str):
+    """Send a notification to a specific channel, falling back to the default."""
+    channel = bot.get_channel(channel_id) or bot.get_channel(DISCORD_CHANNEL_ID)
     if channel is None:
-        log.error("Notification channel %s not found", DISCORD_CHANNEL_ID)
+        log.error("Channel %s not found for notification", channel_id)
         return
     for chunk in split_message(text):
         await channel.send(chunk)
@@ -658,6 +669,124 @@ async def task_weekly_digest():
 
 
 # ---------------------------------------------------------------------------
+# Scheduler — poll SQLite, fire due tasks without an LLM call
+# ---------------------------------------------------------------------------
+
+async def fire_scheduled_task(task: dict) -> None:
+    """Execute a single due task. Uses no LLM except when generative_prompt is set."""
+    import re
+    import json as _json
+    import scheduler as sched
+
+    task_id   = task["id"]
+    task_type = task["task_type"]
+    tool_calls: list = _json.loads(task["tool_calls"] or "[]")
+    channel_id = task["channel_id"]
+    attempt    = task["attempt"]
+    max_att    = task["max_attempts"]
+    interval   = task["check_interval_minutes"]
+
+    log.info("Firing task #%d (%s): %s", task_id, task_type, task["description"])
+    loop = asyncio.get_running_loop()
+
+    try:
+        # --- Execute tool calls ---
+        results = []
+        for tc in tool_calls:
+            r = await loop.run_in_executor(
+                None, execute_tool, tc["tool"], tc.get("args", {})
+            )
+            results.append(r)
+        combined = "\n\n".join(results)
+
+        # --- Determine the message ---
+        if task["static_message"]:
+            # Pre-written at schedule time — zero LLM cost
+            message = task["static_message"]
+
+        elif task["generative_prompt"]:
+            # One small Haiku call for tasks that need fresh synthesis
+            prompt = task["generative_prompt"].replace("{results}", combined)
+            resp = await loop.run_in_executor(None, lambda: claude.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=800,
+                messages=[{"role": "user", "content": prompt}],
+            ))
+            message = resp.content[0].text
+
+        elif task_type == "condition_check" and task["condition_pattern"]:
+            met = bool(re.search(task["condition_pattern"], combined, re.IGNORECASE))
+            new_attempt = attempt + 1
+
+            if met:
+                message = task["met_message"] or f"✅ Done: {task['description']}"
+                await loop.run_in_executor(None, sched.mark_done, task_id)
+                await post_notification_to(channel_id, message)
+                return
+
+            if new_attempt >= max_att:
+                message = (
+                    f"⏱️ **Gave up checking** after {max_att} attempts: "
+                    f"_{task['description']}_"
+                )
+                await loop.run_in_executor(None, sched.mark_done, task_id)
+            else:
+                message = (
+                    task["not_met_message"]
+                    or f"🔄 Not yet: _{task['description']}_ — checking again in {interval} min"
+                )
+                next_utc = (
+                    datetime.datetime.now(datetime.timezone.utc)
+                    + datetime.timedelta(minutes=interval)
+                ).isoformat()
+                await loop.run_in_executor(None, sched.reschedule, task_id, next_utc, new_attempt)
+
+            await post_notification_to(channel_id, message)
+            return
+
+        else:
+            # Default: optional intro + tool results
+            parts = []
+            if task["intro_message"]:
+                parts.append(task["intro_message"])
+            if combined:
+                parts.append(combined)
+            message = "\n\n".join(parts) or f"📅 Scheduled: {task['description']}"
+
+        # --- Wrap up ---
+        if task_type == "recurring" and task["recurrence_rule"]:
+            await loop.run_in_executor(None, sched.schedule_next_recurring, task)
+
+        await loop.run_in_executor(None, sched.mark_done, task_id)
+        await post_notification_to(channel_id, message)
+
+    except Exception:
+        log.exception("fire_scheduled_task error for #%d", task_id)
+        await loop.run_in_executor(None, sched.mark_done, task_id)
+        await post_notification_to(
+            channel_id, f"⚠️ Scheduled task #{task_id} failed — check bot logs"
+        )
+
+
+async def task_scheduler() -> None:
+    """Poll SQLite every 60 s and fire any due tasks."""
+    import scheduler as sched
+    await bot.wait_until_ready()
+    sched.init_db()
+    log.info("Scheduler started — polling every 60s (db: %s)", sched.DB_PATH)
+
+    while not bot.is_closed():
+        try:
+            loop = asyncio.get_running_loop()
+            due = await loop.run_in_executor(None, sched.get_due_tasks)
+            for task in due:
+                asyncio.create_task(fire_scheduled_task(dict(task)))
+        except Exception:
+            log.exception("task_scheduler poll error")
+        await asyncio.sleep(60)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -666,6 +795,7 @@ async def main():
     asyncio.create_task(task_disk_alert())
     asyncio.create_task(task_service_watchdog())
     asyncio.create_task(task_weekly_digest())
+    asyncio.create_task(task_scheduler())
     await bot.start(DISCORD_TOKEN)
 
 

@@ -625,6 +625,81 @@ def get_performance_history(metric: str = "cpu", hours: int = 1) -> str:
         return f"Error querying performance history: {e}"
 
 
+DISCORD_CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0"))
+
+
+def manage_schedule(action: str, **kwargs) -> str:
+    """Create, list, or cancel scheduled tasks."""
+    import scheduler as sched
+
+    if action == "list":
+        tasks = sched.list_pending()
+        if not tasks:
+            return "No scheduled tasks pending."
+        lines = ["Pending scheduled tasks:"]
+        for t in tasks:
+            fire_local = (
+                datetime.datetime.fromisoformat(t["fire_at"])
+                .astimezone()
+                .strftime("%a %b %d %I:%M %p %Z")
+            )
+            type_note = t["task_type"]
+            if t["task_type"] == "condition_check":
+                type_note = f"condition check {t['attempt']}/{t['max_attempts']}"
+            recurr = f" [🔁 {t['recurrence_rule']}]" if t["recurrence_rule"] else ""
+            lines.append(f"  #{t['id']}  {fire_local}  — {t['description']} ({type_note}){recurr}")
+        return "\n".join(lines)
+
+    if action == "cancel":
+        task_id = kwargs.get("id")
+        if not task_id:
+            return "cancel requires an id."
+        cancelled = sched.cancel_task(int(task_id))
+        return f"Task #{task_id} cancelled." if cancelled else f"Task #{task_id} not found or already done."
+
+    if action == "create":
+        fire_at = kwargs.get("fire_at")
+        if not fire_at:
+            return "create requires fire_at (local ISO datetime, e.g. '2026-04-18T09:00:00')."
+        description = kwargs.get("description", "Scheduled task")
+        task_type   = kwargs.get("task_type", "one_shot")
+
+        # Parse tool_calls — may arrive as list of dicts or JSON string
+        raw_tc = kwargs.get("tool_calls") or []
+        if isinstance(raw_tc, str):
+            import json as _json
+            raw_tc = _json.loads(raw_tc)
+
+        task_id = sched.add_task(
+            fire_at_local          = fire_at,
+            channel_id             = DISCORD_CHANNEL_ID,
+            description            = description,
+            task_type              = task_type,
+            tool_calls             = raw_tc,
+            intro_message          = kwargs.get("intro_message"),
+            static_message         = kwargs.get("static_message"),
+            generative_prompt      = kwargs.get("generative_prompt"),
+            condition_pattern      = kwargs.get("condition_pattern"),
+            met_message            = kwargs.get("met_message"),
+            not_met_message        = kwargs.get("not_met_message"),
+            max_attempts           = int(kwargs.get("max_attempts", 5)),
+            check_interval_minutes = int(kwargs.get("check_interval_minutes", 30)),
+            recurrence_rule        = kwargs.get("recurrence_rule"),
+        )
+
+        local_dt  = datetime.datetime.fromisoformat(fire_at)
+        time_str  = local_dt.strftime("%A %b %d at %I:%M %p")
+        type_note = {
+            "one_shot":        "fires once",
+            "condition_check": (f"checks up to {kwargs.get('max_attempts', 5)}× "
+                                f"every {kwargs.get('check_interval_minutes', 30)} min"),
+            "recurring":       f"repeats ({kwargs.get('recurrence_rule', '?')})",
+        }.get(task_type, task_type)
+        return f"✅ Scheduled #{task_id}: \"{description}\" — {time_str} ({type_note})"
+
+    return f"Unknown action '{action}'. Use create, list, or cancel."
+
+
 def get_system_stats() -> str:
     """CPU load, memory, and GPU stats."""
     parts = []
@@ -843,6 +918,88 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "manage_schedule",
+        "description": (
+            "Schedule future tasks, list pending ones, or cancel them. "
+            "Use this whenever the user asks for something at a future time, on a condition, "
+            "or on a recurring schedule — instead of answering immediately. "
+            "Decide at schedule time which tools to run and what message to post; "
+            "the task fires without an LLM call unless generative_prompt is set.\n"
+            "action='create': schedule a new task. Required: fire_at (local ISO, e.g. "
+            "'2026-04-18T09:00:00'), description. "
+            "task_type: 'one_shot' (default), 'condition_check' (retry until pattern matches), "
+            "'recurring' (repeat on recurrence_rule).\n"
+            "action='list': show all pending tasks.\n"
+            "action='cancel': cancel by id."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "list", "cancel"],
+                    "description": "Operation to perform.",
+                },
+                "id": {"type": "integer", "description": "Task id — required for cancel."},
+                "description": {"type": "string", "description": "Human-readable task description."},
+                "fire_at": {
+                    "type": "string",
+                    "description": "Local ISO datetime for first/only fire: '2026-04-18T09:00:00'.",
+                },
+                "task_type": {
+                    "type": "string",
+                    "enum": ["one_shot", "condition_check", "recurring"],
+                },
+                "tool_calls": {
+                    "type": "array",
+                    "description": (
+                        "Tools to execute at fire time. "
+                        "Each item: {\"tool\": \"tool_name\", \"args\": {...}}. "
+                        "Use exact tool names from this tool list."
+                    ),
+                    "items": {"type": "object"},
+                },
+                "intro_message": {
+                    "type": "string",
+                    "description": "Static text posted before tool results.",
+                },
+                "static_message": {
+                    "type": "string",
+                    "description": "Fully pre-written message — posted as-is, no tools run. "
+                                   "Use for jokes, reminders, pre-generated summaries.",
+                },
+                "generative_prompt": {
+                    "type": "string",
+                    "description": "Prompt for a small Haiku call at fire time. "
+                                   "Use {results} to include tool output. "
+                                   "Only use when dynamic synthesis is needed.",
+                },
+                "condition_pattern": {
+                    "type": "string",
+                    "description": "Regex matched against combined tool output. "
+                                   "Task is done when it matches.",
+                },
+                "met_message": {"type": "string", "description": "Posted when condition is satisfied."},
+                "not_met_message": {"type": "string", "description": "Posted when condition not yet met (will retry)."},
+                "max_attempts": {
+                    "type": "integer",
+                    "description": "Max retries for condition_check before giving up (default 5).",
+                },
+                "check_interval_minutes": {
+                    "type": "integer",
+                    "description": "Minutes between condition_check retries. "
+                                   "Set based on expected duration (rip ~30, subtitle scan ~120).",
+                },
+                "recurrence_rule": {
+                    "type": "string",
+                    "description": "For recurring tasks. 'monthly:D' fires on day D each month. "
+                                   "'weekly:W' fires each week (W: 0=Mon…6=Sun, same time as fire_at).",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "get_performance_history",
         "description": (
             "Query historical performance metrics from PCP/pmlogger — the same data "
@@ -911,4 +1068,7 @@ def execute_tool(name: str, inputs: dict) -> str:
             metric=inputs.get("metric", "cpu"),
             hours=inputs.get("hours", 1),
         )
+    if name == "manage_schedule":
+        action = inputs.pop("action", "list")
+        return manage_schedule(action, **inputs)
     return f"Unknown tool: {name}"
