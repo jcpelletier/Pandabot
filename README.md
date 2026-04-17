@@ -2,7 +2,7 @@
 
 <img width="1419" height="1562" alt="image" src="https://github.com/user-attachments/assets/0e748146-ba81-4926-83ef-c45dcc70a0e5" />
 
-A Discord bot for the Panda home server backed by Claude Opus. Mention it in Discord to ask questions about the server — disk usage, service health, Jenkins build status, log tails, and system stats. Also listens for Jenkins failure webhooks and posts alerts to a configured channel.
+A Discord bot for the Panda home server backed by Claude Haiku. Mention it in Discord to ask questions about the server — disk usage, service health, Jenkins build status, Jellyfin library, ripping pipeline, and performance history. Also posts proactive alerts and a weekly digest automatically.
 
 ---
 
@@ -10,30 +10,37 @@ A Discord bot for the Panda home server backed by Claude Opus. Mention it in Dis
 
 - **Natural language queries** — ask in plain English, Claude decides which tools to call
 - **Conversation context** — remembers the last 10 messages so follow-up questions work naturally
-- **Read-only server tools** — disk usage, log tails, service status, Jenkins build history and logs, system stats (CPU/RAM/GPU)
-- **Jenkins failure notifications** — Jenkins POSTs to a local webhook; bot formats and forwards to Discord with emoji status indicators
-- **Adaptive thinking** — uses Claude's extended thinking for complex multi-step questions
+- **Jenkins failure notifications** — Jenkins POSTs to a local webhook; bot formats and forwards to Discord
+- **Proactive alerts** — disk space threshold, service watchdog (Jellyfin + Sunshine)
+- **Weekly digest** — every Sunday 9am: performance summary, content added, Jenkins health, system notes
 
-## Available tools
+## Tools
 
 | Tool | What it does |
 |---|---|
-| `get_disk_usage` | Free/used space on all mounted drives |
-| `get_log_tail` | Last N lines of a named log file |
+| `get_disk_usage` | Free/used space on `/` and `/mnt/media` |
+| `get_log_tail` | Last N lines of rip-video, rip-cd, jellyfin, or jenkins logs |
 | `get_service_status` | systemd or Docker container status |
-| `get_system_stats` | CPU, RAM, GPU usage |
-| `get_jenkins_build_status` | Latest build result for a job |
-| `get_jenkins_build_history` | Last N builds with duration and result |
+| `get_system_stats` | CPU load, RAM, NVIDIA GPU temp/VRAM/utilisation |
+| `get_performance_history` | 7-day PCP/pmlogger time-series for cpu, memory, disk, network |
+| `get_jenkins_build_status` | Latest build result for one or all jobs |
+| `get_jenkins_build_history` | Last N builds with timing and result |
 | `get_jenkins_build_log` | Console log for a specific build |
+| `query_jellyfin` | Library stats, recently added, active streams, watch history |
+| `query_ripping` | Staging area contents, subtitle sidecar coverage, recent rip history |
 
 ## Example queries
 
 ```
-@Panda how much disk space is left on the media drive?
+@Panda how much disk space is left?
 @Panda did Nightly_Convert succeed last night?
 @Panda why did the last rip fail?
-@Panda is Jellyfin running?
-@Panda give me a full health check
+@Panda is anyone watching Jellyfin right now?
+@Panda how many movies are in the library?
+@Panda what was added to Jellyfin this week?
+@Panda which movies are missing subtitles?
+@Panda is anything sitting in the staging area?
+@Panda show CPU usage over the last 6 hours
 @Panda show me the last 3 Login_Test builds
 ```
 
