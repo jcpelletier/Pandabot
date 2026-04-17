@@ -768,6 +768,138 @@ def manage_schedule(action: str, **kwargs) -> str:
     return f"Unknown action '{action}'. Use create, list, or cancel."
 
 
+def query_media_library(action: str, path: str = "", pattern: str = "", limit: int = 20) -> str:
+    """Inspect files in the media library or staging area."""
+    ALLOWED_ROOTS = [p for p in [MEDIA_PATH, STAGING_PATH] if p]
+
+    def _is_allowed(p: str) -> bool:
+        rp = os.path.realpath(p)
+        return any(rp.startswith(os.path.realpath(root)) for root in ALLOWED_ROOTS)
+
+    def _fmt_duration(seconds: float) -> str:
+        s = int(seconds)
+        h, rem = divmod(s, 3600)
+        m, sec = divmod(rem, 60)
+        return f"{h}:{m:02d}:{sec:02d}"
+
+    VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".wmv", ".flv", ".mpg", ".mpeg"}
+
+    if action == "file_info":
+        if not path:
+            return "file_info requires a path."
+        full_path = path if os.path.isabs(path) else os.path.join(MEDIA_PATH, path)
+        full_path = os.path.normpath(full_path)
+        if not _is_allowed(full_path):
+            return f"Path not allowed. Must be under: {', '.join(ALLOWED_ROOTS)}"
+        if not os.path.exists(full_path):
+            return f"File not found: {full_path}"
+
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-print_format", "json",
+                 "-show_format", "-show_streams", full_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode != 0:
+                return f"ffprobe error: {r.stderr.strip() or 'unknown error'}"
+
+            data = json.loads(r.stdout)
+            fmt = data.get("format", {})
+            streams = data.get("streams", [])
+
+            size_bytes = int(fmt.get("size", 0))
+            duration_s = float(fmt.get("duration", 0) or 0)
+            bitrate_bps = int(fmt.get("bit_rate", 0) or 0)
+
+            lines = [
+                f"File:     {os.path.basename(full_path)}",
+                f"Size:     {_fmt_bytes(size_bytes)}",
+                f"Duration: {_fmt_duration(duration_s)}",
+            ]
+            if bitrate_bps:
+                lines.append(f"Bitrate:  {bitrate_bps // 1000:,} kbps  "
+                              f"({bitrate_bps // 1_000_000:.1f} Mbps)")
+
+            for stream in streams:
+                ctype = stream.get("codec_type", "")
+                cname = stream.get("codec_name", "?")
+                if ctype == "video":
+                    w = stream.get("width", "?")
+                    h = stream.get("height", "?")
+                    fps_raw = stream.get("r_frame_rate", "")
+                    try:
+                        n, d = fps_raw.split("/")
+                        fps = f"{int(n)/int(d):.2f} fps"
+                    except Exception:
+                        fps = fps_raw
+                    vbr = stream.get("bit_rate")
+                    vbr_str = f"  {int(vbr)//1000:,} kbps" if vbr else ""
+                    profile = stream.get("profile", "")
+                    profile_str = f" [{profile}]" if profile else ""
+                    lines.append(f"Video:    {cname}{profile_str}  {w}x{h}  {fps}{vbr_str}")
+                elif ctype == "audio":
+                    ch = stream.get("channels", "?")
+                    sr = stream.get("sample_rate", "?")
+                    lang = (stream.get("tags") or {}).get("language", "")
+                    lang_str = f" [{lang}]" if lang else ""
+                    abr = stream.get("bit_rate")
+                    abr_str = f"  {int(abr)//1000} kbps" if abr else ""
+                    lines.append(f"Audio:    {cname}  {ch}ch  {sr} Hz{abr_str}{lang_str}")
+                elif ctype == "subtitle":
+                    lang = (stream.get("tags") or {}).get("language", "")
+                    lang_str = f" [{lang}]" if lang else ""
+                    lines.append(f"Subtitle: {cname}{lang_str}")
+
+            return "\n".join(lines)
+
+        except FileNotFoundError:
+            return "ffprobe not found — install with: sudo apt install ffmpeg"
+        except Exception as e:
+            return f"Error reading file metadata: {e}"
+
+    elif action == "find_files":
+        root = path if path else MEDIA_PATH
+        if not os.path.isabs(root):
+            root = os.path.join(MEDIA_PATH, root)
+        root = os.path.normpath(root)
+        if not _is_allowed(root):
+            return f"Path not allowed. Must be under: {', '.join(ALLOWED_ROOTS)}"
+        if not os.path.isdir(root):
+            return f"Directory not found: {root}"
+
+        limit = min(max(limit, 1), 100)
+        entries = []
+        for dirpath, _, files in os.walk(root):
+            for fname in files:
+                if os.path.splitext(fname)[1].lower() not in VIDEO_EXTS:
+                    continue
+                if pattern and pattern.lower() not in fname.lower():
+                    continue
+                full = os.path.join(dirpath, fname)
+                try:
+                    stat = os.stat(full)
+                    rel = os.path.relpath(full, root)
+                    entries.append((rel, stat.st_size, stat.st_mtime))
+                except Exception:
+                    pass
+
+        if not entries:
+            msg = f"No video files found under {root}"
+            return msg + (f" matching '{pattern}'" if pattern else "") + "."
+
+        entries.sort(key=lambda x: -x[2])  # newest first
+        shown = entries[:limit]
+        total = len(entries)
+        lines = [f"Video files in {root}  ({total} total, showing {len(shown)}):"]
+        for rel, size, mtime in shown:
+            dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+            lines.append(f"  {rel}  [{_fmt_bytes(size)}]  modified {dt}")
+        return "\n".join(lines)
+
+    else:
+        return f"Unknown action '{action}'. Use: file_info, find_files"
+
+
 def get_system_stats() -> str:
     """CPU load, memory, and GPU stats."""
     parts = []
@@ -957,6 +1089,46 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["job_name"],
+        },
+    },
+    {
+        "name": "query_media_library",
+        "description": (
+            "Inspect files in the media library (/mnt/media/Media) or staging area.\n"
+            "file_info: full ffprobe metadata for one file — codec, resolution, duration, "
+            "bitrate, and all audio/subtitle tracks. Use this to answer 'why wasn't X "
+            "converted?' (check video bitrate — NVENC re-encodes land at ~3–8 Mbps; "
+            "original rips are typically 15–40 Mbps) or 'how long is this movie?'.\n"
+            "find_files: list video files in a directory with sizes and modification dates. "
+            "Path can be absolute or relative to /mnt/media/Media "
+            "(e.g. 'Movies', 'Shows/Breaking Bad', or '/mnt/media/Media/Movies')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["file_info", "find_files"],
+                    "description": "file_info: metadata for one file. find_files: list files in a directory.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "file_info: path to the file (absolute or relative to /mnt/media/Media). "
+                        "find_files: directory to scan (default: /mnt/media/Media)."
+                    ),
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "find_files only: filter to filenames containing this string (case-insensitive).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "find_files only: max results to return (1–100, default 20).",
+                    "default": 20,
+                },
+            },
+            "required": ["action"],
         },
     },
     {
@@ -1153,6 +1325,13 @@ def execute_tool(name: str, inputs: dict) -> str:
             job_name=inputs["job_name"],
             build_number=inputs.get("build_number"),
             lines=inputs.get("lines", 100),
+        )
+    if name == "query_media_library":
+        return query_media_library(
+            action=inputs["action"],
+            path=inputs.get("path", ""),
+            pattern=inputs.get("pattern", ""),
+            limit=inputs.get("limit", 20),
         )
     if name == "get_system_stats":
         return get_system_stats()

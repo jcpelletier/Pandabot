@@ -140,9 +140,11 @@ def _build_system_prompt() -> str:
           - MakeMKV + abcde for disc ripping (udev auto-rip pipeline)
 
         Hardware: NVIDIA GTX 970 (4 GB VRAM), 2 TB NTFS HDD at /mnt/media.
-        Server timezone: America/New_York (Eastern Time, EDT/EST). All timestamps
-        from tools are already in local time. When reading raw log content, treat
-        timestamps as Eastern Time — never label them UTC.
+        Server timezone: America/New_York (Eastern Time, EDT/EST).
+        Timestamps: structured tool responses (build start/end, disk checks, etc.)
+        are already converted to Eastern time. Raw console log text from Jenkins
+        also shows Eastern time (container TZ is set). App Insights data is returned
+        in UTC — convert to Eastern when reporting to the user.
 
         You have tools to check disk usage, log tails, service status, Jenkins build
         status and history, system stats, and to trigger Jenkins jobs.

@@ -15,7 +15,24 @@
 
 ---
 
-## 2. Get a Jenkins API Token
+## 2. Azure App Insights (optional — needed for `recent_rips`)
+
+The `query_ripping: recent_rips` query and bot telemetry require an Azure App Registration with API access to your Application Insights resource.
+
+1. In the Azure Portal → **Entra ID → App registrations → New registration** → name it (e.g. `pandabot`)
+2. Copy **Application (client) ID** → `.env` as `AZURE_CLIENT_ID`
+3. Copy **Directory (tenant) ID** → `.env` as `AZURE_TENANT_ID`
+4. **Certificates & secrets → New client secret** → copy value → `.env` as `AZURE_CLIENT_SECRET`
+5. Go to your **Application Insights resource → Access control (IAM) → Add role assignment**
+   - Role: **Monitoring Reader**
+   - Assign to the app registration from step 1
+6. Copy the **Application ID** from App Insights → Overview → `.env` as `APPINSIGHTS_APP_ID`
+7. Copy the **Instrumentation Key** → `.env` as `APPINSIGHTS_IKEY`
+8. Set `APPINSIGHTS_ENDPOINT` to your regional ingestion endpoint (shown in App Insights → Overview → Connection String)
+
+---
+
+## 3. Get a Jenkins API Token
 
 1. Browse to http://panda:8080
 2. Top-right → your username → **Configure**
@@ -24,7 +41,7 @@
 
 ---
 
-## 3. Install on the Server
+## 4. Install on the Server
 
 ```bash
 # SSH into the server and run the installer
@@ -40,7 +57,7 @@ The installer will:
 
 ---
 
-## 4. Configure .env
+## 5. Configure .env
 
 ```bash
 sudo nano /opt/discord-bot/.env
@@ -54,7 +71,7 @@ openssl rand -hex 24
 
 ---
 
-## 5. Start the Bot
+## 6. Start the Bot
 
 ```bash
 sudo systemctl enable --now discord-bot
@@ -70,7 +87,7 @@ Logged in as Panda#1234 (id=...)
 
 ---
 
-## 6. Wire Jenkins Notifications
+## 7. Wire Jenkins Notifications
 
 Add this as a post-build **Execute shell** step in each Jenkins job you want
 notifications from.  The script reads `$BUILD_RESULT` which Jenkins sets
@@ -104,7 +121,19 @@ post {
 
 ---
 
-## 7. Test it
+## 8. Jenkins Timezone
+
+Jenkins runs in a Docker container. Set its timezone so build log timestamps match the server:
+
+```bash
+# Add TZ to /opt/jenkins/docker-compose.yml under environment:
+#   - TZ=America/New_York
+sudo docker compose -f /opt/jenkins/docker-compose.yml up -d --force-recreate jenkins
+```
+
+---
+
+## 9. Test it
 
 **Test the webhook directly** (on the server):
 
