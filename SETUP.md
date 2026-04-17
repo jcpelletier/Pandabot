@@ -121,7 +121,22 @@ post {
 
 ---
 
-## 8. Jenkins Timezone
+## 8. SMART Drive Health
+
+`install.sh` installs `smartmontools` and grants `smartctl` the Linux capabilities
+it needs to read drive data without `sudo` (compatible with the service's
+`NoNewPrivileges=true` hardening):
+
+```bash
+sudo apt install smartmontools libcap2-bin
+sudo setcap cap_sys_rawio,cap_dac_read_search+ep /usr/sbin/smartctl
+```
+
+No sudoers entry needed. Ask `@Panda check drive health` to use it.
+
+---
+
+## 9. Jenkins Timezone
 
 Jenkins runs in a Docker container. Set its timezone so build log timestamps match the server:
 

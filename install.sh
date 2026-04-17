@@ -17,7 +17,11 @@ fi
 usermod -aG docker "$BOT_USER"
 
 echo "==> Installing system dependencies"
-apt-get install -y --no-install-recommends ffmpeg smartmontools
+apt-get install -y --no-install-recommends ffmpeg smartmontools libcap2-bin
+
+# Grant smartctl the capability to read raw drive data without sudo.
+# This avoids NoNewPrivileges conflicts in the systemd service.
+setcap cap_sys_rawio,cap_dac_read_search+ep /usr/sbin/smartctl
 
 echo "==> Cloning / updating repo"
 if [ -d "$BOT_DIR/.git" ]; then

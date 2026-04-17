@@ -765,7 +765,7 @@ def query_system_health(aspect: str = "stats") -> str:
         for device, label in DEVICES:
             try:
                 r = subprocess.run(
-                    ["sudo", "smartctl", "-H", "-A", device],
+                    ["smartctl", "-H", "-A", device],
                     capture_output=True, text=True, timeout=15,
                 )
                 out = r.stdout
