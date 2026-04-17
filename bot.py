@@ -305,12 +305,23 @@ async def on_message(message: discord.Message):
         await message.channel.send("Hey! Ask me anything about the server status.")
         return
 
-    async with message.channel.typing():
+    async def _keep_typing():
+        """Re-trigger the typing indicator every 8s so it stays visible for long queries."""
         try:
-            reply = await handle_claude_query(content, message)
-        except Exception as e:
-            log.exception("Claude query failed")
-            reply = f"Error talking to Claude: {e}"
+            while True:
+                await message.channel.typing()
+                await asyncio.sleep(8)
+        except asyncio.CancelledError:
+            pass
+
+    typing_task = asyncio.create_task(_keep_typing())
+    try:
+        reply = await handle_claude_query(content, message)
+    except Exception as e:
+        log.exception("Claude query failed")
+        reply = f"Error talking to Claude: {e}"
+    finally:
+        typing_task.cancel()
 
     for chunk in split_message(reply):
         await message.channel.send(chunk)
