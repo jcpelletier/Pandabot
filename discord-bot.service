@@ -1,0 +1,28 @@
+[Unit]
+Description=Panda Discord LLM Bot
+Documentation=https://github.com/jcpelletier/panda
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=discord-bot
+Group=discord-bot
+WorkingDirectory=/opt/discord-bot
+EnvironmentFile=/opt/discord-bot/.env
+ExecStart=/opt/discord-bot/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=discord-bot
+
+# Hardening — the bot needs network, /proc, Docker socket, and log files
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/log
+ReadOnlyPaths=/mnt/media
+
+[Install]
+WantedBy=multi-user.target

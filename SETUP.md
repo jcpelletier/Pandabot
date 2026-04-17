@@ -1,0 +1,142 @@
+# Discord Bot Setup Guide
+
+## 1. Create the Discord Application & Bot
+
+1. Go to https://discord.com/developers/applications → **New Application** → name it "Panda"
+2. Left sidebar → **Bot** → **Add Bot** → confirm
+3. Under **Privileged Gateway Intents**, enable **Message Content Intent**
+4. Copy the **Token** → this goes into `.env` as `DISCORD_TOKEN`
+5. Left sidebar → **OAuth2 → URL Generator**
+   - Scopes: `bot`
+   - Bot Permissions: `Send Messages`, `Read Message History`, `View Channels`
+   - Copy the generated URL → open it → invite the bot to your server
+6. In Discord: **Settings → Advanced → Developer Mode** (on)
+7. Right-click your target channel → **Copy Channel ID** → paste into `.env` as `DISCORD_CHANNEL_ID`
+
+---
+
+## 2. Get a Jenkins API Token
+
+1. Browse to http://panda:8080 (Tailscale) or http://192.168.1.100:8080
+2. Top-right → your username → **Configure**
+3. **API Token** section → **Add new Token** → generate → copy it
+4. Paste into `.env` as `JENKINS_TOKEN`
+
+---
+
+## 3. Install on the Server
+
+```bash
+# From your Windows machine — copy the files
+scp -i ~/.ssh/id_ed25519 -r discord-bot/ genesis@192.168.1.100:/tmp/discord-bot
+
+# On the server
+ssh genesis@192.168.1.100
+cd /tmp/discord-bot
+sudo bash install.sh
+```
+
+The installer will:
+- Create a `discord-bot` system user (no login shell)
+- Add it to the `docker` group (needed for `docker logs`)
+- Create `/opt/discord-bot/` with a Python venv
+- Install the systemd unit file
+
+---
+
+## 4. Configure .env
+
+```bash
+sudo nano /opt/discord-bot/.env
+```
+
+Fill in every value.  Generate a webhook secret with:
+
+```bash
+openssl rand -hex 24
+```
+
+---
+
+## 5. Start the Bot
+
+```bash
+sudo systemctl enable --now discord-bot
+sudo journalctl -fu discord-bot
+```
+
+You should see:
+
+```
+Webhook server listening on 127.0.0.1:8765/notify
+Logged in as Panda#1234 (id=...)
+```
+
+---
+
+## 6. Wire Jenkins Notifications
+
+Add this as a post-build **Execute shell** step in each Jenkins job you want
+notifications from.  The script reads `$BUILD_RESULT` which Jenkins sets
+automatically after the build.
+
+### For Login_Test (hourly — notify on all results so you see outages):
+
+```groovy
+// In Jenkins Pipeline (Jenkinsfile) — add a post block:
+post {
+    always {
+        sh '''
+          /opt/discord-bot/notify-discord.sh \
+            "${JOB_NAME}" "${currentBuild.result ?: 'SUCCESS'}" \
+            "${BUILD_NUMBER}" "${BUILD_URL}"
+        '''
+    }
+}
+```
+
+### Or as a freestyle job "Post-build Action → Execute shell":
+
+```bash
+/opt/discord-bot/notify-discord.sh \
+  "$JOB_NAME" "$BUILD_RESULT" "$BUILD_NUMBER" "$BUILD_URL"
+```
+
+> Tip: for Process_Movies and Nightly_Convert you probably only want failure
+> alerts.  Wrap the call in `[ "$BUILD_RESULT" != "SUCCESS" ] && ...` or use
+> the Jenkinsfile `post { failure { ... } }` block.
+
+---
+
+## 7. Test it
+
+**Test the webhook directly** (on the server):
+
+```bash
+source /opt/discord-bot/.env
+curl -s -X POST http://127.0.0.1:8765/notify \
+  -H "Content-Type: application/json" \
+  -d "{\"secret\":\"$WEBHOOK_SECRET\",\"job_name\":\"Test\",\"status\":\"FAILURE\",\"build_number\":1,\"build_url\":\"http://example.com\",\"message\":\"webhook test\"}"
+```
+
+**Test the bot** — mention it in Discord:
+
+```
+@Panda how much disk space is left on the media drive?
+@Panda what did the last Login_Test run do?
+@Panda is Jellyfin running?
+@Panda show me the last 20 lines of the rip-video log
+```
+
+---
+
+## Conversation examples
+
+| You ask | Claude calls |
+|---|---|
+| "how much space left on media drive?" | `get_disk_usage` |
+| "did last night's convert job succeed?" | `get_jenkins_build_status(Nightly_Convert)` |
+| "is sunshine running?" | `get_service_status(sunshine)` |
+| "what's the GPU doing?" | `get_system_stats` |
+| "why did the last rip fail?" | `get_log_tail(rip-video, 100)` |
+| "give me a full health check" | all five tools |

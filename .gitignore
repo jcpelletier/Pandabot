@@ -1,0 +1,14 @@
+# Environment — never commit credentials
+.env
+.env.*
+!.env.example
+
+# Python virtualenv
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+*.log
