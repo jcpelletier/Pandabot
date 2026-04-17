@@ -16,8 +16,37 @@ JENKINS_USER   = os.environ.get("JENKINS_USER", "admin")
 JENKINS_TOKEN  = os.environ.get("JENKINS_TOKEN", "")
 JELLYFIN_URL        = os.environ.get("JELLYFIN_URL", "http://localhost:8096")
 JELLYFIN_TOKEN      = os.environ.get("JELLYFIN_API_KEY", "")
-APPINSIGHTS_APP_ID  = os.environ.get("APPINSIGHTS_APP_ID", "")
-APPINSIGHTS_API_KEY = os.environ.get("APPINSIGHTS_API_KEY", "")
+APPINSIGHTS_APP_ID      = os.environ.get("APPINSIGHTS_APP_ID", "")
+AZURE_TENANT_ID         = os.environ.get("AZURE_TENANT_ID", "")
+AZURE_CLIENT_ID         = os.environ.get("AZURE_CLIENT_ID", "")
+AZURE_CLIENT_SECRET     = os.environ.get("AZURE_CLIENT_SECRET", "")
+
+# Token cache — refreshed automatically when expired
+_ai_token_cache: dict = {"token": None, "expires": 0.0}
+
+
+def _get_appinsights_token() -> str:
+    """Return a valid Azure AD bearer token for the App Insights query API.
+    Tokens are cached for their lifetime (~1 hour) to avoid unnecessary requests."""
+    import time
+    cache = _ai_token_cache
+    if cache["token"] and time.time() < cache["expires"] - 60:
+        return cache["token"]
+    resp = requests.post(
+        f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/oauth2/token",
+        data={
+            "grant_type":    "client_credentials",
+            "client_id":     AZURE_CLIENT_ID,
+            "client_secret": AZURE_CLIENT_SECRET,
+            "resource":      "https://api.applicationinsights.io",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    cache["token"]   = data["access_token"]
+    cache["expires"] = time.time() + int(data.get("expires_in", 3600))
+    return cache["token"]
 STAGING_PATH        = os.environ.get("STAGING_PATH", "/mnt/media/Video")
 MEDIA_PATH          = os.environ.get("MEDIA_PATH", "/mnt/media/Media")
 
@@ -427,13 +456,17 @@ def query_ripping(query_type: str = "staging") -> str:
         return "\n".join(lines)
 
     elif query_type == "recent_rips":
-        if not APPINSIGHTS_APP_ID or not APPINSIGHTS_API_KEY:
+        if not all([APPINSIGHTS_APP_ID, AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET]):
             return (
-                "App Insights query credentials not configured.\n"
-                "Add APPINSIGHTS_APP_ID and APPINSIGHTS_API_KEY to .env.\n"
-                "(App Insights → Configure → API Access → create a read-only key)"
+                "App Insights query not configured. Add to .env:\n"
+                "  APPINSIGHTS_APP_ID    — App Insights → Overview → Application ID\n"
+                "  AZURE_TENANT_ID       — Entra ID → App registrations → your app\n"
+                "  AZURE_CLIENT_ID       — same page\n"
+                "  AZURE_CLIENT_SECRET   — Certificates & secrets\n"
+                "(App registration needs Monitoring Reader role on the App Insights resource)"
             )
         try:
+            token = _get_appinsights_token()
             query = (
                 "customEvents "
                 "| where name == 'RipCompleted' "
@@ -450,7 +483,7 @@ def query_ripping(query_type: str = "staging") -> str:
             )
             resp = requests.post(
                 f"https://api.applicationinsights.io/v1/apps/{APPINSIGHTS_APP_ID}/query",
-                headers={"x-api-key": APPINSIGHTS_API_KEY, "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json={"query": query},
                 timeout=15,
             )
