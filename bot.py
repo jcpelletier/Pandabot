@@ -79,7 +79,7 @@ def _ai_event(name: str, **props: str) -> None:
     import threading, json as _json, urllib.request
     payload = _json.dumps([{
         "name": "Microsoft.ApplicationInsights.Event",
-        "time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "time": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
         "iKey": AI_IKEY,
         "tags": {"ai.cloud.roleName": "pandabot", "ai.device.type": "Other"},
         "data": {"baseType": "EventData", "baseData": {
@@ -108,7 +108,7 @@ def _ai_trace(severity: str, message: str, **props: str) -> None:
     )
     payload = _json.dumps([{
         "name": "Microsoft.ApplicationInsights.Message",
-        "time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "time": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
         "iKey": AI_IKEY,
         "tags": {"ai.cloud.roleName": "pandabot", "ai.device.type": "Other"},
         "data": {"baseType": "MessageData", "baseData": {
