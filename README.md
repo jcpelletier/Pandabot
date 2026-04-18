@@ -170,13 +170,49 @@ See [SETUP.md §7](SETUP.md#7-wire-jenkins-notifications) for how to POST build 
 
 ### 7. Set up a weekly digest (optional)
 
-The bot doesn't run a weekly digest automatically — create one via Discord on first use:
+The bot doesn't run a weekly digest automatically — create one as a recurring scheduled task via Discord:
 
 ```
-@Panda set up a recurring digest every Sunday at 9am. Include CPU and memory 
-for the past week, Jellyfin additions this week, Jenkins job health for the 
+@Panda set up a recurring digest every Sunday at 9am. Include CPU and memory
+for the past week, Jellyfin additions this week, Jenkins job health for the
 past 7 days, disk usage, and any failed systemd units or pending updates.
 ```
+
+See the [Scheduler](#scheduler) section for more on one-shot, recurring, and condition-check tasks.
+
+---
+
+## Scheduler
+
+The bot has a built-in task scheduler backed by SQLite. Tasks survive restarts and fire without an LLM call at fire time (no API cost). Just ask in plain English — Claude creates the task automatically.
+
+**One-shot** — fire once at a specific time:
+```
+@Panda remind me at 9am tomorrow how much disk space is left
+@Panda check whether the Nightly_Convert job finished in 45 minutes
+```
+
+**Recurring** — repeat on a schedule:
+```
+@Panda check disk space every day at 8am
+@Panda show me Jenkins job health every Monday at 7am
+@Panda set up a recurring digest every Sunday at 9am. Include CPU and memory
+for the past week, Jellyfin additions this week, Jenkins job health for the
+past 7 days, disk usage, and any failed systemd units or pending updates.
+```
+
+**Condition check** — retry until something is true:
+```
+@Panda keep checking the Nightly_Convert build every 5 minutes until it finishes
+```
+
+**Managing tasks:**
+```
+@Panda what tasks do I have scheduled?
+@Panda cancel task 3
+```
+
+Tasks are created and cancelled through the same natural-language interface — no commands to memorize.
 
 ---
 
@@ -190,8 +226,6 @@ past 7 days, disk usage, and any failed systemd units or pending updates.
 @Panda are there any failed systemd units?
 @Panda are there any pending updates?
 @Panda what's listening on the network?
-@Panda remind me at 9am tomorrow how much disk space is left
-@Panda check disk space every day at 8am
 ```
 
 **Requires `ENABLE_JENKINS=true`:**
