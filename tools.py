@@ -645,13 +645,13 @@ def query_ripping(query_type: str = "staging") -> str:
                 "customEvents "
                 "| where name == 'RipCompleted' "
                 "| where timestamp > ago(30d) "
-                "| extend title  = tostring(customDimensions.disc_title), "
+                "| extend disc_title = tostring(customDimensions.disc_title), "
                 "         artist = tostring(customDimensions.artist), "
                 "         album  = tostring(customDimensions.album), "
                 "         tracks = tostring(customDimensions.track_count), "
                 "         size   = tostring(customDimensions.final_size), "
                 "         role   = cloud_RoleName "
-                "| project timestamp, role, title, artist, album, tracks, size "
+                "| project timestamp, role, disc_title, artist, album, tracks, size "
                 "| order by timestamp desc "
                 "| take 20"
             )
@@ -667,7 +667,8 @@ def query_ripping(query_type: str = "staging") -> str:
                 return "No rip events found in the last 30 days."
             lines = [f"Last {len(rows)} rips (30-day window):"]
             for row in rows:
-                ts, role, title, artist, album, tracks, size = row
+                ts, role, disc_title, artist, album, tracks, size = row
+                title = disc_title
                 # App Insights returns UTC ISO 8601 — convert to server local time
                 try:
                     utc_dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
