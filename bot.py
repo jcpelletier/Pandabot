@@ -131,7 +131,7 @@ def _build_system_prompt() -> str:
         ENABLE_JELLYFIN, ENABLE_JENKINS, ENABLE_RIPPING,
         JENKINS_JOBS, ALLOWED_SYSTEMD_SERVICES,
     )
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M %Z")
+    now = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
 
     # --- Services block ---
     if SERVER_DESCRIPTION:

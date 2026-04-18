@@ -146,7 +146,7 @@ def _fmt_timestamp(ms: int) -> str:
     """Format a Jenkins millisecond epoch timestamp in server local time."""
     if not ms:
         return "unknown"
-    dt = datetime.datetime.fromtimestamp(ms / 1000)  # local time (server TZ)
+    dt = datetime.datetime.fromtimestamp(ms / 1000).astimezone()  # local time with TZ
     return dt.strftime("%Y-%m-%d %H:%M %Z")
 
 
