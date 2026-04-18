@@ -184,7 +184,9 @@ See the [Scheduler](#scheduler) section for more on one-shot, recurring, and con
 
 ## Scheduler
 
-The bot has a built-in task scheduler backed by SQLite. Tasks survive restarts and fire without an LLM call at fire time (no API cost). Just ask in plain English — Claude creates the task automatically.
+The bot has a built-in task scheduler backed by SQLite. Tasks survive restarts. Just ask in plain English — Claude creates the task automatically.
+
+Most tasks run their pre-decided tool calls and post a static result at fire time — no LLM call, no API cost. Tasks that include a `generative_prompt` (asking Claude to synthesize the results into a narrative) do make a small Haiku call at fire time. The weekly digest example below uses one; a simple "check disk space at 8am" does not.
 
 **One-shot** — fire once at a specific time:
 ```
