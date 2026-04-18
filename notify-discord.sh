@@ -41,9 +41,16 @@ print(json.dumps({
 PYEOF
 )
 
+# Use host-gateway when running inside Docker (Jenkins container);
+# falls back to 127.0.0.1 when running directly on the host.
+WEBHOOK_HOST="127.0.0.1"
+if getent hosts host-gateway >/dev/null 2>&1; then
+  WEBHOOK_HOST="host-gateway"
+fi
+
 curl -sf \
   -X POST \
   -H "Content-Type: application/json" \
   -d "$PAYLOAD" \
-  "http://127.0.0.1:${WEBHOOK_PORT}/notify" \
+  "http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/notify" \
 || echo "WARNING: Discord notification failed (bot may be down)"

@@ -436,9 +436,9 @@ async def start_webhook_server():
     app.router.add_post("/notify", handle_notify)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", WEBHOOK_PORT)
+    site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
     await site.start()
-    log.info("Webhook server listening on 127.0.0.1:%d/notify", WEBHOOK_PORT)
+    log.info("Webhook server listening on 0.0.0.0:%d/notify", WEBHOOK_PORT)
 
 
 # ---------------------------------------------------------------------------
