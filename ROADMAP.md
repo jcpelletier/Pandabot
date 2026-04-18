@@ -1,6 +1,6 @@
-# PandaBot — Feature Roadmap
+# Panda — Feature Roadmap
 
-This document tracks planned tools and capabilities for PandaBot.
+This document tracks planned tools and capabilities for Panda.
 
 ## Model
 
