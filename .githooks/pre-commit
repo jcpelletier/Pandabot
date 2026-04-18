@@ -1,6 +1,16 @@
 #!/bin/sh
+# Run tests first — abort commit if any fail (avoids burning a version number on a broken build).
+REPO="$(git rev-parse --show-toplevel)"
+echo "Running tests..."
+python -m pytest "$REPO/tests" -q --tb=short 2>&1
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "Tests failed — commit aborted. Fix the failures or use --no-verify to skip."
+    exit 1
+fi
+
 # Auto-increment VERSION on every commit.
-VERSION_FILE="$(git rev-parse --show-toplevel)/VERSION"
+VERSION_FILE="$REPO/VERSION"
 current=$(cat "$VERSION_FILE" | tr -d '[:space:]')
 next=$((current + 1))
 printf '%s\n' "$next" > "$VERSION_FILE"
