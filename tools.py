@@ -1237,20 +1237,30 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
     import time
     import errno as _errno
 
-    def _remove(path: str, retries: int = 3, delay: float = 1.5) -> None:
-        """Remove a file, retrying on transient EROFS (ntfs-3g checkpoint windows)."""
+    def _remove(path: str, retries: int = 6, delay: float = 3.0) -> None:
+        """Remove a file, retrying on transient EROFS (ntfs-3g checkpoint windows).
+        Up to 6 retries × 3 s = 18 s window, which covers observed checkpoint durations."""
         last_err: Exception = OSError("no attempts made")
-        for _ in range(retries):
+        for attempt in range(retries):
             try:
                 os.remove(path)
                 return
             except OSError as e:
                 if e.errno == _errno.EROFS:
                     last_err = e
+                    log.debug("EROFS on attempt %d for %s, retrying in %.1fs", attempt + 1, path, delay)
                     time.sleep(delay)
                     continue
                 raise
         raise last_err
+
+    def _sync_before_write() -> None:
+        """Force kernel buffer flush so ntfs-3g clears any pending dirty-bit transactions."""
+        try:
+            os.sync()
+            time.sleep(0.5)
+        except Exception:
+            pass
 
     ALLOWED_ROOTS = [p for p in [MEDIA_PATH, STAGING_PATH] if p]
 
@@ -1323,6 +1333,7 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
             ]
             return "\n".join(lines)
 
+        _sync_before_write()
         try:
             if os.path.isfile(src):
                 _remove(src)
@@ -1522,6 +1533,7 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
             return "\n".join(lines)
 
         errors: list[str] = []
+        _sync_before_write()
         done = 0
         for f in matches:
             try:
