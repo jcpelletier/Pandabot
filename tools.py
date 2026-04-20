@@ -1383,8 +1383,77 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
         except Exception as e:
             return f"Move failed: {e}"
 
+    # ── rename_all ────────────────────────────────────────────────────────────
+    elif action == "rename_all":
+        if not os.path.isdir(src):
+            return f"rename_all requires source to be a directory: {src}"
+
+        pattern = dest or "rip_{n:02d}"
+
+        try:
+            entries = sorted(
+                f for f in os.listdir(src)
+                if os.path.isfile(os.path.join(src, f))
+            )
+        except OSError as e:
+            return f"Could not list directory: {e}"
+
+        if not entries:
+            return f"No files found in: {src}"
+
+        # Build rename plan — preserve each file's original extension
+        plan: list[tuple[str, str]] = []
+        for i, fname in enumerate(entries, start=1):
+            ext = os.path.splitext(fname)[1]
+            try:
+                new_name = pattern.format(n=i) + ext
+            except (KeyError, ValueError) as e:
+                return (
+                    f"Invalid pattern '{pattern}': {e}. "
+                    "Use {{n}} as the counter placeholder, e.g. rip_{{n:02d}}."
+                )
+            plan.append((fname, new_name))
+
+        # Reject patterns that produce duplicates (e.g. a pattern with no {n})
+        new_names = [p[1] for p in plan]
+        if len(new_names) != len(set(new_names)):
+            return (
+                "Pattern would produce duplicate filenames — include {n} "
+                "as a counter, e.g. rip_{n:02d}."
+            )
+
+        if not confirmed:
+            col = max(len(old) for old, _ in plan)
+            lines = [
+                f"Ready to rename {len(plan)} file(s) in:",
+                f"  {src}",
+                "",
+            ]
+            for old_name, new_name in plan:
+                lines.append(f"  {old_name:<{col}}  →  {new_name}")
+            lines += ["", "Reply **yes** to confirm."]
+            return "\n".join(lines)
+
+        errors: list[str] = []
+        done = 0
+        for old_name, new_name in plan:
+            if old_name == new_name:
+                done += 1
+                continue
+            old_path = os.path.join(src, old_name)
+            new_path = os.path.join(src, new_name)
+            try:
+                os.rename(old_path, new_path)
+                done += 1
+            except Exception as e:
+                errors.append(f"{old_name}: {e}")
+
+        if errors:
+            return f"Renamed {done}/{len(plan)} files. Errors:\n" + "\n".join(errors)
+        return f"✅ Renamed {done} file(s) in {src}"
+
     else:
-        return f"Unknown action '{action}'. Use: move, rename, or delete."
+        return f"Unknown action '{action}'. Use: delete, rename, rename_all, or move."
 
 
 def query_media_library(action: str, path: str = "", pattern: str = "", limit: int = 20) -> str:
@@ -2058,7 +2127,10 @@ def _build_tool_definitions() -> list[dict]:
                 "ALWAYS call with confirmed=False first to show the user a preview. "
                 "Only call with confirmed=True after the user explicitly says yes. "
                 "delete: removes a file or entire directory tree (shows full manifest in preview). "
-                "rename: renames in-place — dest must be a bare filename, no path separators. "
+                "rename: renames a single file or folder in-place — dest must be a bare name, no path separators. "
+                "rename_all: renames every file in a directory to sequential generic names in one operation — "
+                "dest is the name pattern (e.g. rip_{n:02d}); file extensions are preserved; "
+                "use this to bulk-reset identified media filenames back to generic rip names for reprocessing. "
                 "move: relocates source to dest directory or full destination path."
             ),
             "input_schema": {
@@ -2066,7 +2138,7 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["move", "rename", "delete"],
+                        "enum": ["move", "rename", "rename_all", "delete"],
                         "description": "Operation to perform.",
                     },
                     "source": {
@@ -2081,6 +2153,8 @@ def _build_tool_definitions() -> list[dict]:
                         "description": (
                             "For move: target directory or full destination path. "
                             "For rename: new bare filename (no slashes). "
+                            "For rename_all: name pattern with {n} as the counter, e.g. rip_{n:02d} "
+                            "(default: rip_{n:02d}). Extensions are always preserved. "
                             "Not used for delete."
                         ),
                         "default": "",
