@@ -63,9 +63,9 @@ def dm(source, dest, confirmed=False):
 # ---------------------------------------------------------------------------
 
 class TestPreview:
-    def test_preview_shows_matching_filenames(self, sandbox):
+    def test_preview_shows_source_directory(self, sandbox):
         result = dm(str(sandbox["season"]), "*.srt")
-        assert "episode_01.eng.srt" in result
+        assert str(sandbox["season"]) in result
 
     def test_preview_shows_file_count(self, sandbox):
         result = dm(str(sandbox["season"]), "*.srt")
@@ -76,9 +76,16 @@ class TestPreview:
         result = dm(str(sandbox["season"]), "*.srt")
         assert "total" in result.lower() or "B" in result
 
-    def test_preview_includes_subdirectory_files(self, sandbox):
+    def test_preview_shows_subdirectory_name(self, sandbox):
+        # Extras subdir should appear by name in the grouped breakdown
         result = dm(str(sandbox["season"]), "*.srt")
-        assert "extra_01.eng.srt" in result
+        assert "Extras" in result
+
+    def test_preview_shows_per_dir_count(self, sandbox):
+        # Top-level has 3 srt files, Extras has 1
+        result = dm(str(sandbox["season"]), "*.srt")
+        assert "3" in result  # top-level count
+        assert "1" in result  # Extras count
 
     def test_preview_warns_cannot_be_undone(self, sandbox):
         result = dm(str(sandbox["season"]), "*.srt")
@@ -92,10 +99,10 @@ class TestPreview:
         result = dm(str(sandbox["season"]), "*.sup")
         assert "no files" in result.lower()
 
-    def test_multi_pattern_preview(self, sandbox):
+    def test_multi_pattern_preview_shows_both_counts(self, sandbox):
+        # 3 srt + 2 mkv in top-level, 1 srt + 1 mkv in Extras = 7 total
         result = dm(str(sandbox["season"]), "*.srt,*.mkv")
-        assert "episode_01.mkv" in result
-        assert "episode_01.eng.srt" in result
+        assert "7" in result
 
 
 # ---------------------------------------------------------------------------

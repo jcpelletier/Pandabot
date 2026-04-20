@@ -1478,19 +1478,26 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
         )
 
         if not confirmed:
-            shown = matches[:25]
+            # Group by subdirectory: show count + size per folder, not individual files
+            from collections import defaultdict
+            by_dir: dict[str, list[str]] = defaultdict(list)
+            for f in matches:
+                rel_dir = os.path.relpath(os.path.dirname(f), src)
+                by_dir[rel_dir].append(f)
+
             lines = [
                 f"Ready to delete {len(matches)} file(s) matching {dest!r} under:",
                 f"  {src}",
                 "",
             ]
-            for f in shown:
-                lines.append(f"  {os.path.relpath(f, src)}")
-            if len(matches) > 25:
-                lines.append(f"  … and {len(matches) - 25} more")
+            for rel_dir in sorted(by_dir):
+                dir_files = by_dir[rel_dir]
+                dir_bytes = sum(os.path.getsize(f) for f in dir_files if os.path.exists(f))
+                display = "." if rel_dir == "." else rel_dir
+                lines.append(f"  {display}/  — {len(dir_files)} file(s), {_fmt_bytes(dir_bytes)}")
             lines += [
                 "",
-                f"Total: {_fmt_bytes(total_bytes)}",
+                f"Total: {len(matches)} file(s), {_fmt_bytes(total_bytes)}",
                 "",
                 "⚠️ This cannot be undone. Reply **yes** to confirm.",
             ]
