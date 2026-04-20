@@ -1227,7 +1227,7 @@ def manage_schedule(action: str, **kwargs) -> str:
     return f"Unknown action '{action}'. Use create, list, or cancel."
 
 
-def take_action(action: str, source: str, dest: str = "", confirmed: bool = False) -> str:
+def manage_files(action: str, source: str, dest: str = "", confirmed: bool = False) -> str:
     """
     Move, rename, or delete files and folders within the media library.
     All paths must stay within MEDIA_PATH or STAGING_PATH.
@@ -2051,7 +2051,7 @@ def _build_tool_definitions() -> list[dict]:
     if ENABLE_WRITE_ACTIONS:
         _roots_desc = ", ".join(p for p in [MEDIA_PATH, STAGING_PATH] if p)
         tools.append({
-            "name": "take_action",
+            "name": "manage_files",
             "description": (
                 f"Move, rename, or delete files and folders inside the media library ({_roots_desc}). "
                 "All operations are restricted to those paths — no escaping to the filesystem. "
@@ -2191,8 +2191,8 @@ def execute_tool(name: str, inputs: dict) -> str:
     if name == "manage_schedule":
         action = inputs.pop("action", "list")
         return manage_schedule(action, **inputs)
-    if name == "take_action":
-        return take_action(
+    if name in ("take_action", "manage_files"):   # take_action: backward compat
+        return manage_files(
             action=inputs["action"],
             source=inputs["source"],
             dest=inputs.get("dest", ""),

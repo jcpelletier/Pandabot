@@ -178,9 +178,9 @@ def _build_system_prompt() -> str:
           - Only call with confirmed=true after the user explicitly replies 'yes'.
 
         When the user asks to move, rename, or delete files in the media library:
-          - Always call take_action with confirmed=false first to show a preview.
+          - Always call manage_files with confirmed=false first to show a preview.
           - Present the preview to the user and explicitly ask them to confirm.
-          - Only call take_action with confirmed=true after the user explicitly says yes.
+          - Only call manage_files with confirmed=true after the user explicitly says yes.
           - Never batch multiple destructive operations into one confirmed=true call
             unless the user has reviewed the full preview for each one.
         """)

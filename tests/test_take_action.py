@@ -1,5 +1,5 @@
 """
-Tests for take_action — move / rename / delete with confirmation gate.
+Tests for manage_files — move / rename / delete with confirmation gate.
 
 All tests use tmp_path for an isolated, real filesystem sandbox.
 MEDIA_PATH and STAGING_PATH are monkeypatched to point at subdirs inside
@@ -78,7 +78,7 @@ def sandbox(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def ta(action, source, dest="", confirmed=False):
-    return tools.take_action(action=action, source=source, dest=dest, confirmed=confirmed)
+    return tools.manage_files(action=action, source=source, dest=dest, confirmed=confirmed)
 
 
 # ---------------------------------------------------------------------------
