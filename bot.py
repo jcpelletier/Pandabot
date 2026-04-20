@@ -180,7 +180,10 @@ def _build_system_prompt() -> str:
         When the user asks to move, rename, or delete files in the media library:
           - Always call manage_files with confirmed=false first to show a preview.
           - Present the preview to the user and explicitly ask them to confirm.
-          - Only call manage_files with confirmed=true after the user explicitly says yes.
+          - When the user says yes after a preview, you MUST call manage_files with
+            confirmed=true immediately. Never assume or predict the outcome — you must
+            actually invoke the tool. The result may differ from previous attempts.
+          - Never report a success or failure without having made the confirmed=true call.
           - Never batch multiple destructive operations into one confirmed=true call
             unless the user has reviewed the full preview for each one.
         """)
