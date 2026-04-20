@@ -1452,8 +1452,68 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
             return f"Renamed {done}/{len(plan)} files. Errors:\n" + "\n".join(errors)
         return f"✅ Renamed {done} file(s) in {src}"
 
+    # ── delete_matching ───────────────────────────────────────────────────────
+    elif action == "delete_matching":
+        if not os.path.isdir(src):
+            return f"delete_matching requires source to be a directory: {src}"
+        if not dest:
+            return "delete_matching requires dest — a glob pattern like *.srt or *.srt,*.ass,*.sup"
+
+        import fnmatch
+        patterns = [p.strip() for p in dest.split(",") if p.strip()]
+
+        # Collect matching files recursively
+        matches: list[str] = []
+        for dirpath, _, filenames in os.walk(src):
+            for fname in sorted(filenames):
+                if any(fnmatch.fnmatch(fname, pat) for pat in patterns):
+                    matches.append(os.path.join(dirpath, fname))
+        matches.sort()
+
+        if not matches:
+            return f"No files matching {dest!r} found under {src}"
+
+        total_bytes = sum(
+            os.path.getsize(f) for f in matches if os.path.exists(f)
+        )
+
+        if not confirmed:
+            shown = matches[:25]
+            lines = [
+                f"Ready to delete {len(matches)} file(s) matching {dest!r} under:",
+                f"  {src}",
+                "",
+            ]
+            for f in shown:
+                lines.append(f"  {os.path.relpath(f, src)}")
+            if len(matches) > 25:
+                lines.append(f"  … and {len(matches) - 25} more")
+            lines += [
+                "",
+                f"Total: {_fmt_bytes(total_bytes)}",
+                "",
+                "⚠️ This cannot be undone. Reply **yes** to confirm.",
+            ]
+            return "\n".join(lines)
+
+        errors: list[str] = []
+        done = 0
+        for f in matches:
+            try:
+                os.remove(f)
+                done += 1
+            except Exception as e:
+                errors.append(f"{os.path.relpath(f, src)}: {e}")
+
+        if errors:
+            return (
+                f"Deleted {done}/{len(matches)} files. Errors:\n"
+                + "\n".join(errors)
+            )
+        return f"✅ Deleted {done} file(s) matching {dest!r} from {src}"
+
     else:
-        return f"Unknown action '{action}'. Use: delete, rename, rename_all, or move."
+        return f"Unknown action '{action}'. Use: delete, delete_matching, rename, rename_all, or move."
 
 
 def query_media_library(action: str, path: str = "", pattern: str = "", limit: int = 20) -> str:
@@ -2126,7 +2186,10 @@ def _build_tool_definitions() -> list[dict]:
                 "All operations are restricted to those paths — no escaping to the filesystem. "
                 "ALWAYS call with confirmed=False first to show the user a preview. "
                 "Only call with confirmed=True after the user explicitly says yes. "
-                "delete: removes a file or entire directory tree (shows full manifest in preview). "
+                "delete: removes a single file or entire directory tree (shows full manifest in preview). "
+                "delete_matching: deletes all files matching a glob pattern (e.g. *.srt or *.srt,*.ass,*.sup) "
+                "recursively under source directory — use this to bulk-delete subtitle files or other file types "
+                "without touching video files; shows full file list and total size before confirming. "
                 "rename: renames a single file or folder in-place — dest must be a bare name, no path separators. "
                 "rename_all: renames every file in a directory to sequential generic names in one operation — "
                 "dest is the name pattern (e.g. rip_{n:02d}); file extensions are preserved; "
@@ -2138,7 +2201,7 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["move", "rename", "rename_all", "delete"],
+                        "enum": ["move", "rename", "rename_all", "delete", "delete_matching"],
                         "description": "Operation to perform.",
                     },
                     "source": {
@@ -2155,6 +2218,7 @@ def _build_tool_definitions() -> list[dict]:
                             "For rename: new bare filename (no slashes). "
                             "For rename_all: name pattern with {n} as the counter, e.g. rip_{n:02d} "
                             "(default: rip_{n:02d}). Extensions are always preserved. "
+                            "For delete_matching: comma-separated glob pattern(s), e.g. *.srt or *.srt,*.ass,*.sup. "
                             "Not used for delete."
                         ),
                         "default": "",
