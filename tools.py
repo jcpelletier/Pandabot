@@ -392,6 +392,105 @@ def trigger_jenkins_job(job_name: str) -> str:
         return f"Jenkins trigger error: {e}"
 
 
+def set_jenkins_schedule(job_name: str, schedule: str = "", confirmed: bool = False) -> str:
+    """
+    View or change the cron trigger schedule for a Jenkins job.
+
+    schedule=""           → show the current schedule only (no change)
+    schedule="H * * * *"  + confirmed=False → preview the change, ask for confirmation
+    schedule="H * * * *"  + confirmed=True  → apply the change
+    schedule="disabled"   → remove the timer trigger (disable scheduled runs)
+    """
+    import re as _re
+
+    if job_name not in JENKINS_JOBS:
+        return f"Job '{job_name}' is not in the allowed list: {', '.join(sorted(JENKINS_JOBS))}"
+
+    auth = _jenkins_auth()
+    config_url = f"{JENKINS_URL}/job/{job_name}/config.xml"
+
+    # ── Fetch current config ─────────────────────────────────────────────────
+    try:
+        r = requests.get(config_url, auth=auth, timeout=10)
+        if r.status_code == 404:
+            return f"Job '{job_name}' not found on Jenkins."
+        r.raise_for_status()
+        xml = r.text
+    except requests.RequestException as e:
+        return f"Could not fetch config for '{job_name}': {e}"
+
+    # ── Parse current timer spec ─────────────────────────────────────────────
+    m = _re.search(r"<hudson\.triggers\.TimerTrigger>\s*<spec>(.*?)</spec>",
+                   xml, _re.DOTALL)
+    current_spec = m.group(1).strip() if m else None
+    current_desc = f"`{current_spec}`" if current_spec else "none (not scheduled)"
+
+    # ── View-only mode ───────────────────────────────────────────────────────
+    if not schedule:
+        return f"Current schedule for **{job_name}**: {current_desc}"
+
+    new_spec = None if schedule.lower() == "disabled" else schedule
+    new_desc = f"`{new_spec}`" if new_spec else "none (disabled)"
+
+    # ── Preview / confirmation gate ──────────────────────────────────────────
+    if not confirmed:
+        if current_spec == new_spec:
+            return f"**{job_name}** schedule is already {current_desc} — no change needed."
+        lines = [
+            f"Ready to update **{job_name}** schedule:",
+            f"  Current: {current_desc}",
+            f"  New:     {new_desc}",
+            "",
+            "Reply **yes** to confirm, or ignore to cancel.",
+        ]
+        return "\n".join(lines)
+
+    # ── Apply the change ─────────────────────────────────────────────────────
+    has_trigger = bool(_re.search(r"<hudson\.triggers\.TimerTrigger>", xml))
+
+    if new_spec is None:
+        # Remove timer trigger entirely
+        xml = _re.sub(
+            r"\s*<hudson\.triggers\.TimerTrigger>.*?</hudson\.triggers\.TimerTrigger>",
+            "", xml, flags=_re.DOTALL,
+        )
+    elif has_trigger:
+        # Update existing spec in-place
+        xml = _re.sub(
+            r"(<hudson\.triggers\.TimerTrigger>\s*<spec>).*?(</spec>)",
+            rf"\g<1>{new_spec}\2",
+            xml, flags=_re.DOTALL,
+        )
+    else:
+        # Inject a new TimerTrigger
+        block = (
+            f"<hudson.triggers.TimerTrigger>"
+            f"<spec>{new_spec}</spec>"
+            f"</hudson.triggers.TimerTrigger>"
+        )
+        if _re.search(r"<triggers\s*/>", xml):
+            xml = _re.sub(r"<triggers\s*/>", f"<triggers>{block}</triggers>", xml)
+        elif "<triggers>" in xml:
+            xml = xml.replace("<triggers>", f"<triggers>{block}", 1)
+        else:
+            xml = xml.replace("</project>", f"<triggers>{block}</triggers>\n</project>")
+
+    try:
+        pr = requests.post(
+            config_url, data=xml.encode("utf-8"),
+            headers={"Content-Type": "application/xml"},
+            auth=auth, timeout=10,
+        )
+        pr.raise_for_status()
+    except requests.RequestException as e:
+        return f"Failed to save config for '{job_name}': {e}"
+
+    if new_spec:
+        return f"✅ **{job_name}** schedule updated to `{new_spec}`."
+    else:
+        return f"✅ **{job_name}** scheduled trigger removed — job will only run when triggered manually."
+
+
 def get_jenkins_build_log(
     job_name: str,
     build_number: int | str | None = None,
@@ -1647,6 +1746,41 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
         tools.append({
+            "name": "set_jenkins_schedule",
+            "description": (
+                f"View or change the cron timer schedule for a Jenkins job. Known jobs: {_jobs_str}.\n"
+                "Call with no schedule to view the current schedule.\n"
+                "Call with a schedule + confirmed=false to preview the change and ask the user to confirm.\n"
+                "Call with confirmed=true only after the user explicitly says 'yes'.\n"
+                "Use standard Jenkins cron syntax (e.g. 'H * * * *' = every hour, "
+                "'H 3 * * *' = daily at 3am, 'H/15 * * * *' = every 15 min). "
+                "Use 'disabled' to remove the scheduled trigger entirely."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "job_name": {
+                        "type": "string",
+                        "description": f"Exact Jenkins job name. Known jobs: {_jobs_str}.",
+                    },
+                    "schedule": {
+                        "type": "string",
+                        "description": (
+                            "Jenkins cron expression (e.g. 'H * * * *'), "
+                            "'disabled' to remove the trigger, "
+                            "or omit/empty to view the current schedule without changing it."
+                        ),
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Set true only after the user has explicitly confirmed the change.",
+                        "default": False,
+                    },
+                },
+                "required": ["job_name"],
+            },
+        })
+        tools.append({
             "name": "get_jenkins_build_status",
             "description": (
                 "Quick status snapshot for Jenkins. "
@@ -1796,6 +1930,12 @@ def execute_tool(name: str, inputs: dict) -> str:
         return get_service_status(inputs["service_name"])
     if name == "trigger_jenkins_job":
         return trigger_jenkins_job(inputs["job_name"])
+    if name == "set_jenkins_schedule":
+        return set_jenkins_schedule(
+            job_name=inputs["job_name"],
+            schedule=inputs.get("schedule", ""),
+            confirmed=inputs.get("confirmed", False),
+        )
     if name == "get_jenkins_build_status":
         return get_jenkins_build_status(inputs.get("job_name"))
     if name == "get_jenkins_build_history":

@@ -170,6 +170,12 @@ def _build_system_prompt() -> str:
              condition_pattern: '"result":\\s*"(SUCCESS|FAILURE|UNSTABLE|ABORTED)"'
              generative_prompt: summarise the result in 1–2 sentences from {{results}}
           3. Tell the user the job is running and that you'll notify them when done.
+
+        When the user asks to change or view a Jenkins job schedule:
+          - Call set_jenkins_schedule with no schedule to view current schedule.
+          - Call set_jenkins_schedule with schedule + confirmed=false to preview the
+            change and ask the user to confirm.
+          - Only call with confirmed=true after the user explicitly replies 'yes'.
         """)
 
     return textwrap.dedent(f"""\
