@@ -319,7 +319,11 @@ def _run_claude_loop(user_message: str, history: list[dict] | None = None) -> st
                     log.info("Tool call: %s(%s)", block.name, block.input)
                     tools_called.append(block.name)
                     result = execute_tool(block.name, block.input)
-                    log.debug("Tool result (%s): %.200s", block.name, result)
+                    _write_tools = {"manage_files", "set_jenkins_schedule", "trigger_jenkins_job"}
+                    if block.name in _write_tools:
+                        log.info("Tool result (%s): %.400s", block.name, result)
+                    else:
+                        log.debug("Tool result (%s): %.200s", block.name, result)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
