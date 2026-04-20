@@ -337,6 +337,151 @@ class TestGetLogTail:
 # get_service_status — error paths
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# manage_schedule — create / list / cancel
+# ---------------------------------------------------------------------------
+
+class TestManageSchedule:
+    """
+    Tests for the manage_schedule tool function.
+    Uses tmp_db so every test gets a clean, isolated database.
+    """
+
+    def _future(self, minutes: float = 60) -> str:
+        return (
+            datetime.datetime.now() + datetime.timedelta(minutes=minutes)
+        ).isoformat()
+
+    def _past(self, minutes: float = 60) -> str:
+        return (
+            datetime.datetime.now() - datetime.timedelta(minutes=minutes)
+        ).isoformat()
+
+    # --- list ---
+
+    def test_list_empty_db(self, tmp_db):
+        result = tools.manage_schedule("list")
+        assert "No scheduled tasks" in result
+
+    def test_list_shows_pending_tasks(self, tmp_db):
+        tools.manage_schedule(
+            "create",
+            fire_at=self._future(),
+            description="Morning report",
+        )
+        result = tools.manage_schedule("list")
+        assert "Morning report" in result
+
+    def test_list_shows_task_id(self, tmp_db):
+        tools.manage_schedule("create", fire_at=self._future(), description="x")
+        result = tools.manage_schedule("list")
+        assert "#" in result
+
+    def test_list_shows_recurrence_rule(self, tmp_db):
+        tools.manage_schedule(
+            "create",
+            fire_at=self._future(),
+            description="weekly thing",
+            task_type="recurring",
+            recurrence_rule="weekly:1",
+        )
+        result = tools.manage_schedule("list")
+        assert "weekly:1" in result
+
+    def test_list_does_not_show_done_tasks(self, tmp_db):
+        import scheduler as sched
+        tools.manage_schedule("create", fire_at=self._future(), description="done soon")
+        tasks = sched.list_pending()
+        sched.mark_done(tasks[0]["id"])
+        result = tools.manage_schedule("list")
+        assert "No scheduled tasks" in result
+
+    # --- create ---
+
+    def test_create_returns_task_id(self, tmp_db):
+        result = tools.manage_schedule("create", fire_at=self._future(), description="t")
+        assert "#" in result
+
+    def test_create_missing_fire_at_returns_error(self, tmp_db):
+        result = tools.manage_schedule("create", description="no time given")
+        assert "fire_at" in result
+
+    def test_create_one_shot_type_note(self, tmp_db):
+        result = tools.manage_schedule(
+            "create",
+            fire_at=self._future(),
+            description="once",
+            task_type="one_shot",
+        )
+        assert "fires once" in result
+
+    def test_create_condition_check_type_note(self, tmp_db):
+        result = tools.manage_schedule(
+            "create",
+            fire_at=self._future(),
+            description="check jenkins",
+            task_type="condition_check",
+            condition_pattern=r'"result":\s*"SUCCESS"',
+            max_attempts=4,
+            check_interval_minutes=5,
+        )
+        assert "4" in result   # max_attempts
+        assert "5" in result   # interval
+
+    def test_create_recurring_type_note(self, tmp_db):
+        result = tools.manage_schedule(
+            "create",
+            fire_at=self._future(),
+            description="weekly",
+            task_type="recurring",
+            recurrence_rule="weekly:1",
+        )
+        assert "weekly:1" in result
+
+    def test_create_with_string_tool_calls(self, tmp_db):
+        """tool_calls may arrive as a JSON string — must be accepted."""
+        import json
+        tc = json.dumps([{"tool": "get_service_status", "args": {}}])
+        result = tools.manage_schedule(
+            "create",
+            fire_at=self._future(),
+            description="string tc",
+            tool_calls=tc,
+        )
+        assert "error" not in result.lower()
+        assert "#" in result
+
+    # --- cancel ---
+
+    def test_cancel_valid_task(self, tmp_db):
+        import scheduler as sched
+        tools.manage_schedule("create", fire_at=self._future(), description="bye")
+        task_id = sched.list_pending()[0]["id"]
+        result = tools.manage_schedule("cancel", id=task_id)
+        assert "cancelled" in result.lower()
+
+    def test_cancel_removes_from_pending(self, tmp_db):
+        import scheduler as sched
+        tools.manage_schedule("create", fire_at=self._future(), description="bye")
+        task_id = sched.list_pending()[0]["id"]
+        tools.manage_schedule("cancel", id=task_id)
+        assert sched.list_pending() == []
+
+    def test_cancel_nonexistent_id(self, tmp_db):
+        result = tools.manage_schedule("cancel", id=99999)
+        assert "not found" in result.lower() or "already done" in result.lower()
+
+    def test_cancel_missing_id_param(self, tmp_db):
+        result = tools.manage_schedule("cancel")
+        assert "id" in result.lower()
+
+    # --- unknown action ---
+
+    def test_unknown_action_returns_error(self, tmp_db):
+        result = tools.manage_schedule("fly_to_the_moon")
+        assert "unknown" in result.lower() or "Unknown" in result
+
+
 class TestGetServiceStatus:
     def test_unknown_service_returns_helpful_error(self, monkeypatch):
         monkeypatch.setattr(tools, "ALLOWED_DOCKER_LOGS", {"jellyfin"})

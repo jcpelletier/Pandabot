@@ -5,3 +5,4 @@ requests>=2.31.0
 
 # Dev / testing
 pytest>=8.0.0
+pytest-asyncio>=0.23.0

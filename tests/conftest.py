@@ -17,6 +17,8 @@ import sys
 import pytest
 from unittest.mock import MagicMock
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 # --- Required env vars ---
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
 os.environ.setdefault("DISCORD_CHANNEL_ID", "123456789012345678")
@@ -31,6 +33,22 @@ _STUB_MODULES = [
 for _mod in _STUB_MODULES:
     if _mod not in sys.modules:
         sys.modules[_mod] = MagicMock()
+
+
+@pytest.fixture
+def tmp_db(monkeypatch, tmp_path):
+    """
+    Redirect scheduler.DB_PATH to a fresh isolated temp file for one test.
+
+    Covers both direct scheduler calls and manage_schedule in tools.py —
+    both do `import scheduler` at call time so they pick up the patched path.
+    The temp directory (and the DB file) are cleaned up automatically by pytest.
+    """
+    import scheduler
+    db = str(tmp_path / "test_scheduler.db")
+    monkeypatch.setattr(scheduler, "DB_PATH", db)
+    scheduler.init_db()
+    yield db
 
 
 @pytest.fixture(autouse=False)
