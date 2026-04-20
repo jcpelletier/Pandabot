@@ -1141,7 +1141,37 @@ def query_media_library(action: str, path: str = "", pattern: str = "", limit: i
 
     VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".wmv", ".flv", ".mpg", ".mpeg"}
 
-    if action == "file_info":
+    if action == "list_dir":
+        target = path if path else MEDIA_PATH
+        if not os.path.isabs(target):
+            target = os.path.join(MEDIA_PATH, target)
+        target = os.path.normpath(target)
+        if not _is_allowed(target):
+            return f"Path not allowed. Must be under: {', '.join(ALLOWED_ROOTS)}"
+        if not os.path.isdir(target):
+            return f"Directory not found: {target}"
+
+        try:
+            entries = sorted(os.scandir(target), key=lambda e: (not e.is_dir(), e.name.lower()))
+        except Exception as e:
+            return f"Error listing directory: {e}"
+
+        if not entries:
+            return f"{target}: empty directory."
+
+        lines = [f"{target}:"]
+        for e in entries:
+            if e.is_dir():
+                lines.append(f"  [dir]  {e.name}/")
+            else:
+                try:
+                    size = _fmt_bytes(e.stat().st_size)
+                except Exception:
+                    size = "?"
+                lines.append(f"  {size:>10}  {e.name}")
+        return "\n".join(lines)
+
+    elif action == "file_info":
         if not path:
             return "file_info requires a path."
         full_path = path if os.path.isabs(path) else os.path.join(MEDIA_PATH, path)
@@ -1228,8 +1258,6 @@ def query_media_library(action: str, path: str = "", pattern: str = "", limit: i
         entries = []
         for dirpath, _, files in os.walk(root):
             for fname in files:
-                if os.path.splitext(fname)[1].lower() not in VIDEO_EXTS:
-                    continue
                 if pattern and pattern.lower() not in fname.lower():
                     continue
                 full = os.path.join(dirpath, fname)
@@ -1389,26 +1417,31 @@ def _build_tool_definitions() -> list[dict]:
             "name": "query_media_library",
             "description": (
                 f"Inspect files in the media library ({MEDIA_PATH}) or staging area.\n"
+                "list_dir: list all files and subdirectories in a directory (one level, no recursion).\n"
                 "file_info: full ffprobe metadata for one file — codec, resolution, duration, "
                 "bitrate, and all audio/subtitle tracks. Use this to answer 'why wasn't X "
                 "converted?' (check video bitrate — NVENC re-encodes land at ~3–8 Mbps; "
                 "original rips are typically 15–40 Mbps) or 'how long is this movie?'.\n"
-                "find_files: list video files in a directory with sizes and modification dates. "
-                f"Path can be absolute or relative to {MEDIA_PATH}."
+                "find_files: recursively list all files in a directory with sizes and modification "
+                f"dates, optionally filtered by name pattern. Path can be absolute or relative to {MEDIA_PATH}."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["file_info", "find_files"],
-                        "description": "file_info: metadata for one file. find_files: list files in a directory.",
+                        "enum": ["list_dir", "file_info", "find_files"],
+                        "description": (
+                            "list_dir: shallow directory listing. "
+                            "file_info: metadata for one file. "
+                            "find_files: recursive file search."
+                        ),
                     },
                     "path": {
                         "type": "string",
                         "description": (
-                            f"file_info: path to the file (absolute or relative to {MEDIA_PATH}). "
-                            f"find_files: directory to scan (default: {MEDIA_PATH})."
+                            f"list_dir/find_files: directory to scan (default: {MEDIA_PATH}). "
+                            f"file_info: path to the file (absolute or relative to {MEDIA_PATH})."
                         ),
                     },
                     "pattern": {
