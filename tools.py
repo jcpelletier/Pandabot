@@ -1,10 +1,12 @@
 """
-Read-only tool implementations for the Panda server Discord bot.
+Tool implementations for the Panda server Discord bot.
 
-These are the ONLY operations the bot can perform. No code execution,
-no writes, no destructive commands — strictly observability.
+Most tools are read-only observability. Write actions (move, rename, delete)
+are gated behind ENABLE_WRITE_ACTIONS and always require explicit confirmation
+before executing.
 """
 
+import shutil
 import subprocess
 import os
 import json
@@ -18,10 +20,11 @@ logger = logging.getLogger("panda-bot")
 # Feature flags — set to "false" in .env to disable entire subsystems
 # ---------------------------------------------------------------------------
 
-ENABLE_JELLYFIN = os.environ.get("ENABLE_JELLYFIN", "true").lower() == "true"
-ENABLE_JENKINS  = os.environ.get("ENABLE_JENKINS",  "true").lower() == "true"
-ENABLE_RIPPING  = os.environ.get("ENABLE_RIPPING",  "true").lower() == "true"
-ENABLE_SMART    = os.environ.get("ENABLE_SMART",    "true").lower() == "true"
+ENABLE_JELLYFIN      = os.environ.get("ENABLE_JELLYFIN",      "true").lower() == "true"
+ENABLE_JENKINS       = os.environ.get("ENABLE_JENKINS",       "true").lower() == "true"
+ENABLE_RIPPING       = os.environ.get("ENABLE_RIPPING",       "true").lower() == "true"
+ENABLE_SMART         = os.environ.get("ENABLE_SMART",         "true").lower() == "true"
+ENABLE_WRITE_ACTIONS = os.environ.get("ENABLE_WRITE_ACTIONS", "true").lower() == "true"
 
 # ---------------------------------------------------------------------------
 # Env-var parsing helpers
@@ -1224,6 +1227,166 @@ def manage_schedule(action: str, **kwargs) -> str:
     return f"Unknown action '{action}'. Use create, list, or cancel."
 
 
+def take_action(action: str, source: str, dest: str = "", confirmed: bool = False) -> str:
+    """
+    Move, rename, or delete files and folders within the media library.
+    All paths must stay within MEDIA_PATH or STAGING_PATH.
+    Always call with confirmed=False first — returns a preview.
+    Only call with confirmed=True after the user explicitly says 'yes'.
+    """
+    ALLOWED_ROOTS = [p for p in [MEDIA_PATH, STAGING_PATH] if p]
+
+    def _resolve(p: str) -> str:
+        if not os.path.isabs(p):
+            p = os.path.join(MEDIA_PATH, p)
+        return os.path.realpath(os.path.normpath(p))
+
+    def _is_allowed(real_path: str) -> bool:
+        return any(
+            real_path == os.path.realpath(root) or
+            real_path.startswith(os.path.realpath(root) + os.sep)
+            for root in ALLOWED_ROOTS
+        )
+
+    def _is_root(real_path: str) -> bool:
+        return any(real_path == os.path.realpath(root) for root in ALLOWED_ROOTS)
+
+    def _dir_manifest(path: str) -> tuple[list[str], int, int]:
+        """Return (display_lines, file_count, total_bytes) for a directory."""
+        files = []
+        total_bytes = 0
+        for dirpath, _, filenames in os.walk(path):
+            for fname in sorted(filenames):
+                full = os.path.join(dirpath, fname)
+                try:
+                    sz = os.path.getsize(full)
+                    total_bytes += sz
+                    files.append((os.path.relpath(full, path), sz))
+                except OSError:
+                    pass
+        files.sort()
+        shown = files[:20]
+        lines = [f"  {rel}  ({_fmt_bytes(sz)})" for rel, sz in shown]
+        if len(files) > 20:
+            lines.append(f"  … and {len(files) - 20} more file(s)")
+        return lines, len(files), total_bytes
+
+    # ── Validate source ───────────────────────────────────────────────────────
+    src = _resolve(source)
+
+    if not _is_allowed(src):
+        return f"Source path not allowed. Must be under: {', '.join(ALLOWED_ROOTS)}"
+    if _is_root(src):
+        return "Cannot operate on a root library path directly."
+    if not os.path.exists(src):
+        return f"Not found: {src}"
+
+    # ── delete ────────────────────────────────────────────────────────────────
+    if action == "delete":
+        if os.path.isfile(src):
+            size = _fmt_bytes(os.path.getsize(src))
+            manifest_lines = [f"  {os.path.basename(src)}  ({size})"]
+            total_desc = size
+        else:
+            manifest_lines, file_count, total_bytes = _dir_manifest(src)
+            total_desc = f"{file_count} file(s), {_fmt_bytes(total_bytes)} total"
+
+        if not confirmed:
+            kind = "file" if os.path.isfile(src) else "directory and all contents"
+            lines = [
+                f"Ready to permanently delete {kind}:",
+                f"  {src}",
+                "",
+            ] + manifest_lines + [
+                "",
+                f"Total: {total_desc}",
+                "",
+                "⚠️ This cannot be undone. Reply **yes** to confirm.",
+            ]
+            return "\n".join(lines)
+
+        try:
+            if os.path.isfile(src):
+                os.remove(src)
+            else:
+                shutil.rmtree(src)
+            return f"✅ Deleted: {src}"
+        except Exception as e:
+            return f"Delete failed: {e}"
+
+    # ── rename ────────────────────────────────────────────────────────────────
+    elif action == "rename":
+        if not dest:
+            return "rename requires dest — the new name only (not a path)."
+        if os.sep in dest or "/" in dest:
+            return (
+                "rename dest must be a bare name with no path separators. "
+                "To relocate a file, use move instead."
+            )
+
+        new_path = os.path.join(os.path.dirname(src), dest)
+        new_real = os.path.realpath(new_path)
+
+        if not _is_allowed(new_real):
+            return "Renamed path would fall outside allowed library roots."
+        if os.path.exists(new_path):
+            return f"Cannot rename: a file or folder named '{dest}' already exists here."
+
+        if not confirmed:
+            return "\n".join([
+                "Ready to rename:",
+                f"  {os.path.basename(src)}",
+                f"  → {dest}",
+                f"  (in {os.path.dirname(src)})",
+                "",
+                "Reply **yes** to confirm.",
+            ])
+
+        try:
+            os.rename(src, new_path)
+            return f"✅ Renamed: {os.path.basename(src)} → {dest}"
+        except Exception as e:
+            return f"Rename failed: {e}"
+
+    # ── move ──────────────────────────────────────────────────────────────────
+    elif action == "move":
+        if not dest:
+            return "move requires dest — the target directory or full destination path."
+
+        dst = _resolve(dest)
+
+        # If dest is an existing directory, move src inside it
+        effective_dst = os.path.join(dst, os.path.basename(src)) if os.path.isdir(dst) else dst
+        effective_real = os.path.realpath(effective_dst)
+
+        if not _is_allowed(effective_real):
+            return f"Destination not allowed. Must be under: {', '.join(ALLOWED_ROOTS)}"
+        if os.path.exists(effective_dst):
+            return f"Cannot move: destination already exists: {effective_dst}"
+
+        parent = os.path.dirname(effective_dst)
+        if not os.path.isdir(parent):
+            return f"Destination parent directory does not exist: {parent}"
+
+        if not confirmed:
+            return "\n".join([
+                "Ready to move:",
+                f"  {src}",
+                f"  → {effective_dst}",
+                "",
+                "Reply **yes** to confirm.",
+            ])
+
+        try:
+            shutil.move(src, effective_dst)
+            return f"✅ Moved: {src} → {effective_dst}"
+        except Exception as e:
+            return f"Move failed: {e}"
+
+    else:
+        return f"Unknown action '{action}'. Use: move, rename, or delete."
+
+
 def query_media_library(action: str, path: str = "", pattern: str = "", limit: int = 20) -> str:
     """Inspect files in the media library or staging area."""
     ALLOWED_ROOTS = [p for p in [MEDIA_PATH, STAGING_PATH] if p]
@@ -1884,6 +2047,54 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
 
+    # --- Write-action tools (gated) ---
+    if ENABLE_WRITE_ACTIONS:
+        _roots_desc = ", ".join(p for p in [MEDIA_PATH, STAGING_PATH] if p)
+        tools.append({
+            "name": "take_action",
+            "description": (
+                f"Move, rename, or delete files and folders inside the media library ({_roots_desc}). "
+                "All operations are restricted to those paths — no escaping to the filesystem. "
+                "ALWAYS call with confirmed=False first to show the user a preview. "
+                "Only call with confirmed=True after the user explicitly says yes. "
+                "delete: removes a file or entire directory tree (shows full manifest in preview). "
+                "rename: renames in-place — dest must be a bare filename, no path separators. "
+                "move: relocates source to dest directory or full destination path."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["move", "rename", "delete"],
+                        "description": "Operation to perform.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": (
+                            "Path to the file or folder to act on. "
+                            "Relative paths are resolved from the media library root."
+                        ),
+                    },
+                    "dest": {
+                        "type": "string",
+                        "description": (
+                            "For move: target directory or full destination path. "
+                            "For rename: new bare filename (no slashes). "
+                            "Not used for delete."
+                        ),
+                        "default": "",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "False (default) shows a dry-run preview. True executes after user confirmation.",
+                        "default": False,
+                    },
+                },
+                "required": ["action", "source"],
+            },
+        })
+
     # --- Ripping tools (gated) ---
     if ENABLE_RIPPING:
         tools.append({
@@ -1980,4 +2191,11 @@ def execute_tool(name: str, inputs: dict) -> str:
     if name == "manage_schedule":
         action = inputs.pop("action", "list")
         return manage_schedule(action, **inputs)
+    if name == "take_action":
+        return take_action(
+            action=inputs["action"],
+            source=inputs["source"],
+            dest=inputs.get("dest", ""),
+            confirmed=inputs.get("confirmed", False),
+        )
     return f"Unknown tool: {name}"
