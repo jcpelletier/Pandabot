@@ -1234,6 +1234,24 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
     Always call with confirmed=False first — returns a preview.
     Only call with confirmed=True after the user explicitly says 'yes'.
     """
+    import time
+    import errno as _errno
+
+    def _remove(path: str, retries: int = 3, delay: float = 1.5) -> None:
+        """Remove a file, retrying on transient EROFS (ntfs-3g checkpoint windows)."""
+        last_err: Exception = OSError("no attempts made")
+        for _ in range(retries):
+            try:
+                os.remove(path)
+                return
+            except OSError as e:
+                if e.errno == _errno.EROFS:
+                    last_err = e
+                    time.sleep(delay)
+                    continue
+                raise
+        raise last_err
+
     ALLOWED_ROOTS = [p for p in [MEDIA_PATH, STAGING_PATH] if p]
 
     def _resolve(p: str) -> str:
@@ -1307,7 +1325,7 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
 
         try:
             if os.path.isfile(src):
-                os.remove(src)
+                _remove(src)
             else:
                 shutil.rmtree(src)
             return f"✅ Deleted: {src}"
@@ -1507,7 +1525,7 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
         done = 0
         for f in matches:
             try:
-                os.remove(f)
+                _remove(f)
                 done += 1
             except Exception as e:
                 errors.append(f"{os.path.relpath(f, src)}: {e}")
