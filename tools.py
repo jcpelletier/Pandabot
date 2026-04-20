@@ -1241,14 +1241,13 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
         """Remove a file, retrying on transient EROFS (ntfs-3g checkpoint windows).
         Up to 6 retries × 3 s = 18 s window, which covers observed checkpoint durations."""
         last_err: Exception = OSError("no attempts made")
-        for attempt in range(retries):
+        for _ in range(retries):
             try:
                 os.remove(path)
                 return
             except OSError as e:
                 if e.errno == _errno.EROFS:
                     last_err = e
-                    log.debug("EROFS on attempt %d for %s, retrying in %.1fs", attempt + 1, path, delay)
                     time.sleep(delay)
                     continue
                 raise
