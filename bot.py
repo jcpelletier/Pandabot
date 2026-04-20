@@ -265,7 +265,7 @@ def _run_claude_loop(user_message: str, history: list[dict] | None = None) -> st
     for _ in range(10):  # safety: max 10 tool-call rounds
         response = claude.messages.create(
             model="claude-haiku-4-5",
-            max_tokens=2048,
+            max_tokens=4096,
             system=system_prompt,
             tools=TOOL_DEFINITIONS,
             messages=messages,
@@ -285,6 +285,19 @@ def _run_claude_loop(user_message: str, history: list[dict] | None = None) -> st
             return "(no text response)"
 
         if response.stop_reason == "tool_use":
+            # manage_schedule has a complex schema — upgrade to Sonnet to fill parameters
+            # accurately. Haiku already decided to call it; Sonnet re-issues with same context.
+            if any(b.type == "tool_use" and b.name == "manage_schedule" for b in response.content):
+                log.info("manage_schedule detected — upgrading to Sonnet for parameter accuracy")
+                response = claude.messages.create(
+                    model="claude-sonnet-4-5",
+                    max_tokens=4096,
+                    system=system_prompt,
+                    tools=TOOL_DEFINITIONS,
+                    messages=messages,
+                )
+                log.info("Sonnet stop_reason=%s", response.stop_reason)
+
             # Append assistant turn (may include thinking blocks + tool_use blocks)
             messages.append({"role": "assistant", "content": response.content})
             tool_results = []
