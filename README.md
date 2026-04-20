@@ -40,6 +40,7 @@ Every server-specific value lives in `.env` — feature flags let you disable en
 | `query_ripping` | Staging area contents, subtitle sidecar coverage, recent rip history (App Insights) |
 | `query_media_library` | File metadata (codec, bitrate, duration, resolution) and directory listings via ffprobe |
 | `manage_schedule` | Create, list, or cancel scheduled tasks (one-shot, condition-check, or recurring) |
+| `manage_files` | Move, rename, delete, bulk-rename (`rename_all`), or bulk-delete by glob (`delete_matching`) files under allowed roots; always previews first and requires confirmation |
 
 Tools are only exposed to Claude when their feature flag is enabled — disabled tools are invisible to Claude but still callable by the scheduler (safe for saved tasks).
 
@@ -57,6 +58,7 @@ Everything in the table below is controlled by `.env`. The defaults match the or
 | Disable Jenkins | `ENABLE_JENKINS=false` |
 | Disable disc ripping tools | `ENABLE_RIPPING=false` |
 | Disable SMART drive health | `ENABLE_SMART=false` |
+| Disable file write actions (move/delete/rename) | `ENABLE_WRITE_ACTIONS=false` |
 | Different Docker containers to monitor | `DOCKER_LOG_CONTAINERS=myapp,nginx` |
 | Different systemd services to monitor | `SYSTEMD_SERVICES=myservice,ssh` |
 | Different file logs to tail | `FILE_LOGS=myapp:/var/log/myapp.log` |
@@ -263,6 +265,13 @@ Tasks are created and cancelled through the same natural-language interface — 
 @Panda how big is Blade Runner 2049 and what codec is it?
 @Panda list all movies added this week
 @Panda why wasn't this file re-encoded?
+```
+
+**Requires `ENABLE_WRITE_ACTIONS=true`:**
+```
+@Panda move the Dune folder from staging to the Movies library
+@Panda delete all .srt files under the DS9 Season 5 folder
+@Panda rename all the files in that folder back to generic rip names
 ```
 
 ---
