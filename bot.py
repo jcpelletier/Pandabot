@@ -32,6 +32,16 @@ from discord.ext import commands
 from tools import TOOL_DEFINITIONS, execute_tool  # noqa: E402 (used in fire_scheduled_task too)
 
 # ---------------------------------------------------------------------------
+# Pending-confirmation state
+# ---------------------------------------------------------------------------
+# Maps channel_id → {"name": tool_name, "inputs": {..., "confirmed": True}}
+# Set when Claude shows a manage_files/set_jenkins_schedule preview.
+# Consumed (and cleared) when the user replies with an affirmative.
+_pending_confirmations: dict[int, dict] = {}
+
+_AFFIRMATIVES = {"yes", "y", "yep", "yeah", "yup", "confirm", "ok", "okay", "sure", "do it"}
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 
@@ -179,13 +189,9 @@ def _build_system_prompt() -> str:
 
         When the user asks to move, rename, or delete files in the media library:
           - Always call manage_files with confirmed=false first to show a preview.
-          - Present the preview to the user and explicitly ask them to confirm.
-          - When the user says yes after a preview, you MUST call manage_files with
-            confirmed=true immediately. Never assume or predict the outcome — you must
-            actually invoke the tool. The result may differ from previous attempts.
-          - Never report a success or failure without having made the confirmed=true call.
-          - Never batch multiple destructive operations into one confirmed=true call
-            unless the user has reviewed the full preview for each one.
+          - Present the preview to the user and ask them to reply yes to confirm.
+          - Do NOT call manage_files with confirmed=true yourself — the bot handles
+            confirmed execution directly when the user replies yes.
         """)
 
     return textwrap.dedent(f"""\
@@ -270,7 +276,7 @@ async def build_history(channel: discord.abc.Messageable, before: discord.Messag
     return merged
 
 
-def _run_claude_loop(user_message: str, history: list[dict] | None = None) -> str:
+def _run_claude_loop(user_message: str, history: list[dict] | None = None, channel_id: int | None = None) -> str:
     """Synchronous Claude agentic loop (run in a thread executor)."""
     import time as _time
     messages = (history or []) + [{"role": "user", "content": user_message}]
@@ -327,6 +333,22 @@ def _run_claude_loop(user_message: str, history: list[dict] | None = None) -> st
                         log.info("Tool result (%s): %.400s", block.name, result)
                     else:
                         log.debug("Tool result (%s): %.200s", block.name, result)
+                    # Save pending confirmation when a destructive preview is shown.
+                    # The bot will execute confirmed=True directly when the user says yes,
+                    # bypassing Claude (which is unreliable at this step).
+                    _confirm_tools = {"manage_files", "set_jenkins_schedule"}
+                    if (
+                        channel_id is not None
+                        and block.name in _confirm_tools
+                        and not block.input.get("confirmed", False)
+                        and ("Reply **yes** to confirm" in result or "⚠️" in result)
+                    ):
+                        confirmed_inputs = {**block.input, "confirmed": True}
+                        _pending_confirmations[channel_id] = {
+                            "name": block.name,
+                            "inputs": confirmed_inputs,
+                        }
+                        log.info("Pending confirmation saved for channel %s: %s", channel_id, block.name)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
@@ -344,7 +366,9 @@ async def handle_claude_query(user_message: str, message: discord.Message) -> st
     history = await build_history(message.channel, before=message)
     log.info("Sending %d history messages as context", len(history))
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _run_claude_loop, user_message, history)
+    return await loop.run_in_executor(
+        None, _run_claude_loop, user_message, history, message.channel.id
+    )
 
 
 @bot.event
@@ -370,6 +394,26 @@ async def on_message(message: discord.Message):
         content = content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
     if not content:
         await message.channel.send("Hey! Ask me anything about the server status.")
+        return
+
+    # --- Pending-confirmation shortcut ---
+    # If this looks like a "yes" reply to a destructive-action preview, execute
+    # the tool directly instead of sending to Claude (which is unreliable here).
+    channel_id = message.channel.id
+    if content.lower().strip() in _AFFIRMATIVES and channel_id in _pending_confirmations:
+        pending = _pending_confirmations.pop(channel_id)
+        log.info("Executing pending confirmation: %s(%s)", pending["name"], pending["inputs"])
+        loop = asyncio.get_running_loop()
+        try:
+            reply = await loop.run_in_executor(
+                None, execute_tool, pending["name"], pending["inputs"]
+            )
+        except Exception as e:
+            log.exception("Pending confirmation execution failed")
+            reply = f"Error executing confirmed action: {e}"
+        for chunk in split_message(reply):
+            await message.channel.send(chunk)
+        await bot.process_commands(message)
         return
 
     async def _keep_typing():
