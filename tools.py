@@ -647,8 +647,48 @@ def query_jellyfin(query_type: str = "stats") -> str:
                     lines.append(f"  {label} ({len(items)}): {', '.join(names)}")
             return "\n".join(lines) if len(lines) > 1 else "Nothing added to Jellyfin this week."
 
+        elif query_type == "search_movies":
+            # Return all movies with genres + overview so Claude can answer
+            # genre/vibe questions ("stoner movies", "horror from the 80s", etc.)
+            ur = requests.get(f"{JELLYFIN_URL}/Users", headers=headers, timeout=10)
+            ur.raise_for_status()
+            users = [u for u in ur.json() if u.get("Name", "").lower() != "automation"]
+            if not users:
+                return "No users found in Jellyfin."
+            uid = users[0]["Id"]
+            params = {
+                "IncludeItemTypes": "Movie",
+                "Recursive": "true",
+                "Fields": "Genres,Overview,CommunityRating,OfficialRating,Tags",
+                "SortBy": "SortName",
+                "SortOrder": "Ascending",
+                "Limit": "500",
+            }
+            r = requests.get(f"{JELLYFIN_URL}/Users/{uid}/Items",
+                             headers=headers, params=params, timeout=15)
+            r.raise_for_status()
+            items = r.json().get("Items", [])
+            if not items:
+                return "No movies found in Jellyfin library."
+            lines = [f"Movies in library ({len(items)}):"]
+            for item in items:
+                name    = item.get("Name", "?")
+                year    = item.get("ProductionYear", "")
+                genres  = ", ".join(item.get("Genres") or [])
+                rating  = item.get("CommunityRating")
+                overview = (item.get("Overview") or "").strip()
+                overview = (overview[:160] + "…") if len(overview) > 160 else overview
+                rating_str = f" ★{rating:.1f}" if rating else ""
+                genre_str  = f" [{genres}]" if genres else ""
+                year_str   = f" ({year})" if year else ""
+                line = f"  {name}{year_str}{rating_str}{genre_str}"
+                if overview:
+                    line += f" — {overview}"
+                lines.append(line)
+            return "\n".join(lines)
+
         else:
-            return f"Unknown query_type '{query_type}'. Available: stats, recent, streams, history, week"
+            return f"Unknown query_type '{query_type}'. Available: stats, recent, streams, history, week, search_movies"
 
     except requests.RequestException as e:
         return f"Jellyfin API error: {e}"
@@ -2196,14 +2236,18 @@ def _build_tool_definitions() -> list[dict]:
                 "week: movies, shows, and music albums added in the last 7 days — use this for weekly digests. "
                 "streams: active playback sessions — who is watching what, "
                 "DirectPlay vs Transcode, whether NVENC is in use. "
-                "history: recently watched titles per user."
+                "history: recently watched titles per user. "
+                "search_movies: full movie list with genres, community rating, and overview — "
+                "use this for any question about what movies are in the library, "
+                "genre or mood recommendations (horror, comedy, stoner, 80s, etc.), "
+                "or finding movies by description."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "query_type": {
                         "type": "string",
-                        "enum": ["stats", "recent", "week", "streams", "history"],
+                        "enum": ["stats", "recent", "week", "streams", "history", "search_movies"],
                         "description": "What to query.",
                         "default": "stats",
                     },
