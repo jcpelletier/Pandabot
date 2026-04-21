@@ -207,6 +207,13 @@ def _build_system_prompt() -> str:
         Always call a tool to answer questions about server state — never guess
         or infer from training knowledge. If a tool returns an error, relay the
         exact error text rather than paraphrasing it as a configuration problem.
+
+        For any question about what movies are in the library — including genre
+        or mood recommendations (stoner, horror, 80s, feel-good, etc.) — call
+        query_jellyfin(search_movies). It returns Jellyfin metadata: genres,
+        ratings, and plot summaries for every movie. Only use query_media_library
+        when the user specifically needs filesystem details like file size, codec,
+        or bitrate.
         {jenkins_instructions}
         When the user asks for something at a future time, on a condition, or on a
         recurring schedule, call manage_schedule(action='create') rather than
