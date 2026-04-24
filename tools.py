@@ -25,6 +25,7 @@ ENABLE_JENKINS       = os.environ.get("ENABLE_JENKINS",       "true").lower() ==
 ENABLE_RIPPING       = os.environ.get("ENABLE_RIPPING",       "true").lower() == "true"
 ENABLE_SMART         = os.environ.get("ENABLE_SMART",         "true").lower() == "true"
 ENABLE_WRITE_ACTIONS = os.environ.get("ENABLE_WRITE_ACTIONS", "true").lower() == "true"
+ENABLE_GAMING        = os.environ.get("ENABLE_GAMING",        "true").lower() == "true"
 
 # ---------------------------------------------------------------------------
 # Env-var parsing helpers
@@ -1788,6 +1789,35 @@ def get_system_stats() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Gaming tools
+# ---------------------------------------------------------------------------
+
+def shutdown_steam() -> str:
+    """Gracefully shut down Steam; force-kills after 10 s if it doesn't respond."""
+    import time
+
+    check = subprocess.run(["pgrep", "-x", "steam"], capture_output=True)
+    if check.returncode != 0:
+        return "Steam is not running."
+
+    subprocess.run(["/usr/games/steam", "-shutdown"], capture_output=True)
+    time.sleep(10)
+
+    check2 = subprocess.run(["pgrep", "-x", "steam"], capture_output=True)
+    if check2.returncode != 0:
+        return "✅ Steam shut down cleanly."
+
+    # Still running — force kill
+    subprocess.run(["pkill", "-KILL", "-f", "steam"], capture_output=True)
+    time.sleep(2)
+    check3 = subprocess.run(["pgrep", "-x", "steam"], capture_output=True)
+    if check3.returncode != 0:
+        return "✅ Steam force-killed (it didn't respond to graceful shutdown)."
+
+    return "⚠️ Could not stop Steam — processes may still be running."
+
+
+# ---------------------------------------------------------------------------
 # Tool schema definitions for Claude — built dynamically from feature flags
 # ---------------------------------------------------------------------------
 
@@ -2337,6 +2367,22 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
 
+    if ENABLE_GAMING:
+        tools.append({
+            "name": "shutdown_steam",
+            "description": (
+                "Shut down Steam on the server. Use this when the user is done gaming "
+                "and Steam is still running in the background (e.g. after disconnecting "
+                "from Moonlight without exiting Steam first). Tries a graceful shutdown "
+                "first; force-kills after 10 seconds if Steam doesn't respond."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        })
+
     return tools
 
 
@@ -2416,4 +2462,6 @@ def execute_tool(name: str, inputs: dict) -> str:
             dest=inputs.get("dest", ""),
             confirmed=inputs.get("confirmed", False),
         )
+    if name == "shutdown_steam":
+        return shutdown_steam()
     return f"Unknown tool: {name}"
