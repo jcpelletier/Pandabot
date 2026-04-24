@@ -1,5 +1,8 @@
 # Changelog
 
+## v74
+- Enforce changelog entry in pre-commit hook — commits are blocked until `## v{N}` exists in CHANGELOG.md
+
 ## v73
 - Fix missing changelog in startup announcement (v71/v72 entries were never written)
 

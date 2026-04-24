@@ -11,8 +11,18 @@ fi
 
 # Auto-increment VERSION on every commit.
 VERSION_FILE="$REPO/VERSION"
+CHANGELOG_FILE="$REPO/CHANGELOG.md"
 current=$(cat "$VERSION_FILE" | tr -d '[:space:]')
 next=$((current + 1))
+
+# Require a changelog entry for the new version before bumping.
+if ! grep -q "^## v${next}$" "$CHANGELOG_FILE" 2>/dev/null; then
+    echo ""
+    echo "Missing changelog entry — commit aborted."
+    echo "Add '## v${next}' to CHANGELOG.md before committing."
+    exit 1
+fi
+
 printf '%s\n' "$next" > "$VERSION_FILE"
 git add "$VERSION_FILE"
 echo "Version bumped: $current -> $next"
