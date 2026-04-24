@@ -55,8 +55,29 @@ log = logging.getLogger("panda-bot")
 # Config
 # ---------------------------------------------------------------------------
 
-_VERSION_FILE = os.path.join(os.path.dirname(__file__), "VERSION")
+_VERSION_FILE   = os.path.join(os.path.dirname(__file__), "VERSION")
+_CHANGELOG_FILE = os.path.join(os.path.dirname(__file__), "CHANGELOG.md")
 BOT_VERSION = int(open(_VERSION_FILE).read().strip()) if os.path.exists(_VERSION_FILE) else 0
+
+
+def _read_changelog_entry(version: int) -> str:
+    """Return bullet lines for *version* from CHANGELOG.md, or '' if not found."""
+    if not os.path.exists(_CHANGELOG_FILE):
+        return ""
+    bullets: list[str] = []
+    in_section = False
+    with open(_CHANGELOG_FILE) as fh:
+        for line in fh:
+            if line.startswith(f"## v{version}"):
+                in_section = True
+                continue
+            if in_section:
+                if line.startswith("## "):
+                    break
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    bullets.append("• " + stripped[2:])
+    return "\n".join(bullets)
 
 DISCORD_TOKEN              = os.environ["DISCORD_TOKEN"]
 DISCORD_CHANNEL_ID         = int(os.environ["DISCORD_CHANNEL_ID"])
@@ -763,9 +784,13 @@ async def task_scheduler() -> None:
 # ---------------------------------------------------------------------------
 
 async def task_announce_startup():
-    """Post a one-time startup message with the current version."""
+    """Post a one-time startup message with the current version and changelog."""
     await bot.wait_until_ready()
-    await post_notification(f"{BOT_EMOJI} **{BOT_NAME} v{BOT_VERSION}** online")
+    msg = f"{BOT_EMOJI} **{BOT_NAME} v{BOT_VERSION}** online"
+    changelog = _read_changelog_entry(BOT_VERSION)
+    if changelog:
+        msg += f"\n{changelog}"
+    await post_notification(msg)
     log.info("Startup announced: v%d", BOT_VERSION)
 
 
