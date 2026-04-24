@@ -42,31 +42,27 @@ class TestToolPresence:
         monkeypatch.setattr(tools, "ENABLE_SMART",    True)
         defs = tools._build_tool_definitions()
         names = _names(defs)
-        assert "query_jellyfin"         in names
-        assert "get_jenkins_build_status" in names
-        assert "get_jenkins_build_history" in names
-        assert "get_jenkins_build_log"  in names
-        assert "trigger_jenkins_job"    in names
-        assert "query_ripping"          in names
+        assert "query_jellyfin"      in names
+        assert "query_jenkins"       in names
+        assert "trigger_jenkins_job" in names
+        assert "query_ripping"       in names
+        assert "query_system"        in names
 
     def test_jenkins_disabled_removes_jenkins_tools(self, monkeypatch):
         monkeypatch.setattr(tools, "ENABLE_JENKINS", False)
         defs = tools._build_tool_definitions()
         names = _names(defs)
-        assert "get_jenkins_build_status"  not in names
-        assert "get_jenkins_build_history" not in names
-        assert "get_jenkins_build_log"     not in names
-        assert "trigger_jenkins_job"       not in names
+        assert "query_jenkins"   not in names
+        assert "trigger_jenkins_job" not in names
 
     def test_jenkins_disabled_keeps_other_tools(self, monkeypatch):
         monkeypatch.setattr(tools, "ENABLE_JENKINS", False)
         defs = tools._build_tool_definitions()
         names = _names(defs)
         # Core tools must survive
-        assert "query_storage"       in names
-        assert "query_system_health" in names
-        assert "get_log_tail"        in names
-        assert "manage_schedule"     in names
+        assert "query_system"    in names
+        assert "get_log_tail"    in names
+        assert "manage_schedule" in names
 
     def test_jellyfin_disabled_removes_jellyfin_tool(self, monkeypatch):
         monkeypatch.setattr(tools, "ENABLE_JELLYFIN", False)
@@ -84,15 +80,14 @@ class TestToolPresence:
         defs = tools._build_tool_definitions()
         names = _names(defs)
         for expected in [
-            "query_storage", "get_log_tail", "get_service_status",
-            "query_system_health", "get_performance_history",
-            "query_network", "query_media_library", "manage_schedule",
+            "query_system", "get_log_tail", "get_service_status",
+            "get_performance_history", "query_media_library", "manage_schedule",
         ]:
             assert expected in names, f"Missing core tool: {expected}"
 
 
 # ---------------------------------------------------------------------------
-# SMART aspect in query_system_health
+# SMART aspect in query_system
 # ---------------------------------------------------------------------------
 
 class TestSmartAspect:
@@ -100,14 +95,14 @@ class TestSmartAspect:
         monkeypatch.setattr(tools, "ENABLE_SMART", True)
         monkeypatch.setattr(tools, "SMART_DEVICES", [("/dev/sda", "My SSD")])
         defs = tools._build_tool_definitions()
-        health = _tool(defs, "query_system_health")
+        health = _tool(defs, "query_system")
         aspects = health["input_schema"]["properties"]["aspect"]["enum"]
         assert "smart" in aspects
 
     def test_smart_disabled_removes_smart_aspect(self, monkeypatch):
         monkeypatch.setattr(tools, "ENABLE_SMART", False)
         defs = tools._build_tool_definitions()
-        health = _tool(defs, "query_system_health")
+        health = _tool(defs, "query_system")
         aspects = health["input_schema"]["properties"]["aspect"]["enum"]
         assert "smart" not in aspects
 
@@ -115,7 +110,7 @@ class TestSmartAspect:
         monkeypatch.setattr(tools, "ENABLE_SMART", True)
         monkeypatch.setattr(tools, "SMART_DEVICES", [])
         defs = tools._build_tool_definitions()
-        health = _tool(defs, "query_system_health")
+        health = _tool(defs, "query_system")
         aspects = health["input_schema"]["properties"]["aspect"]["enum"]
         assert "smart" not in aspects
 
@@ -126,7 +121,7 @@ class TestSmartAspect:
             ("/dev/sdb", "Media HDD"),
         ])
         defs = tools._build_tool_definitions()
-        health = _tool(defs, "query_system_health")
+        health = _tool(defs, "query_system")
         desc = health["description"]
         assert "Boot SSD" in desc
         assert "Media HDD" in desc
@@ -167,6 +162,9 @@ class TestJenkinsDescription:
         trigger = _tool(defs, "trigger_jenkins_job")
         assert "MyBuild" in trigger["description"]
         assert "MyTest" in trigger["description"]
+        qj = _tool(defs, "query_jenkins")
+        assert "MyBuild" in qj["description"]
+        assert "MyTest" in qj["description"]
 
 
 # ---------------------------------------------------------------------------

@@ -1817,6 +1817,38 @@ def shutdown_steam() -> str:
     return "⚠️ Could not stop Steam — processes may still be running."
 
 
+def query_system(aspect: str = "stats", limit: int = 20) -> str:
+    """Unified system query — dispatches to the underlying health/storage/network functions."""
+    if aspect in ("stats", "failed", "updates", "processes", "smart"):
+        return query_system_health(aspect)
+    elif aspect == "storage_usage":
+        return query_storage("usage", limit)
+    elif aspect == "storage_breakdown":
+        return query_storage("breakdown", limit)
+    elif aspect == "storage_largest":
+        return query_storage("largest", limit)
+    elif aspect == "network_tailscale":
+        return query_network("tailscale")
+    elif aspect == "network_ip":
+        return query_network("external_ip")
+    elif aspect == "network_ports":
+        return query_network("ports")
+    return f"Unknown aspect: {aspect}"
+
+
+def query_jenkins(action: str, job_name: str | None = None,
+                  build_number: int | None = None, count: int = 10,
+                  since_days: int | None = None, lines: int = 100) -> str:
+    """Unified Jenkins query — dispatches to status/history/log functions."""
+    if action == "status":
+        return get_jenkins_build_status(job_name)
+    elif action == "history":
+        return get_jenkins_build_history(job_name=job_name, count=count, since_days=since_days)
+    elif action == "log":
+        return get_jenkins_build_log(job_name=job_name, build_number=build_number, lines=lines)
+    return f"Unknown action: {action}"
+
+
 # ---------------------------------------------------------------------------
 # Tool schema definitions for Claude — built dynamically from feature flags
 # ---------------------------------------------------------------------------
@@ -1827,11 +1859,15 @@ def _build_tool_definitions() -> list[dict]:
     # Log names available for tailing — built from current whitelists
     _all_log_names = sorted(list(ALLOWED_FILE_LOGS.keys()) + list(ALLOWED_DOCKER_LOGS))
 
-    # query_system_health aspects — smart only if enabled and devices are configured
-    _health_aspects = ["stats", "failed", "updates", "processes"]
+    # query_system aspects
+    _system_aspects = [
+        "stats", "failed", "updates", "processes",
+        "storage_usage", "storage_breakdown", "storage_largest",
+        "network_tailscale", "network_ip", "network_ports",
+    ]
     _smart_desc = ""
     if ENABLE_SMART and SMART_DEVICES:
-        _health_aspects.append("smart")
+        _system_aspects.append("smart")
         _device_summary = "; ".join(f"{dev} ({label})" for dev, label in SMART_DEVICES)
         _smart_desc = (
             f"smart: SMART drive health ({_device_summary}) — "
@@ -1839,27 +1875,35 @@ def _build_tool_definitions() -> list[dict]:
         )
 
     tools = [
-        # --- Storage ---
+        # --- System (health + storage + network) ---
         {
-            "name": "query_storage",
+            "name": "query_system",
             "description": (
-                "Check disk usage and storage breakdown for the server. "
-                "usage: df -h for / and /mnt/media — overall free/used space. "
-                "breakdown: du -sh per top-level folder under /mnt/media (Movies, Shows, Music, Video staging). "
-                "largest: top N largest files under /mnt/media — useful for finding space to reclaim (default 20, max 50)."
+                "Check system health, storage, or network status. "
+                "stats: CPU load average, memory, GPU temp/VRAM/utilisation. "
+                "failed: systemd units in a failed state. "
+                "updates: apt packages available to upgrade. "
+                "processes: top 15 processes by CPU. "
+                + _smart_desc +
+                "storage_usage: df -h for / and /mnt/media — overall free/used space. "
+                "storage_breakdown: du per top-level folder under /mnt/media (Movies, Shows, Music, Video). "
+                "storage_largest: top N largest files under /mnt/media — useful for reclaiming space. "
+                "network_tailscale: Tailscale peer list with online/offline status and IPs. "
+                "network_ip: current public IP address of the server. "
+                "network_ports: listening TCP ports and the processes bound to them."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "query_type": {
+                    "aspect": {
                         "type": "string",
-                        "enum": ["usage", "breakdown", "largest"],
-                        "description": "What to query. Default: usage.",
-                        "default": "usage",
+                        "enum": _system_aspects,
+                        "description": "Which aspect to check. Default: stats.",
+                        "default": "stats",
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "largest only: how many files to return (1–50, default 20).",
+                        "description": "storage_largest only: how many files to return (1–50, default 20).",
                         "default": 20,
                     },
                 },
@@ -1952,52 +1996,6 @@ def _build_tool_definitions() -> list[dict]:
                     },
                 },
                 "required": ["action"],
-            },
-        },
-        # --- System health ---
-        {
-            "name": "query_system_health",
-            "description": (
-                "Check system health from multiple angles. "
-                "stats: CPU load average, memory usage, GPU temp/VRAM/utilisation (if nvidia-smi present). "
-                "failed: any systemd units in a failed state. "
-                "updates: apt packages available to upgrade. "
-                "processes: top 15 processes by CPU usage. "
-                + _smart_desc
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "aspect": {
-                        "type": "string",
-                        "enum": _health_aspects,
-                        "description": "Which health aspect to check. Default: stats.",
-                        "default": "stats",
-                    },
-                },
-                "required": [],
-            },
-        },
-        # --- Network ---
-        {
-            "name": "query_network",
-            "description": (
-                "Query network status. "
-                "tailscale: peer list with online/offline status and IPs. "
-                "external_ip: current public IP address of the server. "
-                "ports: listening TCP ports and the processes bound to them."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query_type": {
-                        "type": "string",
-                        "enum": ["tailscale", "external_ip", "ports"],
-                        "description": "What to query. Default: tailscale.",
-                        "default": "tailscale",
-                    },
-                },
-                "required": [],
             },
         },
         # --- Performance history ---
@@ -2127,7 +2125,7 @@ def _build_tool_definitions() -> list[dict]:
                 "After triggering, ALWAYS use manage_schedule to create a condition_check task so the "
                 "user gets a follow-up notification when the build finishes — separate from any "
                 "Jenkins webhook messages. "
-                "Pattern: trigger → manage_schedule(condition_check, tool_calls=[get_jenkins_build_status], "
+                "Pattern: trigger → manage_schedule(condition_check, tool_calls=[query_jenkins(action=status)], "
                 "condition_pattern='\"result\":\\s*\"(SUCCESS|FAILURE|UNSTABLE|ABORTED)\"', "
                 "generative_prompt='Jenkins job finished. Summarise the outcome in 1–2 sentences from {{results}}.'). "
                 f"Known jobs: {_jobs_str}."
@@ -2179,79 +2177,47 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
         tools.append({
-            "name": "get_jenkins_build_status",
+            "name": "query_jenkins",
             "description": (
-                "Quick status snapshot for Jenkins. "
-                "Omit job_name for an overview of all jobs with their last build result. "
-                "Provide job_name for details on that job's most recent build. "
+                "Query Jenkins build information. "
+                "status: snapshot of all jobs (omit job_name) or one job's latest build result. "
+                "history: list of recent builds with results, start times, and durations. "
+                "Use since_days=7 for weekly digests — includes a pass/fail summary. "
+                "log: console output for a build (latest if build_number omitted). "
                 f"Known jobs: {_jobs_str}."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "job_name": {
+                    "action": {
                         "type": "string",
-                        "description": "Specific job name. Omit for all-jobs overview.",
+                        "enum": ["status", "history", "log"],
+                        "description": "What to query.",
                     },
-                },
-                "required": [],
-            },
-        })
-        tools.append({
-            "name": "get_jenkins_build_history",
-            "description": (
-                "Get a list of recent builds for a Jenkins job — numbers, results, "
-                "start times, and durations. Use this to spot patterns like repeated "
-                "failures or to find a specific build number before fetching its log. "
-                "Use since_days=7 for weekly digests — returns a pass/fail summary plus "
-                "the individual build list for that window."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
                     "job_name": {
                         "type": "string",
-                        "description": f"Job name. Known jobs: {_jobs_str}.",
+                        "description": f"Job name. Required for history and log. Omit for all-jobs status overview. Known jobs: {_jobs_str}.",
+                    },
+                    "build_number": {
+                        "type": "integer",
+                        "description": "log only: specific build number to fetch. Omit for the latest build.",
                     },
                     "count": {
                         "type": "integer",
-                        "description": "How many recent builds to return (1–50, default 10). Ignored when since_days is set.",
+                        "description": "history only: number of recent builds to return (default 10). Ignored when since_days is set.",
                         "default": 10,
                     },
                     "since_days": {
                         "type": "integer",
-                        "description": "If set, return all builds from the last N days instead of using count. Includes a pass/fail summary.",
-                    },
-                },
-                "required": ["job_name"],
-            },
-        })
-        tools.append({
-            "name": "get_jenkins_build_log",
-            "description": (
-                "Fetch the console log for a specific Jenkins build. "
-                "Use build_number to target a past run (get the number from get_jenkins_build_history), "
-                "or omit it to get the latest build's log. "
-                "Returns the last N lines (default 100, max 300)."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "job_name": {
-                        "type": "string",
-                        "description": f"Job name. Known jobs: {_jobs_str}.",
-                    },
-                    "build_number": {
-                        "type": "integer",
-                        "description": "Build number to fetch. Omit for the latest build.",
+                        "description": "history only: return all builds from the last N days with a pass/fail summary.",
                     },
                     "lines": {
                         "type": "integer",
-                        "description": "How many lines from the end of the log to return (1–300, default 100).",
+                        "description": "log only: lines from the end of the log to return (default 100, max 300).",
                         "default": 100,
                     },
                 },
-                "required": ["job_name"],
+                "required": ["action"],
             },
         })
 
@@ -2411,15 +2377,24 @@ def execute_tool(name: str, inputs: dict) -> str:
             schedule=inputs.get("schedule", ""),
             confirmed=inputs.get("confirmed", False),
         )
-    if name == "get_jenkins_build_status":
+    if name == "query_jenkins":
+        return query_jenkins(
+            action=inputs["action"],
+            job_name=inputs.get("job_name"),
+            build_number=inputs.get("build_number"),
+            count=inputs.get("count", 10),
+            since_days=inputs.get("since_days"),
+            lines=inputs.get("lines", 100),
+        )
+    if name == "get_jenkins_build_status":   # backward compat for saved scheduled tasks
         return get_jenkins_build_status(inputs.get("job_name"))
-    if name == "get_jenkins_build_history":
+    if name == "get_jenkins_build_history":  # backward compat
         return get_jenkins_build_history(
             job_name=inputs["job_name"],
             count=inputs.get("count", 10),
             since_days=inputs.get("since_days"),
         )
-    if name == "get_jenkins_build_log":
+    if name == "get_jenkins_build_log":      # backward compat
         return get_jenkins_build_log(
             job_name=inputs["job_name"],
             build_number=inputs.get("build_number"),
@@ -2434,14 +2409,16 @@ def execute_tool(name: str, inputs: dict) -> str:
         )
     if name == "get_system_stats":          # backward compat for any saved scheduled tasks
         return get_system_stats()
-    if name == "query_system_health":
+    if name == "query_system":
+        return query_system(inputs.get("aspect", "stats"), inputs.get("limit", 20))
+    if name == "query_system_health":        # backward compat for saved scheduled tasks
         return query_system_health(inputs.get("aspect", "stats"))
-    if name == "query_storage":
+    if name == "query_storage":              # backward compat
         return query_storage(
             query_type=inputs.get("query_type", "usage"),
             limit=inputs.get("limit", 20),
         )
-    if name == "query_network":
+    if name == "query_network":              # backward compat
         return query_network(inputs.get("query_type", "tailscale"))
     if name == "query_jellyfin":
         return query_jellyfin(inputs.get("query_type", "stats"))
