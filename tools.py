@@ -6,9 +6,11 @@ are gated behind ENABLE_WRITE_ACTIONS and always require explicit confirmation
 before executing.
 """
 
+import re
 import shutil
 import subprocess
 import os
+import glob as _glob
 import json
 import datetime
 import logging
@@ -26,6 +28,9 @@ ENABLE_RIPPING       = os.environ.get("ENABLE_RIPPING",       "true").lower() ==
 ENABLE_SMART         = os.environ.get("ENABLE_SMART",         "true").lower() == "true"
 ENABLE_WRITE_ACTIONS = os.environ.get("ENABLE_WRITE_ACTIONS", "true").lower() == "true"
 ENABLE_GAMING        = os.environ.get("ENABLE_GAMING",        "true").lower() == "true"
+STEAM_LIBRARY_PATH   = os.path.expanduser(
+    os.environ.get("STEAM_LIBRARY_PATH", "~/.steam/steam/steamapps")
+)
 
 # ---------------------------------------------------------------------------
 # Env-var parsing helpers
@@ -1792,6 +1797,114 @@ def get_system_stats() -> str:
 # Gaming tools
 # ---------------------------------------------------------------------------
 
+def _parse_acf(path: str) -> dict:
+    """Parse a Steam ACF manifest into a flat dict of lowercase keys → values."""
+    result: dict = {}
+    with open(path) as fh:
+        for line in fh:
+            m = re.match(r'^\s*"([^"]+)"\s+"([^"]*)"', line)
+            if m:
+                result[m.group(1).lower()] = m.group(2)
+    return result
+
+
+def _load_steam_games() -> list[dict]:
+    """Return a list of dicts for every installed Steam game (from ACF manifests)."""
+    games = []
+    for acf_path in _glob.glob(os.path.join(STEAM_LIBRARY_PATH, "appmanifest_*.acf")):
+        try:
+            d = _parse_acf(acf_path)
+            games.append({
+                "appid":      d.get("appid", "?"),
+                "name":       d.get("name", "Unknown"),
+                "installdir": d.get("installdir", ""),
+                "size":       int(d.get("sizeondisk", 0)),
+                "last_played": int(d.get("lastplayed", 0)),
+                "acf_path":   acf_path,
+            })
+        except Exception:
+            continue
+    return games
+
+
+def query_steam(action: str = "library") -> str:
+    """List installed Steam games or show disk usage breakdown."""
+    games = _load_steam_games()
+    if not games:
+        return "No installed Steam games found."
+
+    if action == "library":
+        games.sort(key=lambda g: g["name"].lower())
+        lines = [f"**Steam Library** — {len(games)} games\n"]
+        for g in games:
+            size_str = f"{g['size'] / 1024**3:.1f} GB"
+            if g["last_played"]:
+                lp = datetime.datetime.fromtimestamp(g["last_played"]).strftime("%Y-%m-%d")
+                played = f"last played {lp}"
+            else:
+                played = "never played"
+            lines.append(f"• {g['name']} — {size_str}, {played}")
+        return "\n".join(lines)
+
+    elif action == "disk_usage":
+        games.sort(key=lambda g: g["size"], reverse=True)
+        total = sum(g["size"] for g in games)
+        lines = [f"**Steam Disk Usage** — {total / 1024**3:.1f} GB total\n"]
+        for g in games:
+            pct = g["size"] / total * 100 if total else 0
+            lines.append(f"• {g['name']} — {g['size'] / 1024**3:.1f} GB ({pct:.0f}%)")
+        return "\n".join(lines)
+
+    return f"Unknown action: {action}"
+
+
+def manage_steam(action: str, game: str = "", confirmed: bool = False) -> str:
+    """Remove an installed Steam game (with confirmation)."""
+    if action != "remove":
+        return f"Unknown action: {action}"
+    if not game:
+        return "Specify a game name to remove."
+
+    games = _load_steam_games()
+    matches = [g for g in games if game.lower() in g["name"].lower()]
+
+    if not matches:
+        names = ", ".join(g["name"] for g in games)
+        return f"No game matching '{game}' found. Installed: {names}"
+    if len(matches) > 1:
+        return f"Multiple matches for '{game}': {', '.join(m['name'] for m in matches)}. Be more specific."
+
+    g = matches[0]
+    game_dir = os.path.join(STEAM_LIBRARY_PATH, "common", g["installdir"])
+    size_gb = g["size"] / 1024**3
+
+    if not confirmed:
+        return "\n".join([
+            f"**Remove '{g['name']}'?**",
+            f"• Folder: `{game_dir}`",
+            f"• Manifest: `{g['acf_path']}`",
+            f"• Size: {size_gb:.1f} GB",
+            "",
+            "Reply **yes** to confirm.",
+        ])
+
+    errors = []
+    if os.path.isdir(game_dir):
+        try:
+            shutil.rmtree(game_dir)
+        except Exception as e:
+            errors.append(f"folder removal failed: {e}")
+    if os.path.exists(g["acf_path"]):
+        try:
+            os.remove(g["acf_path"])
+        except Exception as e:
+            errors.append(f"manifest removal failed: {e}")
+
+    if errors:
+        return "⚠️ Partial removal: " + "; ".join(errors)
+    return f"✅ '{g['name']}' removed — {size_gb:.1f} GB freed."
+
+
 def shutdown_steam() -> str:
     """Gracefully shut down Steam; force-kills after 10 s if it doesn't respond."""
     import time
@@ -2335,6 +2448,58 @@ def _build_tool_definitions() -> list[dict]:
 
     if ENABLE_GAMING:
         tools.append({
+            "name": "query_steam",
+            "description": (
+                "Query the Steam game library installed on the server. "
+                "library: all installed games with sizes and last-played dates. "
+                "disk_usage: same list sorted by size largest-first — use this to find "
+                "large games to remove and free up space."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["library", "disk_usage"],
+                        "description": "What to query. Default: library.",
+                        "default": "library",
+                    },
+                },
+                "required": [],
+            },
+        })
+        tools.append({
+            "name": "manage_steam",
+            "description": (
+                "Remove an installed Steam game from the server. "
+                "Deletes the game folder and its ACF manifest; Steam registers the "
+                "removal automatically on next launch. "
+                "ALWAYS call with confirmed=False first to show the user what will be "
+                "deleted and how much space will be freed. "
+                "Only call with confirmed=True after the user explicitly says yes."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["remove"],
+                        "description": "Action to perform.",
+                    },
+                    "game": {
+                        "type": "string",
+                        "description": "Game name to remove (partial, case-insensitive match).",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Set true only after the user has explicitly confirmed.",
+                        "default": False,
+                    },
+                },
+                "required": ["action", "game"],
+            },
+        })
+        tools.append({
             "name": "shutdown_steam",
             "description": (
                 "Shut down Steam on the server. Use this when the user is done gaming "
@@ -2437,6 +2602,14 @@ def execute_tool(name: str, inputs: dict) -> str:
             action=inputs["action"],
             source=inputs["source"],
             dest=inputs.get("dest", ""),
+            confirmed=inputs.get("confirmed", False),
+        )
+    if name == "query_steam":
+        return query_steam(inputs.get("action", "library"))
+    if name == "manage_steam":
+        return manage_steam(
+            action=inputs["action"],
+            game=inputs.get("game", ""),
             confirmed=inputs.get("confirmed", False),
         )
     if name == "shutdown_steam":

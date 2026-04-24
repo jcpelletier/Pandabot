@@ -1,5 +1,9 @@
 # Changelog
 
+## v75
+- Add `query_steam` — list installed games with sizes and last-played dates, or show disk usage sorted by size
+- Add `manage_steam` — remove a Steam game with confirmation (deletes folder + ACF manifest)
+
 ## v74
 - Enforce changelog entry in pre-commit hook — commits are blocked until `## v{N}` exists in CHANGELOG.md
 
