@@ -1,5 +1,8 @@
 # Changelog
 
+## v77
+- Fix `launch_steam` running as wrong user — now runs as `genesis` via sudoers so Steam can access its own home directory
+
 ## v76
 - Add `launch_steam` — launch Steam in Big Picture mode on the server's local display
 
