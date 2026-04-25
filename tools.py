@@ -1930,6 +1930,21 @@ def shutdown_steam() -> str:
     return "⚠️ Could not stop Steam — processes may still be running."
 
 
+def launch_steam() -> str:
+    """Launch Steam in Big Picture mode on the server's local display."""
+    check = subprocess.run(["pgrep", "-x", "steam"], capture_output=True)
+    if check.returncode == 0:
+        return "Steam is already running."
+
+    subprocess.Popen(
+        ["setsid", "/usr/games/steam", "-gamepadui"],
+        env={**os.environ, "DISPLAY": ":0"},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return "✅ Steam launching in Big Picture mode."
+
+
 def query_system(aspect: str = "stats", limit: int = 20) -> str:
     """Unified system query — dispatches to the underlying health/storage/network functions."""
     if aspect in ("stats", "failed", "updates", "processes", "smart"):
@@ -2513,6 +2528,20 @@ def _build_tool_definitions() -> list[dict]:
                 "required": [],
             },
         })
+        tools.append({
+            "name": "launch_steam",
+            "description": (
+                "Launch Steam in Big Picture mode on the server's local display. "
+                "Use this when the user wants to play locally (monitor + controller "
+                "plugged directly into the server) and Steam isn't already running. "
+                "Does nothing if Steam is already running."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        })
 
     return tools
 
@@ -2614,4 +2643,6 @@ def execute_tool(name: str, inputs: dict) -> str:
         )
     if name == "shutdown_steam":
         return shutdown_steam()
+    if name == "launch_steam":
+        return launch_steam()
     return f"Unknown tool: {name}"

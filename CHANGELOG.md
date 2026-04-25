@@ -1,5 +1,8 @@
 # Changelog
 
+## v76
+- Add `launch_steam` — launch Steam in Big Picture mode on the server's local display
+
 ## v75
 - Add `query_steam` — list installed games with sizes and last-played dates, or show disk usage sorted by size
 - Add `manage_steam` — remove a Steam game with confirmation (deletes folder + ACF manifest)
