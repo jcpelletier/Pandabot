@@ -1,5 +1,8 @@
 # Changelog
 
+## v78
+- Fix `launch_steam` sudoers mismatch — remove `setsid` from sudo call so the rule matches, add PATH to env
+
 ## v77
 - Fix `launch_steam` running as wrong user — now runs as `genesis` via sudoers so Steam can access its own home directory
 

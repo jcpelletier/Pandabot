@@ -1939,10 +1939,11 @@ def launch_steam() -> str:
     # Must run as genesis — Steam lives in genesis's home. discord-bot has a
     # sudoers entry granting NOPASSWD access to /usr/games/steam as genesis.
     subprocess.Popen(
-        ["sudo", "-u", "genesis", "-H", "setsid", "/usr/games/steam", "-gamepadui"],
+        ["sudo", "-u", "genesis", "-H", "/usr/games/steam", "-gamepadui"],
         env={"DISPLAY": ":0", "HOME": "/home/genesis", "USER": "genesis",
              "XDG_RUNTIME_DIR": "/run/user/1000",
-             "PULSE_SERVER": "unix:/run/user/1000/pulse/native"},
+             "PULSE_SERVER": "unix:/run/user/1000/pulse/native",
+             "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
