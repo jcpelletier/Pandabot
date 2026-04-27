@@ -26,8 +26,9 @@ ENABLE_JELLYFIN      = os.environ.get("ENABLE_JELLYFIN",      "true").lower() ==
 ENABLE_JENKINS       = os.environ.get("ENABLE_JENKINS",       "true").lower() == "true"
 ENABLE_RIPPING       = os.environ.get("ENABLE_RIPPING",       "true").lower() == "true"
 ENABLE_SMART         = os.environ.get("ENABLE_SMART",         "true").lower() == "true"
-ENABLE_WRITE_ACTIONS = os.environ.get("ENABLE_WRITE_ACTIONS", "true").lower() == "true"
-ENABLE_GAMING        = os.environ.get("ENABLE_GAMING",        "true").lower() == "true"
+ENABLE_WRITE_ACTIONS     = os.environ.get("ENABLE_WRITE_ACTIONS",     "true").lower()  == "true"
+ENABLE_GAMING            = os.environ.get("ENABLE_GAMING",            "true").lower()  == "true"
+ENABLE_CRAWL_ANALYTICS   = os.environ.get("ENABLE_CRAWL_ANALYTICS",   "false").lower() == "true"
 STEAM_LIBRARY_PATH   = os.path.expanduser(
     os.environ.get("STEAM_LIBRARY_PATH", "~/.steam/steam/steamapps")
 )
@@ -65,6 +66,9 @@ APPINSIGHTS_APP_ID  = os.environ.get("APPINSIGHTS_APP_ID", "")
 AZURE_TENANT_ID     = os.environ.get("AZURE_TENANT_ID", "")
 AZURE_CLIENT_ID     = os.environ.get("AZURE_CLIENT_ID", "")
 AZURE_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
+
+CRAWL_ANALYTICS_URL   = os.environ.get("CRAWL_ANALYTICS_URL",   "")
+CRAWL_ANALYTICS_TOKEN = os.environ.get("CRAWL_ANALYTICS_TOKEN", "")
 
 STAGING_PATH = os.environ.get("STAGING_PATH", "/mnt/media/Video")
 MEDIA_PATH   = os.environ.get("MEDIA_PATH",   "/mnt/media/Media")
@@ -1983,6 +1987,31 @@ def query_jenkins(action: str, job_name: str | None = None,
 
 
 # ---------------------------------------------------------------------------
+# Crawl analytics
+# ---------------------------------------------------------------------------
+
+def query_crawl_analytics(action: str = "summary") -> str:
+    """Query the configured AI crawl analytics endpoint."""
+    if not CRAWL_ANALYTICS_URL or not CRAWL_ANALYTICS_TOKEN:
+        return "Crawl analytics is not configured (missing CRAWL_ANALYTICS_URL or CRAWL_ANALYTICS_TOKEN)."
+    base = CRAWL_ANALYTICS_URL.rstrip("/")
+    if action == "summary":
+        url = f"{base}/visits?token={CRAWL_ANALYTICS_TOKEN}"
+    elif action == "export":
+        url = f"{base}/visits/export?token={CRAWL_ANALYTICS_TOKEN}"
+    else:
+        return f"Unknown action: {action!r}. Use 'summary' or 'export'."
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        if action == "export":
+            return resp.text[:5000]
+        return json.dumps(resp.json(), indent=2)
+    except Exception as e:
+        return f"Failed to fetch crawl analytics: {e}"
+
+
+# ---------------------------------------------------------------------------
 # Tool schema definitions for Claude — built dynamically from feature flags
 # ---------------------------------------------------------------------------
 
@@ -2548,6 +2577,32 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
 
+    # --- Crawl analytics (gated — opt-in, off by default) ---
+    if ENABLE_CRAWL_ANALYTICS and CRAWL_ANALYTICS_URL:
+        tools.append({
+            "name": "query_crawl_analytics",
+            "description": (
+                "Query the AI crawl analytics endpoint — a log of AI agents that have "
+                "visited a configured external site and reported what they were looking for. "
+                "summary: JSON list of visits with agent name, query, purpose, location, "
+                "and timestamp — use this to summarize which agents visited, what they "
+                "queried, and any notable patterns. "
+                "export: raw CSV download of all visits."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["summary", "export"],
+                        "description": "What to fetch. Default: summary.",
+                        "default": "summary",
+                    },
+                },
+                "required": [],
+            },
+        })
+
     return tools
 
 
@@ -2650,4 +2705,6 @@ def execute_tool(name: str, inputs: dict) -> str:
         return shutdown_steam()
     if name == "launch_steam":
         return launch_steam()
+    if name == "query_crawl_analytics":
+        return query_crawl_analytics(inputs.get("action", "summary"))
     return f"Unknown tool: {name}"

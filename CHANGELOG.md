@@ -1,5 +1,8 @@
 # Changelog
 
+## v79
+- Add `query_crawl_analytics` tool — opt-in (`ENABLE_CRAWL_ANALYTICS=true`) HTTP analytics endpoint with `summary` and `export` actions; token stored in `.env` via `CRAWL_ANALYTICS_TOKEN`
+
 ## v78
 - Fix `launch_steam` sudoers mismatch — remove `setsid` from sudo call so the rule matches, add PATH to env
 
