@@ -1,5 +1,8 @@
 # Changelog
 
+## v80
+- Fix Claude API 400 error when channel history contains embed-only messages with no text content
+
 ## v79
 - Add `query_crawl_analytics` tool — opt-in (`ENABLE_CRAWL_ANALYTICS=true`) HTTP analytics endpoint with `summary` and `export` actions; token stored in `.env` via `CRAWL_ANALYTICS_TOKEN`
 

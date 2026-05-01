@@ -285,8 +285,10 @@ async def build_history(channel: discord.abc.Messageable, before: discord.Messag
     """
     raw = []
     async for msg in channel.history(limit=limit, before=before):
+        if not msg.content:
+            continue
         role = "assistant" if msg.author.bot else "user"
-        raw.append((role, msg.content or ""))
+        raw.append((role, msg.content))
     raw.reverse()  # oldest first
 
     # Merge consecutive same-role messages
