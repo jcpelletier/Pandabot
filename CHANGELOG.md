@@ -1,5 +1,10 @@
 # Changelog
 
+## v81
+- Add LLM usage logging — every Claude API call is recorded (model, tokens, estimated cost, user message) in SQLite
+- New `query_llm_usage` tool: ask the bot "how much did we spend last month?" or "how much did that last question cost?" — supports `recent`, `daily`, `monthly`, and `by_model` breakdowns
+- Token counts and per-call cost now appear in bot logs at INFO level
+
 ## v80
 - Fix Claude API 400 error when channel history contains embed-only messages with no text content
 

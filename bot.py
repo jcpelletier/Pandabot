@@ -22,6 +22,7 @@ import logging
 import os
 import subprocess
 import textwrap
+import uuid
 
 import aiohttp
 from aiohttp import web
@@ -29,6 +30,7 @@ import anthropic
 import discord
 from discord.ext import commands
 
+import llm_usage
 from tools import TOOL_DEFINITIONS, execute_tool  # noqa: E402 (used in fire_scheduled_task too)
 
 # ---------------------------------------------------------------------------
@@ -306,9 +308,15 @@ async def build_history(channel: discord.abc.Messageable, before: discord.Messag
     return merged
 
 
-def _run_claude_loop(user_message: str, history: list[dict] | None = None, channel_id: int | None = None) -> str:
+def _run_claude_loop(
+    user_message: str,
+    history: list[dict] | None = None,
+    channel_id: int | None = None,
+    conversation_id: str | None = None,
+) -> str:
     """Synchronous Claude agentic loop (run in a thread executor)."""
     import time as _time
+    conv_id = conversation_id or str(uuid.uuid4())
     messages = (history or []) + [{"role": "user", "content": user_message}]
     tools_called: list[str] = []
     t0 = _time.monotonic()
@@ -322,7 +330,21 @@ def _run_claude_loop(user_message: str, history: list[dict] | None = None, chann
             tools=TOOL_DEFINITIONS,
             messages=messages,
         )
-        log.info("Claude stop_reason=%s", response.stop_reason)
+        llm_usage.log_call(
+            conversation_id=conv_id,
+            model="claude-haiku-4-5",
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            user_message=user_message,
+            context="main",
+        )
+        log.info(
+            "Claude stop_reason=%s in=%d out=%d cost=$%.5f",
+            response.stop_reason,
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            llm_usage.cost_usd("claude-haiku-4-5", response.usage.input_tokens, response.usage.output_tokens),
+        )
 
         if response.stop_reason == "end_turn":
             for block in response.content:
@@ -348,7 +370,21 @@ def _run_claude_loop(user_message: str, history: list[dict] | None = None, chann
                     tools=TOOL_DEFINITIONS,
                     messages=messages,
                 )
-                log.info("Sonnet stop_reason=%s", response.stop_reason)
+                llm_usage.log_call(
+                    conversation_id=conv_id,
+                    model="claude-sonnet-4-5",
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                    user_message=user_message,
+                    context="sonnet_upgrade",
+                )
+                log.info(
+                    "Sonnet stop_reason=%s in=%d out=%d cost=$%.5f",
+                    response.stop_reason,
+                    response.usage.input_tokens,
+                    response.usage.output_tokens,
+                    llm_usage.cost_usd("claude-sonnet-4-5", response.usage.input_tokens, response.usage.output_tokens),
+                )
 
             # Append assistant turn (may include thinking blocks + tool_use blocks)
             messages.append({"role": "assistant", "content": response.content})
@@ -395,9 +431,10 @@ async def handle_claude_query(user_message: str, message: discord.Message) -> st
     """Fetch channel history, then dispatch the synchronous Claude loop to a thread."""
     history = await build_history(message.channel, before=message)
     log.info("Sending %d history messages as context", len(history))
+    conv_id = str(uuid.uuid4())
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
-        None, _run_claude_loop, user_message, history, message.channel.id
+        None, _run_claude_loop, user_message, history, message.channel.id, conv_id
     )
 
 
@@ -659,6 +696,8 @@ async def fire_scheduled_task(task: dict) -> None:
     import time as _time
     t0 = _time.monotonic()
     loop = asyncio.get_running_loop()
+    task_conv_id = str(uuid.uuid4())
+    task_user_msg = f"[scheduled task #{task_id}: {task['description']}]"
 
     try:
         # --- Execute tool calls ---
@@ -683,6 +722,14 @@ async def fire_scheduled_task(task: dict) -> None:
                 max_tokens=800,
                 messages=[{"role": "user", "content": prompt}],
             ))
+            llm_usage.log_call(
+                conversation_id=task_conv_id,
+                model="claude-haiku-4-5",
+                input_tokens=resp.usage.input_tokens,
+                output_tokens=resp.usage.output_tokens,
+                user_message=task_user_msg,
+                context="scheduled_generative",
+            )
             message = resp.content[0].text
 
         elif task_type == "condition_check" and task["condition_pattern"]:
@@ -698,6 +745,14 @@ async def fire_scheduled_task(task: dict) -> None:
                         max_tokens=400,
                         messages=[{"role": "user", "content": prompt}],
                     ))
+                    llm_usage.log_call(
+                        conversation_id=task_conv_id,
+                        model="claude-haiku-4-5",
+                        input_tokens=resp.usage.input_tokens,
+                        output_tokens=resp.usage.output_tokens,
+                        user_message=task_user_msg,
+                        context="scheduled_generative",
+                    )
                     message = resp.content[0].text
                 else:
                     message = task["met_message"] or f"✅ Done: {task['description']}"
@@ -768,6 +823,7 @@ async def task_scheduler() -> None:
     import scheduler as sched
     await bot.wait_until_ready()
     sched.init_db()
+    llm_usage.init_db()
     log.info("Scheduler started — polling every 60s (db: %s)", sched.DB_PATH)
 
     while not bot.is_closed():

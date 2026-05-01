@@ -2012,6 +2012,16 @@ def query_crawl_analytics(action: str = "summary") -> str:
 
 
 # ---------------------------------------------------------------------------
+# LLM usage / cost query
+# ---------------------------------------------------------------------------
+
+def query_llm_usage(action: str = "recent", days: int = 30, limit: int = 20) -> str:
+    """Query the LLM usage log — token counts and estimated API cost."""
+    import llm_usage as _llm
+    return _llm.query_usage(action=action, days=days, limit=limit)
+
+
+# ---------------------------------------------------------------------------
 # Tool schema definitions for Claude — built dynamically from feature flags
 # ---------------------------------------------------------------------------
 
@@ -2274,6 +2284,44 @@ def _build_tool_definitions() -> list[dict]:
             },
         },
     ]
+
+    # --- LLM usage / cost ---
+    tools.append({
+        "name": "query_llm_usage",
+        "description": (
+            "Query the bot's own LLM API usage log — token counts and estimated USD cost. "
+            "Use this to answer questions like 'how much did we spend on Claude last month?', "
+            "'how much did that last question cost?', or 'which model costs the most?'. "
+            "action='recent': last N conversations with per-conversation cost (newest first). "
+            "action='daily': cost per day for the last `days` days. "
+            "action='monthly': cost per calendar month (all time). "
+            "action='by_model': cost and token breakdown per model for the last `days` days. "
+            "Costs are estimates based on published Anthropic pricing and may not reflect "
+            "cache discounts or pricing changes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["recent", "daily", "monthly", "by_model"],
+                    "description": "Which report to run. Default: recent.",
+                    "default": "recent",
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "For daily/by_model: how many days back to include (default 30).",
+                    "default": 30,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "For recent: max conversations to show (default 20).",
+                    "default": 20,
+                },
+            },
+            "required": [],
+        },
+    })
 
     # --- Jenkins tools (gated) ---
     if ENABLE_JENKINS:
@@ -2707,4 +2755,10 @@ def execute_tool(name: str, inputs: dict) -> str:
         return launch_steam()
     if name == "query_crawl_analytics":
         return query_crawl_analytics(inputs.get("action", "summary"))
+    if name == "query_llm_usage":
+        return query_llm_usage(
+            action=inputs.get("action", "recent"),
+            days=inputs.get("days", 30),
+            limit=inputs.get("limit", 20),
+        )
     return f"Unknown tool: {name}"
