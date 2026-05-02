@@ -443,26 +443,52 @@ def _stop_listening(vc: discord.VoiceClient) -> None:
         log.warning("Could not stop STT: %s", exc)
 
 
-async def _transcribe_audio(wav_bytes: bytes) -> str | None:
-    """POST WAV audio to the faster-whisper server; return transcript or None."""
+_whisper_model = None
+_whisper_model_lock = threading.Lock()
+
+
+def _get_whisper_model():
+    global _whisper_model
+    if _whisper_model is not None:
+        return _whisper_model
+    with _whisper_model_lock:
+        if _whisper_model is None:
+            from faster_whisper import WhisperModel
+            log.info("Loading Whisper model '%s' on cuda...", STT_MODEL)
+            try:
+                _whisper_model = WhisperModel(STT_MODEL, device="cuda", compute_type="float16")
+            except Exception:
+                log.warning("CUDA unavailable for Whisper — falling back to CPU int8")
+                _whisper_model = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
+            log.info("Whisper model ready")
+    return _whisper_model
+
+
+def _transcribe_wav_sync(wav_bytes: bytes) -> str | None:
+    """Transcribe WAV bytes in-process via faster-whisper; returns text or None."""
+    import tempfile
+    model = _get_whisper_model()
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(wav_bytes)
+        tmp_path = f.name
     try:
-        form = aiohttp.FormData()
-        form.add_field("file", wav_bytes, filename="audio.wav", content_type="audio/wav")
-        form.add_field("model", STT_MODEL)
-        form.add_field("language", "en")
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{STT_URL}/v1/audio/transcriptions",
-                data=form,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("text", "").strip()
-                log.warning("STT API returned %d", resp.status)
+        segments, _info = model.transcribe(tmp_path, language="en", beam_size=5)
+        text = " ".join(seg.text for seg in segments).strip()
+        return text or None
     except Exception as exc:
-        log.warning("STT transcription error: %s", exc)
-    return None
+        log.warning("Whisper transcription error: %s", exc)
+        return None
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+async def _transcribe_audio(wav_bytes: bytes) -> str | None:
+    """Run in-process Whisper transcription in a thread executor."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _transcribe_wav_sync, wav_bytes)
 
 
 async def _on_stt_transcript(guild_id: int, user_id: int, wav_bytes: bytes) -> None:

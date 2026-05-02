@@ -1,5 +1,10 @@
 # Changelog
 
+## v88
+- Fix STT: replace fedirz/faster-whisper-server (Gradio UI, no REST API) with in-process faster-whisper
+- WhisperModel loads lazily on first speech; uses CUDA float16 with CPU int8 fallback
+- Transcription runs in a thread executor; temp WAV written/deleted per utterance
+
 ## v87
 - Fix STT crash: return wants_opus=True to bypass voice_recv decoder (crashed on first bad packet)
 - Decode Opus→PCM ourselves per-user with per-packet error handling; bad packets silently skipped
