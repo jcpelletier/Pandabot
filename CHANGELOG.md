@@ -1,5 +1,12 @@
 # Changelog
 
+## v83
+- Add local TTS voice pipeline via Kokoro-82M (Docker, GPU, OpenAI-compatible endpoint)
+- Add `!join` / `!leave` voice channel commands
+- Add `TTS_AUTO_JOIN_CHANNEL_ID` — bot auto-joins watched channel on user entry, leaves when empty
+- Sentence splitting with markdown stripping; concurrent TTS fetch overlaps with playback
+- 5-minute idle auto-disconnect
+
 ## v82
 - Add `restart_container` tool: restart any whitelisted Docker container with the standard confirmed-first flow
 - Update `DOCKER_LOG_CONTAINERS` default to include `excalidraw` and `excalidraw-room`

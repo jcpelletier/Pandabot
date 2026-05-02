@@ -18,8 +18,10 @@ Environment variables (see .env.example):
 
 import asyncio
 import datetime
+import io
 import logging
 import os
+import re
 import subprocess
 import textwrap
 import uuid
@@ -42,6 +44,14 @@ from tools import TOOL_DEFINITIONS, execute_tool  # noqa: E402 (used in fire_sch
 _pending_confirmations: dict[int, dict] = {}
 
 _AFFIRMATIVES = {"yes", "y", "yep", "yeah", "yup", "confirm", "ok", "okay", "sure", "do it"}
+
+# ---------------------------------------------------------------------------
+# Voice / TTS state
+# ---------------------------------------------------------------------------
+# Maps guild_id → VoiceClient (populated by !join, cleared by !leave / idle)
+_voice_clients: dict[int, discord.VoiceClient] = {}
+# Monotonic timestamp of the last audio play per guild (for idle timeout)
+_voice_last_play: dict[int, float] = {}
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -100,6 +110,13 @@ SERVER_DESCRIPTION   = os.environ.get("SERVER_DESCRIPTION",  "")
 HARDWARE_DESCRIPTION = os.environ.get("HARDWARE_DESCRIPTION",
                            "NVIDIA GTX 970 (4 GB VRAM), 2 TB NTFS HDD at /mnt/media")
 AI_ENDPOINT                = os.environ.get("APPINSIGHTS_ENDPOINT", "")
+
+# TTS
+ENABLE_TTS               = os.environ.get("ENABLE_TTS", "false").lower() == "true"
+TTS_URL                  = os.environ.get("TTS_URL", "http://localhost:8880")
+TTS_VOICE                = os.environ.get("TTS_VOICE", "af_heart")
+TTS_IDLE_TIMEOUT         = int(os.environ.get("TTS_IDLE_TIMEOUT_SECS", "300"))
+TTS_AUTO_JOIN_CHANNEL_ID = int(os.environ["TTS_AUTO_JOIN_CHANNEL_ID"]) if os.environ.get("TTS_AUTO_JOIN_CHANNEL_ID") else None
 
 # ---------------------------------------------------------------------------
 # App Insights telemetry helpers — fire-and-forget, never raise
@@ -277,6 +294,95 @@ def split_message(text: str) -> list[str]:
     return chunks
 
 
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentences on . ! ? boundaries, stripping markdown noise."""
+    # Strip code fences and Discord formatting that TTS shouldn't read aloud
+    clean = re.sub(r"```[\s\S]*?```", "", text)
+    clean = re.sub(r"`[^`]+`", "", clean)
+    clean = re.sub(r"\*+([^*]+)\*+", r"\1", clean)
+    clean = re.sub(r"_([^_]+)_", r"\1", clean)
+    clean = re.sub(r"#+\s*", "", clean)
+    parts = re.split(r"(?<=[.!?])\s+", clean.strip())
+    return [s.strip() for s in parts if len(s.strip()) > 2]
+
+
+async def _fetch_tts_audio(sentence: str) -> bytes | None:
+    """POST a sentence to the Kokoro OpenAI-compatible endpoint; return raw mp3 bytes."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{TTS_URL}/v1/audio/speech",
+                json={
+                    "model": "kokoro",
+                    "input": sentence,
+                    "voice": TTS_VOICE,
+                    "response_format": "mp3",
+                },
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                log.warning("TTS API %d for: %.60s", resp.status, sentence)
+    except Exception as exc:
+        log.warning("TTS fetch error: %s", exc)
+    return None
+
+
+async def speak_response(guild_id: int, text: str) -> None:
+    """Synthesize *text* sentence-by-sentence and play it in the guild voice channel.
+
+    All TTS fetches start concurrently so sentence N+1 is ready by the time
+    sentence N finishes playing (pipeline / double-buffer effect).
+    """
+    import time as _time
+
+    vc = _voice_clients.get(guild_id)
+    if vc is None or not vc.is_connected():
+        return
+
+    sentences = _split_sentences(text)
+    if not sentences:
+        return
+
+    # Kick off all fetches immediately so synthesis overlaps playback
+    fetch_tasks = [asyncio.create_task(_fetch_tts_audio(s)) for s in sentences]
+
+    for task in fetch_tasks:
+        audio_bytes = await task
+        if not audio_bytes:
+            continue
+
+        vc = _voice_clients.get(guild_id)
+        if vc is None or not vc.is_connected():
+            break
+
+        # Wait if the voice client is still finishing the previous sentence
+        while vc.is_playing():
+            await asyncio.sleep(0.05)
+
+        buf = io.BytesIO(audio_bytes)
+        source = discord.FFmpegPCMAudio(buf, pipe=True)
+
+        play_done: asyncio.Future = bot.loop.create_future()
+
+        def _after(err, _f=play_done):
+            if _f.done():
+                return
+            if err:
+                bot.loop.call_soon_threadsafe(_f.set_exception, err)
+            else:
+                bot.loop.call_soon_threadsafe(_f.set_result, None)
+
+        vc.play(source, after=_after)
+        _voice_last_play[guild_id] = _time.monotonic()
+
+        try:
+            await asyncio.wait_for(asyncio.shield(play_done), timeout=60)
+        except (asyncio.TimeoutError, Exception) as exc:
+            log.warning("TTS playback error (guild %s): %s", guild_id, exc)
+            break
+
+
 async def build_history(channel: discord.abc.Messageable, before: discord.Message, limit: int = 10) -> list[dict]:
     """
     Return up to `limit` messages before `before` as Claude-formatted turns.
@@ -443,6 +549,84 @@ async def on_ready():
     log.info("Logged in as %s (id=%s)", bot.user, bot.user.id)
 
 
+@bot.command(name="join")
+async def cmd_join(ctx: commands.Context):
+    """Join the voice channel the invoking user is currently in."""
+    if ctx.guild is None:
+        await ctx.send("Voice commands only work in a server, not DMs.")
+        return
+    if ctx.author.voice is None:
+        await ctx.send("You need to be in a voice channel first.")
+        return
+    channel = ctx.author.voice.channel
+    guild_id = ctx.guild.id
+    existing = _voice_clients.get(guild_id)
+    if existing and existing.is_connected():
+        await existing.move_to(channel)
+        vc = existing
+    else:
+        vc = await channel.connect()
+        _voice_clients[guild_id] = vc
+    import time as _time
+    _voice_last_play[guild_id] = _time.monotonic()
+    await ctx.send(f"Joined **{channel.name}**. I'll speak responses here.")
+    log.info("Joined voice channel %s in guild %s", channel.name, guild_id)
+
+
+@bot.command(name="leave")
+async def cmd_leave(ctx: commands.Context):
+    """Disconnect from the current voice channel."""
+    if ctx.guild is None:
+        await ctx.send("Voice commands only work in a server, not DMs.")
+        return
+    guild_id = ctx.guild.id
+    vc = _voice_clients.pop(guild_id, None)
+    _voice_last_play.pop(guild_id, None)
+    if vc and vc.is_connected():
+        await vc.disconnect()
+        await ctx.send("Disconnected from voice.")
+        log.info("Left voice channel in guild %s", guild_id)
+    else:
+        await ctx.send("I'm not in a voice channel.")
+
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    """Auto-join TTS_AUTO_JOIN_CHANNEL_ID when a user enters; auto-leave when all users leave."""
+    if not ENABLE_TTS or TTS_AUTO_JOIN_CHANNEL_ID is None:
+        return
+    if member.bot:
+        return
+
+    guild = member.guild
+    guild_id = guild.id
+    watch_channel = guild.get_channel(TTS_AUTO_JOIN_CHANNEL_ID)
+    if watch_channel is None:
+        return
+
+    # A user joined the watched channel
+    if after.channel and after.channel.id == TTS_AUTO_JOIN_CHANNEL_ID:
+        vc = _voice_clients.get(guild_id)
+        if vc is None or not vc.is_connected():
+            import time as _time
+            vc = await watch_channel.connect()
+            _voice_clients[guild_id] = vc
+            _voice_last_play[guild_id] = _time.monotonic()
+            log.info("Auto-joined voice channel %s in guild %s", watch_channel.name, guild_id)
+        return
+
+    # A user left the watched channel — disconnect if no humans remain
+    if before.channel and before.channel.id == TTS_AUTO_JOIN_CHANNEL_ID:
+        vc = _voice_clients.get(guild_id)
+        if vc and vc.is_connected():
+            human_count = sum(1 for m in before.channel.members if not m.bot)
+            if human_count == 0:
+                await vc.disconnect()
+                _voice_clients.pop(guild_id, None)
+                _voice_last_play.pop(guild_id, None)
+                log.info("Auto-left voice channel %s in guild %s (no humans remain)", before.channel.name, guild_id)
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -503,6 +687,9 @@ async def on_message(message: discord.Message):
 
     for chunk in split_message(reply):
         await message.channel.send(chunk)
+
+    if ENABLE_TTS and message.guild is not None:
+        asyncio.create_task(speak_response(message.guild.id, reply))
 
     await bot.process_commands(message)
 
@@ -841,6 +1028,23 @@ async def task_scheduler() -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+async def task_voice_idle_check() -> None:
+    """Disconnect from voice channels idle longer than TTS_IDLE_TIMEOUT seconds."""
+    import time as _time
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        for guild_id in list(_voice_clients.keys()):
+            vc = _voice_clients.get(guild_id)
+            if vc and vc.is_connected() and not vc.is_playing():
+                idle_secs = _time.monotonic() - _voice_last_play.get(guild_id, 0)
+                if idle_secs > TTS_IDLE_TIMEOUT:
+                    await vc.disconnect()
+                    _voice_clients.pop(guild_id, None)
+                    _voice_last_play.pop(guild_id, None)
+                    log.info("Auto-disconnected from voice in guild %s (idle %.0fs)", guild_id, idle_secs)
+        await asyncio.sleep(60)
+
+
 async def task_announce_startup():
     """Post a one-time startup message with the current version and changelog."""
     await bot.wait_until_ready()
@@ -858,6 +1062,8 @@ async def main():
     asyncio.create_task(task_service_watchdog())
     asyncio.create_task(task_scheduler())
     asyncio.create_task(task_announce_startup())
+    if ENABLE_TTS:
+        asyncio.create_task(task_voice_idle_check())
     await bot.start(DISCORD_TOKEN)
 
 
