@@ -1,5 +1,9 @@
 # Changelog
 
+## v87
+- Fix STT crash: return wants_opus=True to bypass voice_recv decoder (crashed on first bad packet)
+- Decode Opus→PCM ourselves per-user with per-packet error handling; bad packets silently skipped
+
 ## v86
 - Fix discord-ext-voice-recv version pin (package uses alpha versioning, latest is 0.5.2a179)
 

@@ -356,19 +356,36 @@ class STTSink(_AudioSinkBase):
         self.guild_id = guild_id
         self._buffers: dict[int, bytearray] = {}
         self._futures: dict[int, concurrent.futures.Future] = {}
+        self._decoders: dict[int, discord.opus.Decoder] = {}
         self._lock = threading.Lock()
 
     def wants_opus(self) -> bool:
-        return False
+        # True = voice_recv skips its own Opus decoder (which crashes on first bad packet).
+        # We decode ourselves with per-packet error handling so bad packets are silently dropped.
+        return True
 
     def write(self, user, data) -> None:
-        # user: discord.Member | None   data: VoiceData (.pcm = raw PCM bytes)
         if user is None:
             return
         uid = user.id if hasattr(user, "id") else int(user)
         if bot.user and uid == bot.user.id:
             return
-        pcm = data.pcm if hasattr(data, "pcm") else data
+
+        # Extract raw Opus bytes from whichever attribute voice_recv populates
+        opus_bytes = getattr(data, "opus", None)
+        if not opus_bytes and hasattr(data, "packet"):
+            opus_bytes = getattr(data.packet, "decrypted_data", None)
+        if not opus_bytes:
+            return
+
+        # Decode Opus → PCM ourselves; skip corrupted packets without crashing
+        try:
+            if uid not in self._decoders:
+                self._decoders[uid] = discord.opus.Decoder()
+            pcm = self._decoders[uid].decode(opus_bytes, fec=False)
+        except Exception:
+            return
+
         if _calc_rms(pcm) <= STT_RMS_THRESHOLD:
             return
         with self._lock:
@@ -402,6 +419,7 @@ class STTSink(_AudioSinkBase):
                 fut.cancel()
             self._buffers.clear()
             self._futures.clear()
+        self._decoders.clear()
 
 
 def _start_listening(vc: discord.VoiceClient, guild_id: int) -> None:
