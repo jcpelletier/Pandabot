@@ -1,5 +1,11 @@
 # Changelog
 
+## v85
+- Fix STT: use discord-ext-voice-recv instead of discord.sinks (not in discord.py stdlib)
+- STTSink now subclasses voice_recv.AudioSink with correct write(user, data) signature
+- Connect with VoiceRecvClient when ENABLE_STT=true
+- RMS gate prevents silent frames from ever reaching Whisper or Claude
+
 ## v84
 - Add STT voice input via faster-whisper-server (Docker, GPU, medium model)
 - Custom STTSink buffers per-user PCM, fires transcription after 1.5s silence

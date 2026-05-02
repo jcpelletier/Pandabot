@@ -331,8 +331,19 @@ def _pcm_to_wav(pcm: bytes, sample_rate: int = 48000, channels: int = 2) -> byte
     return buf.getvalue()
 
 
-class STTSink(discord.sinks.Sink):
-    """AudioSink that detects per-user speech via RMS, fires STT after silence."""
+# discord-ext-voice-recv provides voice receiving for discord.py (not in stdlib discord.py)
+try:
+    from discord.ext import voice_recv as _vr
+    _VoiceRecvClient = _vr.VoiceRecvClient
+    _AudioSinkBase   = _vr.AudioSink
+except ImportError:
+    _vr              = None
+    _VoiceRecvClient = discord.VoiceClient
+    _AudioSinkBase   = object
+
+
+class STTSink(_AudioSinkBase):
+    """Buffers per-user PCM audio, fires STT transcription after silence."""
 
     SAMPLE_RATE  = 48000
     CHANNELS     = 2
@@ -340,33 +351,40 @@ class STTSink(discord.sinks.Sink):
     MIN_SECS     = 0.4  # discard clips shorter than this
 
     def __init__(self, guild_id: int):
-        super().__init__()
+        if _AudioSinkBase is not object:
+            super().__init__()
         self.guild_id = guild_id
         self._buffers: dict[int, bytearray] = {}
         self._futures: dict[int, concurrent.futures.Future] = {}
         self._lock = threading.Lock()
 
-    def write(self, data: bytes, user: int) -> None:
-        if bot.user and user == bot.user.id:
+    def wants_opus(self) -> bool:
+        return False
+
+    def write(self, user, data) -> None:
+        # user: discord.Member | None   data: VoiceData (.pcm = raw PCM bytes)
+        if user is None:
             return
-        if _calc_rms(data) <= STT_RMS_THRESHOLD:
+        uid = user.id if hasattr(user, "id") else int(user)
+        if bot.user and uid == bot.user.id:
+            return
+        pcm = data.pcm if hasattr(data, "pcm") else data
+        if _calc_rms(pcm) <= STT_RMS_THRESHOLD:
             return
         with self._lock:
-            # Cancel existing silence timer for this user
-            fut = self._futures.pop(user, None)
+            fut = self._futures.pop(uid, None)
             if fut:
                 fut.cancel()
-            self._buffers.setdefault(user, bytearray()).extend(data)
-            # Schedule silence check — runs in the event loop
-            self._futures[user] = asyncio.run_coroutine_threadsafe(
-                self._silence_then_fire(user), bot.loop
+            self._buffers.setdefault(uid, bytearray()).extend(pcm)
+            self._futures[uid] = asyncio.run_coroutine_threadsafe(
+                self._silence_then_fire(uid), bot.loop
             )
 
     async def _silence_then_fire(self, user_id: int) -> None:
         try:
             await asyncio.sleep(STT_SILENCE_TIMEOUT)
         except asyncio.CancelledError:
-            return  # new speech arrived; timer was reset
+            return
         with self._lock:
             buf = self._buffers.pop(user_id, None)
             self._futures.pop(user_id, None)
@@ -386,32 +404,25 @@ class STTSink(discord.sinks.Sink):
             self._futures.clear()
 
 
-async def _recording_finished(sink: STTSink, *_args) -> None:
-    sink.cleanup()
-    log.info("STT recording stopped in guild %s", sink.guild_id)
-
-
 def _start_listening(vc: discord.VoiceClient, guild_id: int) -> None:
-    """Attach an STTSink to the voice client and begin recording."""
-    if not ENABLE_STT:
+    """Attach an STTSink and begin receiving audio."""
+    if not ENABLE_STT or _vr is None:
         return
     try:
-        sink = STTSink(guild_id)
-        vc.start_recording(sink, _recording_finished)
+        vc.listen(STTSink(guild_id))
         log.info("STT listening started in guild %s", guild_id)
     except Exception as exc:
-        log.warning("Could not start STT recording: %s", exc)
+        log.warning("Could not start STT: %s", exc)
 
 
 def _stop_listening(vc: discord.VoiceClient) -> None:
-    """Stop recording if active; the _recording_finished callback handles cleanup."""
-    if not ENABLE_STT:
+    """Stop receiving audio and clean up the sink."""
+    if not ENABLE_STT or _vr is None:
         return
     try:
-        if vc.recording:
-            vc.stop_recording()
+        vc.stop_listening()
     except Exception as exc:
-        log.warning("Could not stop STT recording: %s", exc)
+        log.warning("Could not stop STT: %s", exc)
 
 
 async def _transcribe_audio(wav_bytes: bytes) -> str | None:
@@ -742,7 +753,7 @@ async def cmd_join(ctx: commands.Context):
         await existing.move_to(channel)
         vc = existing
     else:
-        vc = await channel.connect()
+        vc = await channel.connect(cls=_VoiceRecvClient if ENABLE_STT else discord.VoiceClient)
         _voice_clients[guild_id] = vc
     import time as _time
     _voice_last_play[guild_id] = _time.monotonic()
@@ -788,7 +799,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         vc = _voice_clients.get(guild_id)
         if vc is None or not vc.is_connected():
             import time as _time
-            vc = await watch_channel.connect()
+            vc = await watch_channel.connect(cls=_VoiceRecvClient if ENABLE_STT else discord.VoiceClient)
             _voice_clients[guild_id] = vc
             _voice_last_play[guild_id] = _time.monotonic()
             _start_listening(vc, guild_id)
