@@ -1,5 +1,10 @@
 # Changelog
 
+## v90
+- Fix STT transcription: replace WAV temp-file path (av/ffmpeg conversion produced empty segments) with direct numpy float32 mono 16kHz array passed to model.transcribe()
+- PCM conversion: 16-bit LE stereo 48kHz → float32 → mono (L+R average) → 16kHz (decimate ×3)
+- Add numpy>=1.24.0 to requirements.txt
+
 ## v89
 - Fix STT silence timer: replace asyncio future cancellation with threading.Timer (reliable cancel from voice_recv thread)
 - Fix Whisper model download: set download_root=/opt/discord-bot/models; create /home/discord-bot so hf_xet can write its cache

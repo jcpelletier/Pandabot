@@ -371,8 +371,21 @@ class STTSink(_AudioSinkBase):
         if bot.user and uid == bot.user.id:
             return
 
-        # With wants_opus=True, raw Opus bytes are in data.opus
-        opus_bytes = getattr(data, "opus", None)
+        # data.opus may be pre-decryption bytes; data.packet.decrypted_data is the real Opus payload
+        packet     = getattr(data, "packet", None)
+        opus_bytes = getattr(packet, "decrypted_data", None) or getattr(data, "opus", None)
+
+        # Log first packet once for diagnosis
+        if not hasattr(self, "_logged_first"):
+            self._logged_first = True
+            raw_opus = getattr(data, "opus", None)
+            dec_data = getattr(packet, "decrypted_data", None) if packet else None
+            log.info(
+                "STT first packet: data.opus=%s decrypted_data=%s",
+                raw_opus[:8].hex() if raw_opus else None,
+                dec_data[:8].hex() if dec_data else None,
+            )
+
         if not opus_bytes:
             return
 
@@ -381,20 +394,28 @@ class STTSink(_AudioSinkBase):
                 self._decoders[uid] = discord.opus.Decoder()
             pcm = self._decoders[uid].decode(opus_bytes, fec=False)
         except Exception:
+            self._decoders.pop(uid, None)
             return
 
-        if _calc_rms(pcm) <= STT_RMS_THRESHOLD:
-            return
+        is_speech = _calc_rms(pcm) > STT_RMS_THRESHOLD
 
         with self._lock:
-            timer = self._timers.pop(uid, None)
-            if timer:
-                timer.cancel()
-            self._buffers.setdefault(uid, bytearray()).extend(pcm)
-            timer = threading.Timer(STT_SILENCE_TIMEOUT, self._on_silence, args=[uid])
-            timer.daemon = True
-            timer.start()
-            self._timers[uid] = timer
+            in_utterance = uid in self._buffers
+
+            if is_speech:
+                # Speech frame: (re)start the silence timer and accumulate
+                timer = self._timers.pop(uid, None)
+                if timer:
+                    timer.cancel()
+                self._buffers.setdefault(uid, bytearray()).extend(pcm)
+                timer = threading.Timer(STT_SILENCE_TIMEOUT, self._on_silence, args=[uid])
+                timer.daemon = True
+                timer.start()
+                self._timers[uid] = timer
+            elif in_utterance:
+                # Silence frame mid-utterance: keep it so Whisper hears natural pauses
+                self._buffers[uid].extend(pcm)
+            # silence before any speech → ignore
 
     def _on_silence(self, user_id: int) -> None:
         """Called from threading.Timer after silence — schedule transcription on the event loop."""
@@ -407,9 +428,8 @@ class STTSink(_AudioSinkBase):
         if len(buf) < min_bytes:
             return
         log.info("STT: silence for user %s, %d bytes — transcribing", user_id, len(buf))
-        wav = _pcm_to_wav(bytes(buf))
         asyncio.run_coroutine_threadsafe(
-            _on_stt_transcript(self.guild_id, user_id, wav), bot.loop
+            _on_stt_transcript(self.guild_id, user_id, bytes(buf)), bot.loop
         )
 
     def cleanup(self) -> None:
@@ -467,36 +487,62 @@ def _get_whisper_model():
     return _whisper_model
 
 
-def _transcribe_wav_sync(wav_bytes: bytes) -> str | None:
-    """Transcribe WAV bytes in-process via faster-whisper; returns text or None."""
-    import tempfile
+_WHISPER_HALLUCINATIONS = {
+    "thanks for watching", "thank you for watching", "thanks for watching!",
+    "please like and subscribe", "like and subscribe", "see you next time",
+    "see you in the next video", "bye", "goodbye", "you", "thank you",
+    "thanks", "okay", "ok", "um", "uh", "hmm",
+}
+
+def _is_whisper_hallucination(text: str) -> bool:
+    """Return True if text is a known Whisper hallucination artifact."""
+    return text.lower().strip().rstrip(".!?,") in _WHISPER_HALLUCINATIONS
+
+
+def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
+    """Transcribe raw 48kHz stereo 16-bit PCM via faster-whisper; returns text or None.
+
+    Converts PCM → float32 mono 16kHz numpy array and passes it directly to
+    model.transcribe(), bypassing the av/ffmpeg WAV conversion path which was
+    producing empty segments despite valid audio.
+    """
+    import numpy as np
     model = _get_whisper_model()
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        f.write(wav_bytes)
-        tmp_path = f.name
     try:
-        segments, _info = model.transcribe(tmp_path, language="en", beam_size=5)
-        text = " ".join(seg.text for seg in segments).strip()
+        # 16-bit LE stereo 48kHz → float32 mono 16kHz
+        samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        # stereo → mono (average left/right channels)
+        samples = samples.reshape(-1, 2).mean(axis=1)
+        # 48kHz → 16kHz: decimate by 3 (Whisper expects 16kHz)
+        samples = samples[::3].astype(np.float32)
+        log.info("Whisper: input %.2fs (%d samples at 16kHz)", len(samples) / 16000, len(samples))
+        segments, info = model.transcribe(
+            samples,
+            language="en",
+            beam_size=5,
+            vad_filter=False,  # RMS gate already handles silence; VAD rejects gappy audio
+        )
+        segs = list(segments)
+        text = " ".join(seg.text for seg in segs).strip()
+        log.info("Whisper: segs=%d lang_prob=%.2f text=%r", len(segs), info.language_probability, text[:120])
+        if _is_whisper_hallucination(text):
+            log.info("Whisper: hallucination detected, discarding")
+            return None
         return text or None
     except Exception as exc:
-        log.warning("Whisper transcription error: %s", exc)
+        log.warning("Whisper transcription error: %s", exc, exc_info=True)
         return None
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
 
 
-async def _transcribe_audio(wav_bytes: bytes) -> str | None:
+async def _transcribe_audio(pcm_bytes: bytes) -> str | None:
     """Run in-process Whisper transcription in a thread executor."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _transcribe_wav_sync, wav_bytes)
+    return await loop.run_in_executor(None, _transcribe_pcm_sync, pcm_bytes)
 
 
-async def _on_stt_transcript(guild_id: int, user_id: int, wav_bytes: bytes) -> None:
+async def _on_stt_transcript(guild_id: int, user_id: int, pcm_bytes: bytes) -> None:
     """Transcribe speech, call Claude, post to text channel, and speak the reply."""
-    transcript = await _transcribe_audio(wav_bytes)
+    transcript = await _transcribe_audio(pcm_bytes)
     if not transcript:
         return
 
