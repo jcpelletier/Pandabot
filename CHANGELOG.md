@@ -1,5 +1,12 @@
 # Changelog
 
+## v84
+- Add STT voice input via faster-whisper-server (Docker, GPU, medium model)
+- Custom STTSink buffers per-user PCM, fires transcription after 1.5s silence
+- Voice transcripts fed to Claude; reply posted to text channel and spoken via TTS
+- Fix libopus not loading automatically — now explicitly loaded at startup
+- ENABLE_STT, STT_URL, STT_MODEL, STT_SILENCE_TIMEOUT_SECS, STT_RMS_THRESHOLD env vars
+
 ## v83
 - Add local TTS voice pipeline via Kokoro-82M (Docker, GPU, OpenAI-compatible endpoint)
 - Add `!join` / `!leave` voice channel commands

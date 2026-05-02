@@ -17,14 +17,18 @@ Environment variables (see .env.example):
 """
 
 import asyncio
+import concurrent.futures
 import datetime
 import io
 import logging
 import os
 import re
+import struct
 import subprocess
 import textwrap
+import threading
 import uuid
+import wave
 
 import aiohttp
 from aiohttp import web
@@ -117,6 +121,12 @@ TTS_URL                  = os.environ.get("TTS_URL", "http://localhost:8880")
 TTS_VOICE                = os.environ.get("TTS_VOICE", "af_heart")
 TTS_IDLE_TIMEOUT         = int(os.environ.get("TTS_IDLE_TIMEOUT_SECS", "300"))
 TTS_AUTO_JOIN_CHANNEL_ID = int(os.environ["TTS_AUTO_JOIN_CHANNEL_ID"]) if os.environ.get("TTS_AUTO_JOIN_CHANNEL_ID") else None
+
+ENABLE_STT          = os.environ.get("ENABLE_STT", "false").lower() == "true"
+STT_URL             = os.environ.get("STT_URL", "http://localhost:8001")
+STT_MODEL           = os.environ.get("STT_MODEL", "medium")
+STT_SILENCE_TIMEOUT = float(os.environ.get("STT_SILENCE_TIMEOUT_SECS", "1.5"))
+STT_RMS_THRESHOLD   = int(os.environ.get("STT_RMS_THRESHOLD", "500"))
 
 # ---------------------------------------------------------------------------
 # App Insights telemetry helpers — fire-and-forget, never raise
@@ -276,6 +286,13 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+if ENABLE_TTS or ENABLE_STT:
+    try:
+        discord.opus.load_opus("libopus.so.0")
+        logging.getLogger("panda-bot").info("libopus loaded")
+    except Exception as _opus_err:
+        logging.getLogger("panda-bot").warning("Could not load libopus: %s", _opus_err)
+
 
 def split_message(text: str) -> list[str]:
     """Split a long response into ≤1900-char chunks on line boundaries."""
@@ -292,6 +309,166 @@ def split_message(text: str) -> list[str]:
     if current:
         chunks.append("".join(current))
     return chunks
+
+
+def _calc_rms(data: bytes) -> float:
+    """Return RMS amplitude of raw 16-bit LE PCM bytes."""
+    n = len(data) // 2
+    if n == 0:
+        return 0.0
+    samples = struct.unpack(f"<{n}h", data[: n * 2])
+    return (sum(s * s for s in samples) / n) ** 0.5
+
+
+def _pcm_to_wav(pcm: bytes, sample_rate: int = 48000, channels: int = 2) -> bytes:
+    """Wrap raw PCM bytes in a WAV container (in memory)."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)       # 16-bit
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm)
+    return buf.getvalue()
+
+
+class STTSink(discord.sinks.Sink):
+    """AudioSink that detects per-user speech via RMS, fires STT after silence."""
+
+    SAMPLE_RATE  = 48000
+    CHANNELS     = 2
+    SAMPLE_WIDTH = 2    # bytes (16-bit)
+    MIN_SECS     = 0.4  # discard clips shorter than this
+
+    def __init__(self, guild_id: int):
+        super().__init__()
+        self.guild_id = guild_id
+        self._buffers: dict[int, bytearray] = {}
+        self._futures: dict[int, concurrent.futures.Future] = {}
+        self._lock = threading.Lock()
+
+    def write(self, data: bytes, user: int) -> None:
+        if bot.user and user == bot.user.id:
+            return
+        if _calc_rms(data) <= STT_RMS_THRESHOLD:
+            return
+        with self._lock:
+            # Cancel existing silence timer for this user
+            fut = self._futures.pop(user, None)
+            if fut:
+                fut.cancel()
+            self._buffers.setdefault(user, bytearray()).extend(data)
+            # Schedule silence check — runs in the event loop
+            self._futures[user] = asyncio.run_coroutine_threadsafe(
+                self._silence_then_fire(user), bot.loop
+            )
+
+    async def _silence_then_fire(self, user_id: int) -> None:
+        try:
+            await asyncio.sleep(STT_SILENCE_TIMEOUT)
+        except asyncio.CancelledError:
+            return  # new speech arrived; timer was reset
+        with self._lock:
+            buf = self._buffers.pop(user_id, None)
+            self._futures.pop(user_id, None)
+        if not buf:
+            return
+        min_bytes = int(self.MIN_SECS * self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
+        if len(buf) < min_bytes:
+            return
+        wav = _pcm_to_wav(bytes(buf))
+        asyncio.create_task(_on_stt_transcript(self.guild_id, user_id, wav))
+
+    def cleanup(self) -> None:
+        with self._lock:
+            for fut in self._futures.values():
+                fut.cancel()
+            self._buffers.clear()
+            self._futures.clear()
+
+
+async def _recording_finished(sink: STTSink, *_args) -> None:
+    sink.cleanup()
+    log.info("STT recording stopped in guild %s", sink.guild_id)
+
+
+def _start_listening(vc: discord.VoiceClient, guild_id: int) -> None:
+    """Attach an STTSink to the voice client and begin recording."""
+    if not ENABLE_STT:
+        return
+    try:
+        sink = STTSink(guild_id)
+        vc.start_recording(sink, _recording_finished)
+        log.info("STT listening started in guild %s", guild_id)
+    except Exception as exc:
+        log.warning("Could not start STT recording: %s", exc)
+
+
+def _stop_listening(vc: discord.VoiceClient) -> None:
+    """Stop recording if active; the _recording_finished callback handles cleanup."""
+    if not ENABLE_STT:
+        return
+    try:
+        if vc.recording:
+            vc.stop_recording()
+    except Exception as exc:
+        log.warning("Could not stop STT recording: %s", exc)
+
+
+async def _transcribe_audio(wav_bytes: bytes) -> str | None:
+    """POST WAV audio to the faster-whisper server; return transcript or None."""
+    try:
+        form = aiohttp.FormData()
+        form.add_field("file", wav_bytes, filename="audio.wav", content_type="audio/wav")
+        form.add_field("model", STT_MODEL)
+        form.add_field("language", "en")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{STT_URL}/v1/audio/transcriptions",
+                data=form,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("text", "").strip()
+                log.warning("STT API returned %d", resp.status)
+    except Exception as exc:
+        log.warning("STT transcription error: %s", exc)
+    return None
+
+
+async def _on_stt_transcript(guild_id: int, user_id: int, wav_bytes: bytes) -> None:
+    """Transcribe speech, call Claude, post to text channel, and speak the reply."""
+    transcript = await _transcribe_audio(wav_bytes)
+    if not transcript:
+        return
+
+    log.info("STT (user=%s): %.120s", user_id, transcript)
+
+    guild = bot.get_guild(guild_id)
+    member = guild.get_member(user_id) if guild else None
+    display_name = member.display_name if member else str(user_id)
+
+    channel = bot.get_channel(DISCORD_CHANNEL_ID)
+    if channel is None:
+        log.warning("STT: default channel %s not found", DISCORD_CHANNEL_ID)
+        return
+
+    await channel.send(f"🎤 **{display_name}:** {transcript}")
+
+    loop = asyncio.get_running_loop()
+    try:
+        reply = await loop.run_in_executor(
+            None, _run_claude_loop, transcript, None, channel.id, None
+        )
+    except Exception as exc:
+        log.exception("Claude query failed for STT input")
+        reply = f"Error talking to Claude: {exc}"
+
+    for chunk in split_message(reply):
+        await channel.send(chunk)
+
+    if ENABLE_TTS:
+        asyncio.create_task(speak_response(guild_id, reply))
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -569,6 +746,7 @@ async def cmd_join(ctx: commands.Context):
         _voice_clients[guild_id] = vc
     import time as _time
     _voice_last_play[guild_id] = _time.monotonic()
+    _start_listening(vc, guild_id)
     await ctx.send(f"Joined **{channel.name}**. I'll speak responses here.")
     log.info("Joined voice channel %s in guild %s", channel.name, guild_id)
 
@@ -583,6 +761,7 @@ async def cmd_leave(ctx: commands.Context):
     vc = _voice_clients.pop(guild_id, None)
     _voice_last_play.pop(guild_id, None)
     if vc and vc.is_connected():
+        _stop_listening(vc)
         await vc.disconnect()
         await ctx.send("Disconnected from voice.")
         log.info("Left voice channel in guild %s", guild_id)
@@ -612,6 +791,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             vc = await watch_channel.connect()
             _voice_clients[guild_id] = vc
             _voice_last_play[guild_id] = _time.monotonic()
+            _start_listening(vc, guild_id)
             log.info("Auto-joined voice channel %s in guild %s", watch_channel.name, guild_id)
         return
 
@@ -621,6 +801,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         if vc and vc.is_connected():
             human_count = sum(1 for m in before.channel.members if not m.bot)
             if human_count == 0:
+                _stop_listening(vc)
                 await vc.disconnect()
                 _voice_clients.pop(guild_id, None)
                 _voice_last_play.pop(guild_id, None)
@@ -1038,6 +1219,7 @@ async def task_voice_idle_check() -> None:
             if vc and vc.is_connected() and not vc.is_playing():
                 idle_secs = _time.monotonic() - _voice_last_play.get(guild_id, 0)
                 if idle_secs > TTS_IDLE_TIMEOUT:
+                    _stop_listening(vc)
                     await vc.disconnect()
                     _voice_clients.pop(guild_id, None)
                     _voice_last_play.pop(guild_id, None)
