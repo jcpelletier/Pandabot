@@ -1,5 +1,8 @@
 # Changelog
 
+## v86
+- Fix discord-ext-voice-recv version pin (package uses alpha versioning, latest is 0.5.2a179)
+
 ## v85
 - Fix STT: use discord-ext-voice-recv instead of discord.sinks (not in discord.py stdlib)
 - STTSink now subclasses voice_recv.AudioSink with correct write(user, data) signature
