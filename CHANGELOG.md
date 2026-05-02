@@ -1,5 +1,11 @@
 # Changelog
 
+## v89
+- Fix STT silence timer: replace asyncio future cancellation with threading.Timer (reliable cancel from voice_recv thread)
+- Fix Whisper model download: set download_root=/opt/discord-bot/models; create /home/discord-bot so hf_xet can write its cache
+- Remove CUDA attempt for Whisper (bot venv lacks CUDA runtime); use CPU int8 directly
+- Clean up STTSink: remove fallback opus extraction path, simplify write()
+
 ## v88
 - Fix STT: replace fedirz/faster-whisper-server (Gradio UI, no REST API) with in-process faster-whisper
 - WhisperModel loads lazily on first speech; uses CUDA float16 with CPU int8 fallback

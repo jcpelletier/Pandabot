@@ -355,13 +355,13 @@ class STTSink(_AudioSinkBase):
             super().__init__()
         self.guild_id = guild_id
         self._buffers: dict[int, bytearray] = {}
-        self._futures: dict[int, concurrent.futures.Future] = {}
+        self._timers: dict[int, threading.Timer] = {}
         self._decoders: dict[int, discord.opus.Decoder] = {}
         self._lock = threading.Lock()
 
     def wants_opus(self) -> bool:
-        # True = voice_recv skips its own Opus decoder (which crashes on first bad packet).
-        # We decode ourselves with per-packet error handling so bad packets are silently dropped.
+        # Must be True — voice_recv's internal decoder crashes on first bad Opus packet,
+        # killing the router thread permanently. We decode per-packet ourselves instead.
         return True
 
     def write(self, user, data) -> None:
@@ -371,14 +371,11 @@ class STTSink(_AudioSinkBase):
         if bot.user and uid == bot.user.id:
             return
 
-        # Extract raw Opus bytes from whichever attribute voice_recv populates
+        # With wants_opus=True, raw Opus bytes are in data.opus
         opus_bytes = getattr(data, "opus", None)
-        if not opus_bytes and hasattr(data, "packet"):
-            opus_bytes = getattr(data.packet, "decrypted_data", None)
         if not opus_bytes:
             return
 
-        # Decode Opus → PCM ourselves; skip corrupted packets without crashing
         try:
             if uid not in self._decoders:
                 self._decoders[uid] = discord.opus.Decoder()
@@ -388,37 +385,39 @@ class STTSink(_AudioSinkBase):
 
         if _calc_rms(pcm) <= STT_RMS_THRESHOLD:
             return
-        with self._lock:
-            fut = self._futures.pop(uid, None)
-            if fut:
-                fut.cancel()
-            self._buffers.setdefault(uid, bytearray()).extend(pcm)
-            self._futures[uid] = asyncio.run_coroutine_threadsafe(
-                self._silence_then_fire(uid), bot.loop
-            )
 
-    async def _silence_then_fire(self, user_id: int) -> None:
-        try:
-            await asyncio.sleep(STT_SILENCE_TIMEOUT)
-        except asyncio.CancelledError:
-            return
+        with self._lock:
+            timer = self._timers.pop(uid, None)
+            if timer:
+                timer.cancel()
+            self._buffers.setdefault(uid, bytearray()).extend(pcm)
+            timer = threading.Timer(STT_SILENCE_TIMEOUT, self._on_silence, args=[uid])
+            timer.daemon = True
+            timer.start()
+            self._timers[uid] = timer
+
+    def _on_silence(self, user_id: int) -> None:
+        """Called from threading.Timer after silence — schedule transcription on the event loop."""
         with self._lock:
             buf = self._buffers.pop(user_id, None)
-            self._futures.pop(user_id, None)
+            self._timers.pop(user_id, None)
         if not buf:
             return
         min_bytes = int(self.MIN_SECS * self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
         if len(buf) < min_bytes:
             return
+        log.info("STT: silence for user %s, %d bytes — transcribing", user_id, len(buf))
         wav = _pcm_to_wav(bytes(buf))
-        asyncio.create_task(_on_stt_transcript(self.guild_id, user_id, wav))
+        asyncio.run_coroutine_threadsafe(
+            _on_stt_transcript(self.guild_id, user_id, wav), bot.loop
+        )
 
     def cleanup(self) -> None:
         with self._lock:
-            for fut in self._futures.values():
-                fut.cancel()
+            for timer in self._timers.values():
+                timer.cancel()
             self._buffers.clear()
-            self._futures.clear()
+            self._timers.clear()
         self._decoders.clear()
 
 
@@ -430,7 +429,7 @@ def _start_listening(vc: discord.VoiceClient, guild_id: int) -> None:
         vc.listen(STTSink(guild_id))
         log.info("STT listening started in guild %s", guild_id)
     except Exception as exc:
-        log.warning("Could not start STT: %s", exc)
+        log.warning("Could not start STT: %s", exc, exc_info=True)
 
 
 def _stop_listening(vc: discord.VoiceClient) -> None:
@@ -447,6 +446,9 @@ _whisper_model = None
 _whisper_model_lock = threading.Lock()
 
 
+_WHISPER_CACHE = "/opt/discord-bot/models"
+
+
 def _get_whisper_model():
     global _whisper_model
     if _whisper_model is not None:
@@ -454,12 +456,13 @@ def _get_whisper_model():
     with _whisper_model_lock:
         if _whisper_model is None:
             from faster_whisper import WhisperModel
-            log.info("Loading Whisper model '%s' on cuda...", STT_MODEL)
-            try:
-                _whisper_model = WhisperModel(STT_MODEL, device="cuda", compute_type="float16")
-            except Exception:
-                log.warning("CUDA unavailable for Whisper — falling back to CPU int8")
-                _whisper_model = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
+            log.info("Loading Whisper model '%s' (CPU int8)...", STT_MODEL)
+            _whisper_model = WhisperModel(
+                STT_MODEL,
+                device="cpu",
+                compute_type="int8",
+                download_root=_WHISPER_CACHE,
+            )
             log.info("Whisper model ready")
     return _whisper_model
 
