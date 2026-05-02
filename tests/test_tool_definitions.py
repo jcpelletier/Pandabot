@@ -168,6 +168,28 @@ class TestJenkinsDescription:
 
 
 # ---------------------------------------------------------------------------
+# restart_container gating
+# ---------------------------------------------------------------------------
+
+class TestRestartContainer:
+    def test_hidden_when_whitelist_empty(self, monkeypatch):
+        monkeypatch.setattr(tools, "RESTARTABLE_CONTAINERS", set())
+        defs = tools._build_tool_definitions()
+        assert "restart_container" not in _names(defs)
+
+    def test_present_when_whitelist_populated(self, monkeypatch):
+        monkeypatch.setattr(tools, "RESTARTABLE_CONTAINERS", {"jellyfin", "excalidraw"})
+        defs = tools._build_tool_definitions()
+        assert "restart_container" in _names(defs)
+
+    def test_enum_matches_whitelist(self, monkeypatch):
+        monkeypatch.setattr(tools, "RESTARTABLE_CONTAINERS", {"jellyfin", "excalidraw"})
+        defs = tools._build_tool_definitions()
+        t = _tool(defs, "restart_container")
+        assert set(t["input_schema"]["properties"]["container"]["enum"]) == {"jellyfin", "excalidraw"}
+
+
+# ---------------------------------------------------------------------------
 # Schema structural validation
 # ---------------------------------------------------------------------------
 

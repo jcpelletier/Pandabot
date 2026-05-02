@@ -1,5 +1,9 @@
 # Changelog
 
+## v82
+- Add `restart_container` tool: restart any whitelisted Docker container with the standard confirmed-first flow
+- Update `DOCKER_LOG_CONTAINERS` default to include `excalidraw` and `excalidraw-room`
+
 ## v81
 - Add LLM usage logging — every Claude API call is recorded (model, tokens, estimated cost, user message) in SQLite
 - New `query_llm_usage` tool: ask the bot "how much did we spend last month?" or "how much did that last question cost?" — supports `recent`, `daily`, `monthly`, and `by_model` breakdowns

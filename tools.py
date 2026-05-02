@@ -88,6 +88,9 @@ ALLOWED_FILE_LOGS: dict[str, str] = _csv_dict(
 # Docker containers the bot is allowed to read logs from / check status of
 ALLOWED_DOCKER_LOGS: set[str] = _csv_set("DOCKER_LOG_CONTAINERS", "jellyfin,jenkins")
 
+# Docker containers the bot is allowed to restart (empty = tool hidden)
+RESTARTABLE_CONTAINERS: set[str] = _csv_set("RESTARTABLE_CONTAINERS", "")
+
 # Systemd services (non-Docker) the bot is allowed to inspect
 ALLOWED_SYSTEMD_SERVICES: set[str] = _csv_set("SYSTEMD_SERVICES", "sunshine,tailscaled,cockpit,ssh")
 
@@ -236,6 +239,19 @@ def get_service_status(service_name: str) -> str:
         f"Unknown service '{service_name}'. "
         f"Available: {', '.join(ALL_SERVICES)}"
     )
+
+
+def restart_container(container: str, confirmed: bool = False) -> str:
+    """Restart a whitelisted Docker container."""
+    if container not in RESTARTABLE_CONTAINERS:
+        allowed = ", ".join(sorted(RESTARTABLE_CONTAINERS)) or "none"
+        return f"Container '{container}' is not in the restart allowlist. Allowed: {allowed}."
+    if not confirmed:
+        return f"Restart container '{container}'? This will briefly interrupt the service. Reply 'yes' to confirm."
+    r = subprocess.run(["docker", "restart", container], capture_output=True, text=True, timeout=30)
+    if r.returncode == 0:
+        return f"Container '{container}' restarted successfully."
+    return f"Failed to restart '{container}': {r.stderr.strip()}"
 
 
 def get_jenkins_build_status(job_name: str | None = None) -> str:
@@ -2125,6 +2141,32 @@ def _build_tool_definitions() -> list[dict]:
                 "required": ["service_name"],
             },
         },
+        # --- Container restart (optional; gated on RESTARTABLE_CONTAINERS) ---
+        *([{
+            "name": "restart_container",
+            "description": (
+                "Restart a Docker container. Use when a container is unresponsive or needs a fresh start. "
+                f"Allowed containers: {', '.join(sorted(RESTARTABLE_CONTAINERS))}. "
+                "Always call with confirmed=False first to show the user what will be restarted. "
+                "Only call with confirmed=True after the user explicitly says yes."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "container": {
+                        "type": "string",
+                        "enum": sorted(RESTARTABLE_CONTAINERS),
+                        "description": "The container to restart.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Set true only after the user has explicitly confirmed.",
+                        "default": False,
+                    },
+                },
+                "required": ["container"],
+            },
+        }] if RESTARTABLE_CONTAINERS else []),
         # --- Media library ---
         {
             "name": "query_media_library",
@@ -2753,6 +2795,11 @@ def execute_tool(name: str, inputs: dict) -> str:
         return shutdown_steam()
     if name == "launch_steam":
         return launch_steam()
+    if name == "restart_container":
+        return restart_container(
+            container=inputs["container"],
+            confirmed=inputs.get("confirmed", False),
+        )
     if name == "query_crawl_analytics":
         return query_crawl_analytics(inputs.get("action", "summary"))
     if name == "query_llm_usage":
