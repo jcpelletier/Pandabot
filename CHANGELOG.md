@@ -1,5 +1,8 @@
 # Changelog
 
+## v91
+- Fix STT aliasing: replace naive [::3] decimation with audioop.ratecv (stdlib linear-interp resampler) for 48kHz→16kHz — eliminates aliasing that made speech unintelligible to Whisper
+
 ## v90
 - Fix STT transcription: replace WAV temp-file path (av/ffmpeg conversion produced empty segments) with direct numpy float32 mono 16kHz array passed to model.transcribe()
 - PCM conversion: 16-bit LE stereo 48kHz → float32 → mono (L+R average) → 16kHz (decimate ×3)

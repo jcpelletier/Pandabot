@@ -506,15 +506,14 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
     model.transcribe(), bypassing the av/ffmpeg WAV conversion path which was
     producing empty segments despite valid audio.
     """
+    import audioop
     import numpy as np
     model = _get_whisper_model()
     try:
-        # 16-bit LE stereo 48kHz → float32 mono 16kHz
-        samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        # stereo → mono (average left/right channels)
-        samples = samples.reshape(-1, 2).mean(axis=1)
-        # 48kHz → 16kHz: decimate by 3 (Whisper expects 16kHz)
-        samples = samples[::3].astype(np.float32)
+        # Stereo 48kHz 16-bit → mono 16kHz 16-bit using stdlib audioop (linear interp, no aliasing)
+        mono_pcm = audioop.tomono(pcm_bytes, 2, 0.5, 0.5)          # stereo → mono, 48kHz
+        resampled, _ = audioop.ratecv(mono_pcm, 2, 1, 48000, 16000, None)  # 48kHz → 16kHz
+        samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32) / 32768.0
         log.info("Whisper: input %.2fs (%d samples at 16kHz)", len(samples) / 16000, len(samples))
         segments, info = model.transcribe(
             samples,
