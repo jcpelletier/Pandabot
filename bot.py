@@ -515,11 +515,26 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
         resampled, _ = audioop.ratecv(mono_pcm, 2, 1, 48000, 16000, None)  # 48kHz → 16kHz
         samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32) / 32768.0
         log.info("Whisper: input %.2fs (%d samples at 16kHz)", len(samples) / 16000, len(samples))
+
+        # Debug: save the resampled audio so we can verify what Whisper is hearing
+        try:
+            import wave as _wave
+            dbg_path = "/tmp/stt_debug_latest.wav"
+            with _wave.open(dbg_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes((samples * 32767).astype(np.int16).tobytes())
+        except Exception as _dbg_err:
+            log.debug("Debug WAV save failed: %s", _dbg_err)
+
         segments, info = model.transcribe(
             samples,
             language="en",
             beam_size=5,
-            vad_filter=False,  # RMS gate already handles silence; VAD rejects gappy audio
+            vad_filter=False,
+            no_speech_threshold=0.9,   # default 0.6 suppresses uncertain speech; raise to keep segments
+            condition_on_previous_text=False,  # avoid compounding errors across utterances
         )
         segs = list(segments)
         text = " ".join(seg.text for seg in segs).strip()

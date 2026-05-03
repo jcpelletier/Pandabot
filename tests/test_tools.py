@@ -497,29 +497,7 @@ class TestGetServiceStatus:
 # ---------------------------------------------------------------------------
 
 class TestHardwareInfo:
-    """get_hardware_info() — mocked subprocess calls."""
-
-    DMI_BASEBOARD = (
-        "Handle 0x0002, DMI type 2, 15 bytes\n"
-        "Base Board Information\n"
-        "\tManufacturer: ASUSTeK COMPUTER INC.\n"
-        "\tProduct Name: Z97-AR\n"
-        "\tVersion: Rev 1.xx\n"
-        "\tSerial Number: 150340699600104\n"
-    )
-
-    DMI_MEMORY = (
-        "Handle 0x003B, DMI type 17, 40 bytes\n"
-        "Memory Device\n"
-        "\tSize: 16384 MB\n"
-        "\tType: DDR3\n"
-        "\tSpeed: 1600 MT/s\n"
-        "Handle 0x003C, DMI type 17, 40 bytes\n"
-        "Memory Device\n"
-        "\tSize: 16384 MB\n"
-        "\tType: DDR3\n"
-        "\tSpeed: 1600 MT/s\n"
-    )
+    """get_hardware_info() — mocked subprocess and file reads."""
 
     CPUINFO = (
         "processor\t: 0\n"
@@ -540,7 +518,13 @@ class TestHardwareInfo:
         "model name\t: Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz\n"
     )
 
-    NVIDIA_SMI = "NVIDIA GeForce GTX 970, 4096 MiB, 580.126.09\n"
+    MEMINFO = (
+        "MemTotal:       32806376 kB\n"
+        "MemFree:         4142780 kB\n"
+        "MemAvailable:   27224896 kB\n"
+    )
+
+    NVIDIA_SMI = "NVIDIA GeForce GTX 970, 4096, 580.126.09\n"
 
     LSBK = (
         "NAME SIZE TYPE MODEL MOUNTPOINT\n"
@@ -548,15 +532,39 @@ class TestHardwareInfo:
         "sdb   3.7T disk Seagate ST4000DM004\n"
     )
 
+    def _fake_open(self, path, *a, **kw):
+        """Return canned file content based on path."""
+        if "board_vendor" in path:
+            return type("f", (), {
+                "__enter__": lambda s: s, "__exit__": lambda *a: None,
+                "read": lambda s: "ASUSTeK COMPUTER INC.\n",
+            })()
+        if "board_name" in path:
+            return type("f", (), {
+                "__enter__": lambda s: s, "__exit__": lambda *a: None,
+                "read": lambda s: "Z97-AR\n",
+            })()
+        if "board_version" in path:
+            return type("f", (), {
+                "__enter__": lambda s: s, "__exit__": lambda *a: None,
+                "read": lambda s: "Rev 1.xx\n",
+            })()
+        if "cpuinfo" in path:
+            return type("f", (), {
+                "__enter__": lambda s: s, "__exit__": lambda *a: None,
+                "__iter__": lambda s: iter(self.CPUINFO.splitlines(True)),
+                "read": lambda s: self.CPUINFO,
+            })()
+        if "meminfo" in path:
+            return type("f", (), {
+                "__enter__": lambda s: s, "__exit__": lambda *a: None,
+                "__iter__": lambda s: iter(self.MEMINFO.splitlines(True)),
+                "read": lambda s: self.MEMINFO,
+            })()
+        raise FileNotFoundError(f"Unexpected open: {path}")
+
     def _fake_run(self, cmd, *args, **kwargs):
-        """Return canned output based on the command."""
-        if "dmidecode" in cmd and "-t" in cmd:
-            idx = cmd.index("-t")
-            arg = cmd[idx + 1]
-            if arg == "baseboard":
-                return MagicMock(returncode=0, stdout=self.DMI_BASEBOARD, stderr="")
-            elif arg == "memory":
-                return MagicMock(returncode=0, stdout=self.DMI_MEMORY, stderr="")
+        """Return canned subprocess output based on the command."""
         if "nvidia-smi" in cmd:
             return MagicMock(returncode=0, stdout=self.NVIDIA_SMI, stderr="")
         if "lsblk" in cmd:
@@ -565,47 +573,40 @@ class TestHardwareInfo:
 
     def test_hardware_info_returns_all_sections(self, monkeypatch):
         monkeypatch.setattr(tools.subprocess, "run", self._fake_run)
-        # Mock /proc/cpuinfo
-        monkeypatch.setattr("builtins.open", lambda path, *a, **kw: (
-            type("f", (), {
-                "__enter__": lambda s: s,
-                "__exit__": lambda *a: None,
-                "__iter__": lambda s: iter(self.CPUINFO.splitlines(True)),
-                "read": lambda s: self.CPUINFO,
-            })()
-        ))
+        monkeypatch.setattr("builtins.open", self._fake_open)
         result = tools.get_hardware_info()
         assert "ASUSTeK" in result
         assert "Z97-AR" in result
+        assert "Rev 1.xx" in result
         assert "i7-4790K" in result
         assert "8 cores" in result
         assert "GTX 970" in result
         assert "4096 MiB" in result
-        assert "32 GB" in result  # 16384 + 16384 = 32768 MB = 32 GB
-        assert "DDR3" in result
+        assert "31 GB" in result  # 32806376 kB ≈ 31 GB
         assert "SanDisk" in result
         assert "Seagate" in result
 
-    def test_hardware_info_graceful_on_missing_dmidecode(self, monkeypatch):
-        def _fake_run_missing(cmd, *a, **kw):
-            if "dmidecode" in cmd:
-                raise FileNotFoundError("dmidecode not found")
-            if "nvidia-smi" in cmd:
-                return MagicMock(returncode=0, stdout=self.NVIDIA_SMI, stderr="")
-            if "lsblk" in cmd:
-                return MagicMock(returncode=0, stdout=self.LSBK, stderr="")
-            return MagicMock(returncode=0, stdout="", stderr="")
-        monkeypatch.setattr(tools.subprocess, "run", _fake_run_missing)
-        monkeypatch.setattr("builtins.open", lambda path, *a, **kw: (
-            type("f", (), {
-                "__enter__": lambda s: s,
-                "__exit__": lambda *a: None,
-                "__iter__": lambda s: iter(self.CPUINFO.splitlines(True)),
-                "read": lambda s: self.CPUINFO,
-            })()
-        ))
+    def test_hardware_info_graceful_on_missing_sysfs(self, monkeypatch):
+        """When sysfs DMI files are missing, motherboard line should say unavailable."""
+        def _fake_open_missing_board(path, *a, **kw):
+            if "board_vendor" in path or "board_name" in path or "board_version" in path:
+                raise FileNotFoundError("No such file")
+            if "cpuinfo" in path:
+                return type("f", (), {
+                    "__enter__": lambda s: s, "__exit__": lambda *a: None,
+                    "__iter__": lambda s: iter(self.CPUINFO.splitlines(True)),
+                    "read": lambda s: self.CPUINFO,
+                })()
+            if "meminfo" in path:
+                return type("f", (), {
+                    "__enter__": lambda s: s, "__exit__": lambda *a: None,
+                    "read": lambda s: self.MEMINFO,
+                })()
+            raise FileNotFoundError(f"Unexpected: {path}")
+        monkeypatch.setattr(tools.subprocess, "run", self._fake_run)
+        monkeypatch.setattr("builtins.open", _fake_open_missing_board)
         result = tools.get_hardware_info()
-        assert "dmidecode not installed" in result or "dmidecode" in result
+        assert "Motherboard: info not available" in result
         assert "i7-4790K" in result  # CPU still works
         assert "GTX 970" in result   # GPU still works
 
@@ -613,42 +614,20 @@ class TestHardwareInfo:
         def _fake_run_no_gpu(cmd, *a, **kw):
             if "nvidia-smi" in cmd:
                 return MagicMock(returncode=1, stdout="", stderr="error")
-            if "dmidecode" in cmd and "-t" in cmd:
-                idx = cmd.index("-t")
-                arg = cmd[idx + 1]
-                if arg == "baseboard":
-                    return MagicMock(returncode=0, stdout=self.DMI_BASEBOARD, stderr="")
-                elif arg == "memory":
-                    return MagicMock(returncode=0, stdout=self.DMI_MEMORY, stderr="")
             if "lsblk" in cmd:
                 return MagicMock(returncode=0, stdout=self.LSBK, stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
         monkeypatch.setattr(tools.subprocess, "run", _fake_run_no_gpu)
-        monkeypatch.setattr("builtins.open", lambda path, *a, **kw: (
-            type("f", (), {
-                "__enter__": lambda s: s,
-                "__exit__": lambda *a: None,
-                "__iter__": lambda s: iter(self.CPUINFO.splitlines(True)),
-                "read": lambda s: self.CPUINFO,
-            })()
-        ))
+        monkeypatch.setattr("builtins.open", self._fake_open)
         result = tools.get_hardware_info()
         assert "ASUSTeK" in result
         assert "Z97-AR" in result
         assert "i7-4790K" in result
-        # Should still have motherboard, CPU, RAM info even without GPU
-        assert "32 GB" in result
+        assert "31 GB" in result  # RAM still works
 
     def test_query_system_dispatches_hardware(self, monkeypatch):
         monkeypatch.setattr(tools.subprocess, "run", self._fake_run)
-        monkeypatch.setattr("builtins.open", lambda path, *a, **kw: (
-            type("f", (), {
-                "__enter__": lambda s: s,
-                "__exit__": lambda *a: None,
-                "__iter__": lambda s: iter(self.CPUINFO.splitlines(True)),
-                "read": lambda s: self.CPUINFO,
-            })()
-        ))
+        monkeypatch.setattr("builtins.open", self._fake_open)
         result = tools.query_system("hardware")
         assert "ASUSTeK" in result
         assert "Z97-AR" in result

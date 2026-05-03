@@ -1,10 +1,10 @@
 # Changelog
 
-## v93
-- Add `query_system(aspect='hardware')` — reports motherboard model, CPU model/core count, GPU model/VRAM/driver, RAM capacity/type/speed per DIMM, and physical disk models/sizes
+## v94
+- Fix `query_system(aspect='hardware')` — replace `sudo dmidecode` (requires root, unavailable to `discord-bot` user) with world-readable sysfs DMI files for motherboard info and `/proc/meminfo` for RAM capacity
 
-## v92
-- Add `query_system(aspect='hardware')` — reports motherboard model, CPU model/core count, GPU model/VRAM/driver, RAM capacity/type/speed per DIMM, and physical disk models/sizes
+## v93
+- Fix `query_system(aspect='hardware')` — replace `sudo dmidecode` (requires root, unavailable to `discord-bot` user) with world-readable sysfs DMI files for motherboard info and `/proc/meminfo` for RAM capacity
 
 ## v91
 - Fix STT aliasing: replace naive [::3] decimation with audioop.ratecv (stdlib linear-interp resampler) for 48kHz→16kHz — eliminates aliasing that made speech unintelligible to Whisper

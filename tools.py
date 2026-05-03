@@ -1817,34 +1817,34 @@ def get_hardware_info() -> str:
     """Query motherboard model, CPU, GPU, RAM capacity, and disk model info."""
     parts = ["=== Hardware Information ==="]
 
-    # Motherboard
+    # Motherboard — read from sysfs DMI entries (no root needed)
     try:
-        r = subprocess.run(
-            ["sudo", "dmidecode", "-t", "baseboard"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode == 0:
-            manufacturer = ""
-            product = ""
-            serial = ""
-            for line in r.stdout.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("Manufacturer:"):
-                    manufacturer = stripped.split(":", 1)[1].strip()
-                elif stripped.startswith("Product Name:"):
-                    product = stripped.split(":", 1)[1].strip()
-                elif stripped.startswith("Serial Number:"):
-                    serial = stripped.split(":", 1)[1].strip()
-            if manufacturer and product:
-                parts.append(f"Motherboard: {manufacturer} {product} (SN: {serial})")
-            else:
-                parts.append("Motherboard: info not available via dmidecode")
+        vendor = ""
+        product = ""
+        version = ""
+        for path, key in [
+            ("/sys/devices/virtual/dmi/id/board_vendor", "vendor"),
+            ("/sys/devices/virtual/dmi/id/board_name", "product"),
+            ("/sys/devices/virtual/dmi/id/board_version", "version"),
+        ]:
+            try:
+                with open(path) as f:
+                    val = f.read().strip()
+                    if key == "vendor":
+                        vendor = val
+                    elif key == "product":
+                        product = val
+                    elif key == "version":
+                        version = val
+            except (FileNotFoundError, PermissionError, OSError):
+                pass
+        if vendor and product:
+            mobo = f"Motherboard: {vendor} {product}"
+            if version and version not in ("To be filled by O.E.M.", ""):
+                mobo += f" ({version})"
+            parts.append(mobo)
         else:
-            parts.append("Motherboard: dmidecode returned non-zero exit code")
-    except FileNotFoundError:
-        parts.append("Motherboard: dmidecode not installed")
-    except subprocess.TimeoutExpired:
-        parts.append("Motherboard: dmidecode timed out")
+            parts.append("Motherboard: info not available")
     except Exception as e:
         parts.append(f"Motherboard: error ({e})")
 
@@ -1893,78 +1893,18 @@ def get_hardware_info() -> str:
     except Exception as e:
         parts.append(f"GPU: error ({e})")
 
-    # RAM
+    # RAM — from /proc/meminfo (no root needed)
     try:
-        r = subprocess.run(
-            ["sudo", "dmidecode", "-t", "memory"],
-            capture_output=True, text=True, timeout=10,
-        )
-        total_gb = 0
-        dimm_count = 0
-        dimm_details = []
-        if r.returncode == 0:
-            current_size = None
-            current_type = None
-            current_speed = None
-            for line in r.stdout.splitlines():
-                stripped = line.strip()
-                if "Size:" in stripped and "MB" in stripped:
-                    try:
-                        size_mb = int(stripped.split(":")[1].strip().replace(" MB", "").replace(",", ""))
-                        if size_mb > 0:
-                            current_size = size_mb
-                    except (ValueError, IndexError):
-                        pass
-                elif "Type:" in stripped and "DDR" in stripped:
-                    current_type = stripped.split(":", 1)[1].strip()
-                elif "Speed:" in stripped and "MT/s" in stripped:
-                    current_speed = stripped.split(":", 1)[1].strip()
-                elif stripped.startswith("Memory Device") and current_size is not None:
-                    # Previous device ended — record it
-                    total_gb += current_size
-                    dimm_count += 1
-                    detail = f"  DIMM {dimm_count}: {current_size} MB"
-                    if current_type:
-                        detail += f" {current_type}"
-                    if current_speed:
-                        detail += f" @ {current_speed}"
-                    dimm_details.append(detail)
-                    current_size = None
-                    current_type = None
-                    current_speed = None
-            # Don't forget the last device
-            if current_size is not None:
-                total_gb += current_size
-                dimm_count += 1
-                detail = f"  DIMM {dimm_count}: {current_size} MB"
-                if current_type:
-                    detail += f" {current_type}"
-                if current_speed:
-                    detail += f" @ {current_speed}"
-                dimm_details.append(detail)
-
-        # Also get usable memory from /proc/meminfo for a cross-check
         mem_total_kb = 0
-        try:
-            with open("/proc/meminfo") as f:
-                for line in f:
-                    if line.startswith("MemTotal:"):
-                        mem_total_kb = int(line.split(":")[1].strip().split()[0])
-                        break
-        except Exception:
-            pass
-
-        if total_gb > 0:
-            parts.append(f"RAM: {total_gb // 1024} GB installed ({dimm_count} DIMMs)")
-            parts.extend(dimm_details)
-        elif mem_total_kb > 0:
-            parts.append(f"RAM: {mem_total_kb // 1048576} GB usable (dmidecode unavailable)")
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    mem_total_kb = int(line.split(":")[1].strip().split()[0])
+                    break
+        if mem_total_kb > 0:
+            parts.append(f"RAM: {mem_total_kb // 1048576} GB usable")
         else:
             parts.append("RAM: unable to determine")
-    except FileNotFoundError:
-        parts.append("RAM: dmidecode not installed")
-    except subprocess.TimeoutExpired:
-        parts.append("RAM: dmidecode timed out")
     except Exception as e:
         parts.append(f"RAM: error ({e})")
 
