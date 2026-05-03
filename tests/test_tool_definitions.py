@@ -128,6 +128,30 @@ class TestSmartAspect:
 
 
 # ---------------------------------------------------------------------------
+# Hardware aspect in query_system
+# ---------------------------------------------------------------------------
+
+class TestHardwareAspect:
+    def test_hardware_aspect_present_by_default(self, monkeypatch):
+        monkeypatch.setattr(tools, "ENABLE_SMART", False)
+        defs = tools._build_tool_definitions()
+        health = _tool(defs, "query_system")
+        aspects = health["input_schema"]["properties"]["aspect"]["enum"]
+        assert "hardware" in aspects
+
+    def test_hardware_aspect_in_description(self, monkeypatch):
+        monkeypatch.setattr(tools, "ENABLE_SMART", False)
+        defs = tools._build_tool_definitions()
+        health = _tool(defs, "query_system")
+        desc = health["description"]
+        assert "hardware" in desc
+        assert "motherboard" in desc
+        assert "CPU" in desc
+        assert "GPU" in desc
+        assert "RAM" in desc
+
+
+# ---------------------------------------------------------------------------
 # Log enum matches whitelists
 # ---------------------------------------------------------------------------
 

@@ -1813,6 +1813,178 @@ def get_system_stats() -> str:
     return "\n".join(parts)
 
 
+def get_hardware_info() -> str:
+    """Query motherboard model, CPU, GPU, RAM capacity, and disk model info."""
+    parts = ["=== Hardware Information ==="]
+
+    # Motherboard
+    try:
+        r = subprocess.run(
+            ["sudo", "dmidecode", "-t", "baseboard"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            manufacturer = ""
+            product = ""
+            serial = ""
+            for line in r.stdout.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("Manufacturer:"):
+                    manufacturer = stripped.split(":", 1)[1].strip()
+                elif stripped.startswith("Product Name:"):
+                    product = stripped.split(":", 1)[1].strip()
+                elif stripped.startswith("Serial Number:"):
+                    serial = stripped.split(":", 1)[1].strip()
+            if manufacturer and product:
+                parts.append(f"Motherboard: {manufacturer} {product} (SN: {serial})")
+            else:
+                parts.append("Motherboard: info not available via dmidecode")
+        else:
+            parts.append("Motherboard: dmidecode returned non-zero exit code")
+    except FileNotFoundError:
+        parts.append("Motherboard: dmidecode not installed")
+    except subprocess.TimeoutExpired:
+        parts.append("Motherboard: dmidecode timed out")
+    except Exception as e:
+        parts.append(f"Motherboard: error ({e})")
+
+    # CPU
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    cpu_model = line.split(":", 1)[1].strip()
+                    # Count cores
+                    core_count = 0
+                    with open("/proc/cpuinfo") as f2:
+                        for l2 in f2:
+                            if l2.startswith("processor"):
+                                core_count += 1
+                    parts.append(f"CPU: {cpu_model} ({core_count} cores)")
+                    break
+    except Exception as e:
+        parts.append(f"CPU: unavailable ({e})")
+
+    # GPU
+    try:
+        r = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=name,memory.total,driver_version",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            name, vram, driver = [x.strip() for x in r.stdout.strip().split(",")]
+            parts.append(f"GPU: {name} ({vram} MiB VRAM) — driver {driver}")
+        else:
+            # Fallback: try lspci
+            r2 = subprocess.run(
+                ["lspci"],
+                capture_output=True, text=True, timeout=10,
+            )
+            for line in r2.stdout.splitlines():
+                if "VGA" in line or "3D" in line:
+                    parts.append(f"GPU: {line.strip()}")
+                    break
+    except FileNotFoundError:
+        parts.append("GPU: nvidia-smi not found (no NVIDIA driver?)")
+    except subprocess.TimeoutExpired:
+        parts.append("GPU: nvidia-smi timed out")
+    except Exception as e:
+        parts.append(f"GPU: error ({e})")
+
+    # RAM
+    try:
+        r = subprocess.run(
+            ["sudo", "dmidecode", "-t", "memory"],
+            capture_output=True, text=True, timeout=10,
+        )
+        total_gb = 0
+        dimm_count = 0
+        dimm_details = []
+        if r.returncode == 0:
+            current_size = None
+            current_type = None
+            current_speed = None
+            for line in r.stdout.splitlines():
+                stripped = line.strip()
+                if "Size:" in stripped and "MB" in stripped:
+                    try:
+                        size_mb = int(stripped.split(":")[1].strip().replace(" MB", "").replace(",", ""))
+                        if size_mb > 0:
+                            current_size = size_mb
+                    except (ValueError, IndexError):
+                        pass
+                elif "Type:" in stripped and "DDR" in stripped:
+                    current_type = stripped.split(":", 1)[1].strip()
+                elif "Speed:" in stripped and "MT/s" in stripped:
+                    current_speed = stripped.split(":", 1)[1].strip()
+                elif stripped.startswith("Memory Device") and current_size is not None:
+                    # Previous device ended — record it
+                    total_gb += current_size
+                    dimm_count += 1
+                    detail = f"  DIMM {dimm_count}: {current_size} MB"
+                    if current_type:
+                        detail += f" {current_type}"
+                    if current_speed:
+                        detail += f" @ {current_speed}"
+                    dimm_details.append(detail)
+                    current_size = None
+                    current_type = None
+                    current_speed = None
+            # Don't forget the last device
+            if current_size is not None:
+                total_gb += current_size
+                dimm_count += 1
+                detail = f"  DIMM {dimm_count}: {current_size} MB"
+                if current_type:
+                    detail += f" {current_type}"
+                if current_speed:
+                    detail += f" @ {current_speed}"
+                dimm_details.append(detail)
+
+        # Also get usable memory from /proc/meminfo for a cross-check
+        mem_total_kb = 0
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        mem_total_kb = int(line.split(":")[1].strip().split()[0])
+                        break
+        except Exception:
+            pass
+
+        if total_gb > 0:
+            parts.append(f"RAM: {total_gb // 1024} GB installed ({dimm_count} DIMMs)")
+            parts.extend(dimm_details)
+        elif mem_total_kb > 0:
+            parts.append(f"RAM: {mem_total_kb // 1048576} GB usable (dmidecode unavailable)")
+        else:
+            parts.append("RAM: unable to determine")
+    except FileNotFoundError:
+        parts.append("RAM: dmidecode not installed")
+    except subprocess.TimeoutExpired:
+        parts.append("RAM: dmidecode timed out")
+    except Exception as e:
+        parts.append(f"RAM: error ({e})")
+
+    # Disk storage — physical drives
+    try:
+        r = subprocess.run(
+            ["lsblk", "-o", "NAME,SIZE,TYPE,MODEL,MOUNTPOINT", "-d", "-e", "7,11"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            lines = [l for l in r.stdout.splitlines() if l.strip()]
+            parts.append("Storage:")
+            for line in lines:
+                parts.append(f"  {line}")
+    except Exception as e:
+        parts.append(f"Storage: error ({e})")
+
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Gaming tools
 # ---------------------------------------------------------------------------
@@ -1986,6 +2158,8 @@ def query_system(aspect: str = "stats", limit: int = 20) -> str:
         return query_network("external_ip")
     elif aspect == "network_ports":
         return query_network("ports")
+    elif aspect == "hardware":
+        return get_hardware_info()
     return f"Unknown aspect: {aspect}"
 
 
@@ -2052,6 +2226,7 @@ def _build_tool_definitions() -> list[dict]:
         "stats", "failed", "updates", "processes",
         "storage_usage", "storage_breakdown", "storage_largest",
         "network_tailscale", "network_ip", "network_ports",
+        "hardware",
     ]
     _smart_desc = ""
     if ENABLE_SMART and SMART_DEVICES:
@@ -2067,7 +2242,7 @@ def _build_tool_definitions() -> list[dict]:
         {
             "name": "query_system",
             "description": (
-                "Check system health, storage, or network status. "
+                "Check system health, storage, network, or hardware info. "
                 "stats: CPU load average, memory, GPU temp/VRAM/utilisation. "
                 "failed: systemd units in a failed state. "
                 "updates: apt packages available to upgrade. "
@@ -2078,7 +2253,9 @@ def _build_tool_definitions() -> list[dict]:
                 "storage_largest: top N largest files under /mnt/media — useful for reclaiming space. "
                 "network_tailscale: Tailscale peer list with online/offline status and IPs. "
                 "network_ip: current public IP address of the server. "
-                "network_ports: listening TCP ports and the processes bound to them."
+                "network_ports: listening TCP ports and the processes bound to them. "
+                "hardware: motherboard model, CPU model/core count, GPU model/VRAM/driver, "
+                "RAM capacity/type/speed per DIMM, and physical disk models/sizes."
             ),
             "input_schema": {
                 "type": "object",

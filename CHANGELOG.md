@@ -1,5 +1,11 @@
 # Changelog
 
+## v93
+- Add `query_system(aspect='hardware')` — reports motherboard model, CPU model/core count, GPU model/VRAM/driver, RAM capacity/type/speed per DIMM, and physical disk models/sizes
+
+## v92
+- Add `query_system(aspect='hardware')` — reports motherboard model, CPU model/core count, GPU model/VRAM/driver, RAM capacity/type/speed per DIMM, and physical disk models/sizes
+
 ## v91
 - Fix STT aliasing: replace naive [::3] decimation with audioop.ratecv (stdlib linear-interp resampler) for 48kHz→16kHz — eliminates aliasing that made speech unintelligible to Whisper
 
