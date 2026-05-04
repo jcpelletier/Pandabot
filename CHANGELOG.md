@@ -1,5 +1,8 @@
 # Changelog
 
+## v98
+- Fix STT audio distortion: remove all hardware Opus decoder gain (set_gain calls) — set_gain() takes dB not amplitude multiplier (set_gain(8) = 2.51x not 8x), and packets with natural RMS=31485 (96% of max) were being hard-clipped even at low gain values. Software RMS normalization already targets the correct Whisper input level — hardware gain only added irreversible clipping distortion.
+
 ## v97
 - Fix STT audio clipping: reduce Opus decoder gain 8→4; gain=8 was clipping on loud frames (peak=32768, 400 clipped samples/chunk) adding harmonic distortion that degrades Whisper recognition
 - Fix STT spectral imbalance: add pre-emphasis filter (α=0.97) after 16kHz resampling; Discord audio arrives with ~12% sub-100Hz energy and only ~1% sibilance — pre-emphasis boosts above 300Hz to match Whisper's training distribution

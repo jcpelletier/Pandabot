@@ -475,7 +475,6 @@ class STTSink(_AudioSinkBase):
         try:
             if uid not in self._decoders:
                 self._decoders[uid] = discord.opus.Decoder()
-                self._decoders[uid].set_gain(4)   # Boost output volume; 4x avoids the clipping that 8x causes on loud packets
             pcm = self._decoders[uid].decode(opus_bytes, fec=False)
         except Exception as exc:
             # Log Opus TOC byte (first byte of compressed data) for diagnostics
@@ -496,7 +495,6 @@ class STTSink(_AudioSinkBase):
                 del self._decoders[uid]
             try:
                 self._decoders[uid] = discord.opus.Decoder()
-                self._decoders[uid].set_gain(4)   # Apply gain to replacement decoder too
                 pcm = self._decoders[uid].decode(opus_bytes, fec=False)
                 log.info("STT: decoder reset succeeded for user %s seq=%d opus_len=%d",
                          uid, seq, len(opus_bytes) if opus_bytes else 0)
