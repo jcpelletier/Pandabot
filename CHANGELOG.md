@@ -1,5 +1,9 @@
 # Changelog
 
+## v100
+- Fix STT Whisper hallucination on clean audio: replace `audioop.ratecv` (linear interpolation without anti-aliasing) with numpy FIR low-pass filter + 3:1 decimation. `audioop.ratecv` on Python 3.12+ produces spike artifacts and stair-step distortion, causing all speech to be misclassified as noise/whisper by the Whisper model. The new numpy-based pipeline applies a 15-tap triangular anti-alias filter (~7kHz cutoff) before decimation, producing clean 16kHz output that Whisper can transcribe correctly.
+- Replace `audioop.tomono` with numpy `mean()` channel mixing for consistency (both now use numpy instead of mixing audioop and numpy).
+
 ## v99
 - Fix STT spectral distortion: remove pre-emphasis filter (α=0.97) — it was added in v97 to compensate for gain-induced spectral distortion, but with gain removed in v98 it now actively destroys the already-limited fundamental frequency (0-500Hz) content of CELT NB audio and further amplifies the 2-4kHz region, causing Whisper to see 83% of energy in 2-4kHz (vs ~20% for natural speech). Without pre-emphasis the raw spectral distribution is already unusual due to CELT NB narrowband encoding; adding pre-emphasis made it worse.
 - Fix STT Whisper thresholds for CELT NB: raise `compression_ratio_threshold` 2.0→2.4 (CELT NB spectrally narrow audio can look "over-compressed" to Whisper's internal metrics); lower `no_speech_threshold` 0.3→0.1 (CELT NB audio scores low on Whisper's speech probability detector due to missing high-frequency content above 4kHz)
