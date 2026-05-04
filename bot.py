@@ -792,11 +792,6 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
         # Step 3: s16 → float32 [-1, 1]
         samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32) / 32768.0
 
-        # Step 3b: Pre-emphasis — y[n] = x[n] - 0.97*x[n-1]
-        # Discord's audio processing attenuates high frequencies (sibilance ~0.9% of energy).
-        # Pre-emphasis compensates by boosting above ~300Hz, which is standard in ASR pipelines.
-        samples[1:] -= 0.97 * samples[:-1]
-
         # Step 4: Normalize to target RMS (not peak) — preserves speech-to-noise ratio
         samples = _normalize_audio(samples, target_rms=0.12)
 
@@ -834,9 +829,9 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
             vad_filter=False,                    # Disabled — was removing all audio
             condition_on_previous_text=False,    # Avoid compounding errors across utterances
             temperature=0.0,                     # Greedy decoding (most deterministic, fewer hallucinations)
-            compression_ratio_threshold=2.0,     # Default — reject overly compressed audio
+            compression_ratio_threshold=2.4,     # Raised from 2.0 — CELT NB audio is spectrally narrow and can look "compressed" to Whisper
             log_prob_threshold=-2.0,             # Relaxed — accept lower-probability text for quiet audio
-            no_speech_threshold=0.3,             # Relaxed — less aggressive at discarding "no speech"
+            no_speech_threshold=0.1,             # Aggressive — CELT NB narrowband audio scores low on Whisper's speech detector
         )
         segs = list(segments)
         text = " ".join(seg.text for seg in segs).strip()

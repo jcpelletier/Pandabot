@@ -1,5 +1,9 @@
 # Changelog
 
+## v99
+- Fix STT spectral distortion: remove pre-emphasis filter (α=0.97) — it was added in v97 to compensate for gain-induced spectral distortion, but with gain removed in v98 it now actively destroys the already-limited fundamental frequency (0-500Hz) content of CELT NB audio and further amplifies the 2-4kHz region, causing Whisper to see 83% of energy in 2-4kHz (vs ~20% for natural speech). Without pre-emphasis the raw spectral distribution is already unusual due to CELT NB narrowband encoding; adding pre-emphasis made it worse.
+- Fix STT Whisper thresholds for CELT NB: raise `compression_ratio_threshold` 2.0→2.4 (CELT NB spectrally narrow audio can look "over-compressed" to Whisper's internal metrics); lower `no_speech_threshold` 0.3→0.1 (CELT NB audio scores low on Whisper's speech probability detector due to missing high-frequency content above 4kHz)
+
 ## v98
 - Fix STT audio distortion: remove all hardware Opus decoder gain (set_gain calls) — set_gain() takes dB not amplitude multiplier (set_gain(8) = 2.51x not 8x), and packets with natural RMS=31485 (96% of max) were being hard-clipped even at low gain values. Software RMS normalization already targets the correct Whisper input level — hardware gain only added irreversible clipping distortion.
 
