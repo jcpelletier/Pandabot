@@ -296,6 +296,16 @@ git push
 ssh yourserver "sudo git -C /opt/discord-bot pull origin main && sudo systemctl restart discord-bot"
 ```
 
+> **Windows + WSL note:** If your SSH key lives inside WSL (e.g. `/home/genesis/.ssh/id_ed25519`), use `wsl ssh` from PowerShell/cmd to avoid permission errors on the Windows-visible `\\wsl.localhost\` path:
+> ```powershell
+> wsl ssh -i /home/genesis/.ssh/id_ed25519 user@host <command>
+> ```
+> To copy files to a root-owned path, scp to `/tmp` first, then `sudo cp` on the remote:
+> ```powershell
+> wsl scp -i /home/genesis/.ssh/id_ed25519 ./local-file user@host:/tmp/
+> wsl ssh -i /home/genesis/.ssh/id_ed25519 user@host "sudo cp /tmp/local-file /opt/discord-bot/ && sudo chown discord-bot:discord-bot /opt/discord-bot/local-file"
+> ```
+
 ---
 
 ## Requirements

@@ -312,12 +312,36 @@ def split_message(text: str) -> list[str]:
 
 
 def _calc_rms(data: bytes) -> float:
-    """Return RMS amplitude of raw 16-bit LE PCM bytes."""
+    """Return RMS amplitude of raw 16-bit LE PCM bytes (0–32767 scale)."""
     n = len(data) // 2
     if n == 0:
         return 0.0
     samples = struct.unpack(f"<{n}h", data[: n * 2])
     return (sum(s * s for s in samples) / n) ** 0.5
+
+
+def _normalize_audio(samples: "np.ndarray", target_rms: float = 0.12) -> "np.ndarray":
+    """Normalize audio to a target RMS level, then soft-clip to prevent harsh peaks.
+
+    RMS-based normalization preserves the speech-to-noise ratio better than
+    peak-based normalization.  When audio is mostly quiet with occasional loud
+    transients (like Discord Opus output), peak normalization amplifies the
+    noise floor along with everything else, making Whisper's job harder.
+
+    The two-stage approach:
+      1. Scale so RMS == *target_rms* (brings average level into Whisper's sweet spot)
+      2. Soft-clip any samples exceeding 0.95 to avoid harsh digital clipping
+
+    Silent audio (RMS < 0.001) is returned as-is.
+    """
+    import numpy as np
+    rms = float(np.sqrt(np.mean(samples ** 2)))
+    if rms < 0.001:
+        return samples
+    gain = target_rms / rms
+    scaled = samples * gain
+    # Soft-clip: tanh provides a smooth knee, avoiding the harshness of hard clipping
+    return np.tanh(scaled * 1.5) / 1.5
 
 
 def _pcm_to_wav(pcm: bytes, sample_rate: int = 48000, channels: int = 2) -> bytes:
@@ -343,12 +367,19 @@ except ImportError:
 
 
 class STTSink(_AudioSinkBase):
-    """Buffers per-user PCM audio, fires STT transcription after silence."""
+    """Buffers per-user PCM audio, fires STT transcription after silence.
+
+    Improvements over the original implementation:
+      - Adaptive RMS threshold: dynamically adjusts based on observed noise floor
+      - Minimum utterance duration raised to 0.6s (was 0.4s) to avoid transcribing
+        short clicks/pops
+      - Logs per-utterance stats (duration, peak RMS, frame count) for debugging
+    """
 
     SAMPLE_RATE  = 48000
     CHANNELS     = 2
     SAMPLE_WIDTH = 2    # bytes (16-bit)
-    MIN_SECS     = 0.4  # discard clips shorter than this
+    MIN_SECS     = 0.6  # discard clips shorter than this (raised from 0.4)
 
     def __init__(self, guild_id: int):
         if _AudioSinkBase is not object:
@@ -358,6 +389,11 @@ class STTSink(_AudioSinkBase):
         self._timers: dict[int, threading.Timer] = {}
         self._decoders: dict[int, discord.opus.Decoder] = {}
         self._lock = threading.Lock()
+        # Adaptive noise floor tracking — per-user running average of RMS during silence
+        self._noise_floor: dict[int, float] = {}
+        self._noise_samples: dict[int, int] = {}
+        # Stats for the current utterance (reset on each new utterance start)
+        self._utt_stats: dict[int, dict] = {}
 
     def wants_opus(self) -> bool:
         # Must be True — voice_recv's internal decoder crashes on first bad Opus packet,
@@ -375,29 +411,169 @@ class STTSink(_AudioSinkBase):
         packet     = getattr(data, "packet", None)
         opus_bytes = getattr(packet, "decrypted_data", None) or getattr(data, "opus", None)
 
+        # --- Per-packet debug logging ---
+        # Determine packet type and extract metadata for diagnosing clicking-sound issue
+        pkt_type = "UNKNOWN"
+        seq = -1
+        ts = -1
+        if packet is not None:
+            pkt_cls = type(packet).__name__
+            if pkt_cls == "SilencePacket":
+                pkt_type = "SILENCE"
+            elif pkt_cls == "FakePacket":
+                pkt_type = "FAKE"
+            elif pkt_cls == "RTPPacket":
+                pkt_type = "RTP"
+                # RTP header: first 12 bytes; seq=bytes 2-3, timestamp=bytes 4-7
+                hdr = getattr(packet, "header", None)
+                if hdr and len(hdr) >= 12:
+                    seq = (hdr[2] << 8) | hdr[3]
+                    ts  = (hdr[4] << 24) | (hdr[5] << 16) | (hdr[6] << 8) | hdr[7]
+            else:
+                pkt_type = pkt_cls
+
         # Log first packet once for diagnosis
         if not hasattr(self, "_logged_first"):
             self._logged_first = True
             raw_opus = getattr(data, "opus", None)
             dec_data = getattr(packet, "decrypted_data", None) if packet else None
+            # Log extended bit from RTP header (bit 4 of first byte)
+            ext_bit = "?"
+            if hdr is not None and len(hdr) >= 1:
+                ext_bit = "1" if (hdr[0] & 0b00010000) else "0"
+            # Try to get encryption mode from the voice source
+            src = getattr(data, "source", None)
+            enc_mode = getattr(src, "mode", "n/a") if src is not None else "n/a"
             log.info(
-                "STT first packet: data.opus=%s decrypted_data=%s",
-                raw_opus[:8].hex() if raw_opus else None,
-                dec_data[:8].hex() if dec_data else None,
+                "STT first packet: type=%s seq=%d ts=%d ext=%s mode=%s data.opus=%s decrypted_data=%s",
+                pkt_type, seq, ts, ext_bit, enc_mode,
+                raw_opus[:16].hex() if raw_opus else None,
+                dec_data[:16].hex() if dec_data else None,
             )
 
         if not opus_bytes:
             return
 
+        # --- Save first 10 raw packets for offline analysis ---
+        if not hasattr(self, '_packet_save_count'):
+            self._packet_save_count = 0
+        if self._packet_save_count < 10:
+            import os as _os
+            _pkt_dir = '/opt/discord-bot/stt_packets'
+            _os.makedirs(_pkt_dir, exist_ok=True)
+            _seq = seq
+            _ts = ts
+            _pkt_name = f'pkt_{uid}_{_seq}_{_ts}.bin'
+            with open(_os.path.join(_pkt_dir, _pkt_name), 'wb') as _f:
+                _f.write(opus_bytes)
+            with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_info.txt'), 'w') as _f:
+                _f.write(f'uid={uid} seq={_seq} ts={_ts} pkt_type={pkt_type}\n')
+                _f.write(f'opus_len={len(opus_bytes)}\n')
+                _f.write(f'toc_byte={opus_bytes[0]:02x} opus_bits={bin(opus_bytes[0])[2:].zfill(8)}\n')
+            self._packet_save_count += 1
+
         try:
             if uid not in self._decoders:
                 self._decoders[uid] = discord.opus.Decoder()
+                self._decoders[uid].set_gain(8)   # Boost output volume — default gain=1 is too quiet
             pcm = self._decoders[uid].decode(opus_bytes, fec=False)
-        except Exception:
-            self._decoders.pop(uid, None)
-            return
+        except Exception as exc:
+            # Log Opus TOC byte (first byte of compressed data) for diagnostics
+            opus_toc = opus_bytes[0] if opus_bytes and len(opus_bytes) > 0 else -1
+            opus_config = bin(opus_toc)[2:].zfill(8) if opus_toc >= 0 else "N/A"
+            log.warning(
+                "STT: decode failed for user %s pkt=%s seq=%d ts=%d "
+                "opus_len=%d opus_toc=0x%02x(%s) err=%s",
+                uid, pkt_type, seq, ts,
+                len(opus_bytes) if opus_bytes else 0,
+                opus_toc, opus_config, exc,
+            )
+            # Reset the decoder to break error propagation.
+            # Opus is stateful: one bad packet corrupts the decoder's internal
+            # state, causing ALL subsequent packets to fail too.
+            # By recreating the decoder, the next valid packet gets a fresh start.
+            if uid in self._decoders:
+                del self._decoders[uid]
+            try:
+                self._decoders[uid] = discord.opus.Decoder()
+                self._decoders[uid].set_gain(8)   # Apply gain to replacement decoder too
+                pcm = self._decoders[uid].decode(opus_bytes, fec=False)
+                log.info("STT: decoder reset succeeded for user %s seq=%d opus_len=%d",
+                         uid, seq, len(opus_bytes) if opus_bytes else 0)
+            except Exception as exc2:
+                log.warning("STT: decoder reset STILL failed for user %s seq=%d err=%s",
+                            uid, seq, exc2)
+                return
 
-        is_speech = _calc_rms(pcm) > STT_RMS_THRESHOLD
+        rms = _calc_rms(pcm)
+
+        # --- Per-packet PCM stats ---
+        # Log every Nth packet to avoid log spam; log first 50 packets of each type
+        _pkt_count = getattr(self, "_pkt_count", 0) + 1
+        self._pkt_count = _pkt_count
+        _log_this = _pkt_count <= 50 or (_pkt_count % 100 == 0)
+
+        if _log_this:
+            # Compute PCM stats
+            pcm_len = len(pcm)
+            pcm_samples = pcm_len // 2  # 16-bit samples
+            # Count zeros and flat runs
+            zero_count = 0
+            max_flat_run = 0
+            cur_flat_run = 0
+            prev_val = None
+            min_val = 32767
+            max_val = -32768
+            for i in range(0, pcm_len, 2):
+                if i + 1 >= pcm_len:
+                    break
+                val = (pcm[i+1] << 8) | pcm[i]
+                # Sign-extend 16-bit
+                if val >= 32768:
+                    val -= 65536
+                if val == 0:
+                    zero_count += 1
+                if val < min_val:
+                    min_val = val
+                if val > max_val:
+                    max_val = val
+                if prev_val is not None and val == prev_val:
+                    cur_flat_run += 1
+                else:
+                    cur_flat_run = 0
+                if cur_flat_run > max_flat_run:
+                    max_flat_run = cur_flat_run
+                prev_val = val
+
+            log.info(
+                "STT pkt #%d: type=%s seq=%d ts=%d opus=%dB pcm=%dB(%d samples) "
+                "rms=%.0f min=%d max=%d zeros=%d flat_run=%d",
+                _pkt_count, pkt_type, seq, ts,
+                len(opus_bytes) if opus_bytes else 0,
+                pcm_len, pcm_samples,
+                rms, min_val, max_val, zero_count, max_flat_run,
+            )
+
+        # --- Adaptive noise floor ---
+        # Track the noise floor by observing RMS during non-speech frames.
+        # Use an exponential moving average with a fast update rate.
+        noise_floor = self._noise_floor.get(uid, 0.0)
+        noise_count = self._noise_samples.get(uid, 0)
+
+        # Determine if this frame is speech using an adaptive threshold
+        # Threshold = max(static STT_RMS_THRESHOLD, noise_floor * 2.5)
+        adaptive_threshold = max(STT_RMS_THRESHOLD, noise_floor * 2.5)
+        is_speech = rms > adaptive_threshold
+
+        if not is_speech:
+            # Update noise floor estimate (exponential moving average)
+            if noise_count == 0:
+                noise_floor = rms
+            else:
+                alpha = 0.05  # slow adaptation to avoid reacting to brief noises
+                noise_floor = (1 - alpha) * noise_floor + alpha * rms
+            self._noise_floor[uid] = noise_floor
+            self._noise_samples[uid] = noise_count + 1
 
         with self._lock:
             in_utterance = uid in self._buffers
@@ -408,6 +584,14 @@ class STTSink(_AudioSinkBase):
                 if timer:
                     timer.cancel()
                 self._buffers.setdefault(uid, bytearray()).extend(pcm)
+
+                # Track utterance stats
+                if uid not in self._utt_stats:
+                    self._utt_stats[uid] = {"frames": 0, "peak_rms": 0.0, "total_rms": 0.0}
+                self._utt_stats[uid]["frames"] += 1
+                self._utt_stats[uid]["peak_rms"] = max(self._utt_stats[uid]["peak_rms"], rms)
+                self._utt_stats[uid]["total_rms"] += rms
+
                 timer = threading.Timer(STT_SILENCE_TIMEOUT, self._on_silence, args=[uid])
                 timer.daemon = True
                 timer.start()
@@ -422,23 +606,94 @@ class STTSink(_AudioSinkBase):
         with self._lock:
             buf = self._buffers.pop(user_id, None)
             self._timers.pop(user_id, None)
+            stats = self._utt_stats.pop(user_id, None)
         if not buf:
             return
         min_bytes = int(self.MIN_SECS * self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
         if len(buf) < min_bytes:
             return
-        log.info("STT: silence for user %s, %d bytes — transcribing", user_id, len(buf))
+
+        duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
+        if stats and stats["frames"] > 0:
+            avg_rms = stats["total_rms"] / stats["frames"]
+            log.info(
+                "STT: silence for user %s — %.2fs, %d bytes, %d frames, "
+                "peak_rms=%.0f avg_rms=%.0f noise_floor=%.0f — transcribing",
+                user_id, duration, len(buf), stats["frames"],
+                stats["peak_rms"], avg_rms,
+                self._noise_floor.get(user_id, 0.0),
+            )
+        else:
+            log.info("STT: silence for user %s, %.2fs, %d bytes — transcribing",
+                     user_id, duration, len(buf))
+
+        # DEBUG: Save raw decoded PCM as WAV so we can hear what the Opus decoder actually produces
+        try:
+            import wave as _wave
+            raw_path = "/opt/discord-bot/stt_raw_pcm.wav"
+            with _wave.open(raw_path, "wb") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(48000)
+                wf.writeframes(bytes(buf))
+            log.info("STT: raw PCM WAV saved to %s (%.2fs, %d bytes)", raw_path, duration, len(buf))
+        except Exception as _raw_err:
+            log.debug("Raw PCM WAV save failed: %s", _raw_err)
+
         asyncio.run_coroutine_threadsafe(
             _on_stt_transcript(self.guild_id, user_id, bytes(buf)), bot.loop
         )
 
+    def flush(self) -> None:
+        """Flush any remaining audio buffers (transcribe what we have without waiting for silence).
+
+        Called during cleanup so no audio is lost when the bot disconnects.
+        """
+        with self._lock:
+            uids = list(self._buffers.keys())
+            bufs = {uid: self._buffers.pop(uid) for uid in uids}
+            for uid in uids:
+                timer = self._timers.pop(uid, None)
+                if timer:
+                    timer.cancel()
+                stats = self._utt_stats.pop(uid, None)
+        for uid, buf in bufs.items():
+            if not buf:
+                continue
+            min_bytes = int(self.MIN_SECS * self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
+            if len(buf) < min_bytes:
+                continue
+            duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
+            log.info("STT: flushing %d bytes (%.2fs) for user %s", len(buf), duration, uid)
+
+            # DEBUG: Save raw PCM WAV on flush too
+            try:
+                import wave as _wave
+                raw_path = "/opt/discord-bot/stt_raw_pcm.wav"
+                with _wave.open(raw_path, "wb") as wf:
+                    wf.setnchannels(2)
+                    wf.setsampwidth(2)
+                    wf.setframerate(48000)
+                    wf.writeframes(bytes(buf))
+                log.info("STT: raw PCM WAV saved to %s (%.2fs, %d bytes)", raw_path, duration, len(buf))
+            except Exception as _raw_err:
+                log.debug("Raw PCM WAV save failed: %s", _raw_err)
+
+            asyncio.run_coroutine_threadsafe(
+                _on_stt_transcript(self.guild_id, uid, bytes(buf)), bot.loop
+            )
+
     def cleanup(self) -> None:
+        self.flush()
         with self._lock:
             for timer in self._timers.values():
                 timer.cancel()
             self._buffers.clear()
             self._timers.clear()
         self._decoders.clear()
+        self._noise_floor.clear()
+        self._noise_samples.clear()
+        self._utt_stats.clear()
 
 
 def _start_listening(vc: discord.VoiceClient, guild_id: int) -> None:
@@ -505,40 +760,75 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
     Converts PCM → float32 mono 16kHz numpy array and passes it directly to
     model.transcribe(), bypassing the av/ffmpeg WAV conversion path which was
     producing empty segments despite valid audio.
+
+    Pipeline: 48kHz stereo s16 PCM
+      1. audioop.tomono  → 48kHz mono s16
+      2. audioop.ratecv  → 16kHz mono s16  (linear-interp resample — adequate without VAD)
+      3. np conversion   → float32 [-1, 1]
+      4. Normalization   → RMS ≈ 0.12 (RMS-based, preserves speech-to-noise ratio)
+      5. Whisper         → transcription (VAD disabled; relaxed thresholds)
     """
     import audioop
     import numpy as np
     model = _get_whisper_model()
     try:
-        # Stereo 48kHz 16-bit → mono 16kHz 16-bit using stdlib audioop (linear interp, no aliasing)
-        mono_pcm = audioop.tomono(pcm_bytes, 2, 0.5, 0.5)          # stereo → mono, 48kHz
-        resampled, _ = audioop.ratecv(mono_pcm, 2, 1, 48000, 16000, None)  # 48kHz → 16kHz
-        samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32) / 32768.0
-        log.info("Whisper: input %.2fs (%d samples at 16kHz)", len(samples) / 16000, len(samples))
+        # Step 1: Stereo 48kHz 16-bit → mono 48kHz 16-bit
+        mono_pcm = audioop.tomono(pcm_bytes, 2, 0.5, 0.5)
 
-        # Debug: save the resampled audio so we can verify what Whisper is hearing
+        # Step 2: 48kHz → 16kHz using audioop.ratecv (linear interpolation)
+        # NOTE: audioop.ratecv introduces mild stair-step artifacts, but Whisper
+        # can handle them fine WITHOUT VAD.  The VAD model was the problem — it
+        # classified the resampled audio as noise and removed everything.
+        resampled, _ = audioop.ratecv(mono_pcm, 2, 1, 48000, 16000, None)
+
+        # Step 3: s16 → float32 [-1, 1]
+        samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32) / 32768.0
+
+        # Step 4: Normalize to target RMS (not peak) — preserves speech-to-noise ratio
+        samples = _normalize_audio(samples, target_rms=0.12)
+
+        duration = len(samples) / 16000
+        log.info("Whisper: input %.2fs (%d samples at 16kHz, peak=%.3f, rms=%.3f)",
+                 duration, len(samples),
+                 float(np.max(np.abs(samples))),
+                 float(np.sqrt(np.mean(samples**2))))
+
+        # Debug: save the resampled + normalized audio so we can verify what Whisper is hearing
         try:
             import wave as _wave
-            dbg_path = "/tmp/stt_debug_latest.wav"
+            dbg_path = "/opt/discord-bot/stt_debug_latest.wav"
             with _wave.open(dbg_path, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
                 wf.setframerate(16000)
                 wf.writeframes((samples * 32767).astype(np.int16).tobytes())
+            log.info("Whisper: debug WAV saved to %s (%.2fs)", dbg_path, duration)
         except Exception as _dbg_err:
             log.debug("Debug WAV save failed: %s", _dbg_err)
 
+        # Step 5: Transcribe — NO VAD filter (it was removing all audio due to
+        # resampling artifacts).  Whisper's own internal processing handles
+        # silence/noise rejection via no_speech_threshold and log_prob_threshold.
+        #
+        # Thresholds relaxed from defaults because Discord Opus audio at gain=8
+        # still has a lower SNR than typical microphone input:
+        #   no_speech_threshold: 0.6 → 0.3  (less aggressive at discarding "no speech")
+        #   log_prob_threshold: -1.0 → -2.0 (accept lower-probability text)
         segments, info = model.transcribe(
             samples,
             language="en",
             beam_size=5,
-            vad_filter=False,
-            no_speech_threshold=0.9,   # default 0.6 suppresses uncertain speech; raise to keep segments
-            condition_on_previous_text=False,  # avoid compounding errors across utterances
+            vad_filter=False,                    # Disabled — was removing all audio
+            condition_on_previous_text=False,    # Avoid compounding errors across utterances
+            temperature=0.0,                     # Greedy decoding (most deterministic, fewer hallucinations)
+            compression_ratio_threshold=2.0,     # Default — reject overly compressed audio
+            log_prob_threshold=-2.0,             # Relaxed — accept lower-probability text for quiet audio
+            no_speech_threshold=0.3,             # Relaxed — less aggressive at discarding "no speech"
         )
         segs = list(segments)
         text = " ".join(seg.text for seg in segs).strip()
-        log.info("Whisper: segs=%d lang_prob=%.2f text=%r", len(segs), info.language_probability, text[:120])
+        log.info("Whisper: segs=%d lang_prob=%.2f text=%r",
+                 len(segs), info.language_probability, text[:200])
         if _is_whisper_hallucination(text):
             log.info("Whisper: hallucination detected, discarding")
             return None
