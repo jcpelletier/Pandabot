@@ -1,5 +1,8 @@
 # Changelog
 
+## v101
+- Fix v100 regression: the 15-tap triangular FIR low-pass filter (-3dB at ~3200Hz) destroyed the 2000-4000Hz frequency band (35%→9.2%), removing the consonant/sibilant information that Whisper needs for phoneme discrimination on CELT NB Opus audio. Replaced with simple decimation `mono[::3]` — since CELT NB has negligible energy above 8kHz (0.2% in 4-8kHz range), no anti-aliasing filter is needed. This replicates the same algorithm as `audioop.ratecv` but avoids the Python 3.12 C implementation bugs.
+
 ## v100
 - Fix STT Whisper hallucination on clean audio: replace `audioop.ratecv` (linear interpolation without anti-aliasing) with numpy FIR low-pass filter + 3:1 decimation. `audioop.ratecv` on Python 3.12+ produces spike artifacts and stair-step distortion, causing all speech to be misclassified as noise/whisper by the Whisper model. The new numpy-based pipeline applies a 15-tap triangular anti-alias filter (~7kHz cutoff) before decimation, producing clean 16kHz output that Whisper can transcribe correctly.
 - Replace `audioop.tomono` with numpy `mean()` channel mixing for consistency (both now use numpy instead of mixing audioop and numpy).

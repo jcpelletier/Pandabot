@@ -771,15 +771,16 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
 
     Pipeline: 48kHz stereo s16 PCM
       1. np reshape+mean  → 48kHz mono float64
-      2. Anti-alias LPF + decimate-by-3  → 16kHz mono float64
+      2. Decimate by 3    → 16kHz mono float64  (exact 3:1 ratio; no anti-alias
+         needed because CELT NB Opus audio has negligible energy above 8kHz)
       3. Convert          → float32 [-1, 1]
       4. Normalization    → RMS ≈ 0.12 (RMS-based, preserves speech-to-noise ratio)
       5. Whisper          → transcription (VAD disabled; relaxed thresholds)
 
     NOTE: Uses numpy instead of audioop for steps 1–2.  audioop.ratecv on
     Python 3.12+ has known quality issues (produces spike artifacts and
-    stair-step distortion).  Numpy's anti-alias + decimate gives cleaner audio
-    that Whisper can actually transcribe.
+    stair-step distortion in the C implementation).  Simple numpy indexing
+    (mono[::3]) replicates the same decimation without the bugs.
     """
     import numpy as np
     model = _get_whisper_model()
@@ -789,39 +790,19 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
         raw = np.frombuffer(pcm_bytes, dtype=np.int16).reshape(-1, 2)
         mono = raw.mean(axis=1, dtype=np.float64)
 
-        # Step 2: 48kHz → 16kHz (exact 3:1 ratio)
+        # Step 2: 48kHz → 16kHz (exact 3:1 ratio) — simple decimate by 3
         #   Replaces audioop.ratecv(mono_pcm, 2, 1, 48000, 16000, None)
         #
-        #   audioop.ratecv uses pure linear interpolation WITHOUT anti-aliasing,
-        #   causing frequencies >8kHz to fold back into the passband as garbled
-        #   distortion.  On Python 3.12+ the C implementation also has edge-case
-        #   bugs producing spike artifacts.
+        #   audioop.ratecv for an exact 3:1 ratio just picks every 3rd sample.
+        #   We replicate this with numpy indexing (mono[::3]) — no anti-aliasing
+        #   filter needed because CELT NB Opus audio has negligible energy above 8kHz
+        #   (only 0.2% in 4-8kHz range), so there's nothing to alias.
         #
-        #   Our approach: apply a short FIR low-pass filter (cutoff ~7kHz) then
-        #   decimate by 3.  The filter is a 15-tap triangular window which gives
-        #   ~20dB attenuation at 8kHz — adequate for speech.
-        n = len(mono)
-        in_16 = mono.astype(np.float64)
-
-        # 15-tap triangular low-pass filter (binomial window)
-        kernel = np.array(
-            [1, 2, 3, 4, 5, 6, 7, 8, 7, 6, 5, 4, 3, 2, 1],
-            dtype=np.float64,
-        )
-        kernel /= kernel.sum()  # DC gain = 1.0
-
-        # Pad input to handle edge effects cleanly (reflect padding)
-        pad = len(kernel) // 2  # 7
-        padded = np.pad(in_16, pad, mode="reflect")
-
-        # Convolve and trim padding
-        filtered = np.convolve(padded, kernel, mode="valid")
-        # filtered is now len(in_16) + len(kernel) - 1 - 2*pad = len(in_16) + 14 - 14 = len(in_16)
-        # But convolve(padded, kernel, "valid") gives len(in_16) + len(kernel) - 1 - 2*pad
-        # = len(in_16) + 14 - 14 = len(in_16). Correct.
-
-        # Decimate by 3
-        decimated = filtered[::3]
+        #   The previous v100 approach used a 15-tap triangular FIR LPF with -3dB
+        #   at ~3200Hz, which destroyed the 2000-4000Hz range (35%→9.2%) — exactly
+        #   where CELT NB concentrates consonant/sibilant information that Whisper
+        #   needs for phoneme discrimination.
+        decimated = mono[::3]
 
         # Convert to float32 [-1, 1]
         samples = (decimated / 32768.0).astype(np.float32)
