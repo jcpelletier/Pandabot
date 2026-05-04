@@ -1,5 +1,10 @@
 # Changelog
 
+## v97
+- Fix STT audio clipping: reduce Opus decoder gain 8→4; gain=8 was clipping on loud frames (peak=32768, 400 clipped samples/chunk) adding harmonic distortion that degrades Whisper recognition
+- Fix STT spectral imbalance: add pre-emphasis filter (α=0.97) after 16kHz resampling; Discord audio arrives with ~12% sub-100Hz energy and only ~1% sibilance — pre-emphasis boosts above 300Hz to match Whisper's training distribution
+- Fix STT hallucination filter: switch from exact-match to substring-match so variants like "I'll see you next time" are caught; expand list with common Whisper hallucination phrases
+
 ## v96
 - Fix STT audio volume: call `decoder.set_gain(8)` on every Opus decoder (initial and replacement) — the default gain=1 produces PCM RMS ~2400, far below Whisper's effective range; gain=8 raises it to ~4700 without clipping
 - Fix STT normalization: replace peak-based normalization with RMS-based normalization (`target_rms=0.12`) using soft-clip (tanh) — preserves speech-to-noise ratio better than peak norm when audio has occasional loud transients

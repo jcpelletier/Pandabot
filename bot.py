@@ -475,7 +475,7 @@ class STTSink(_AudioSinkBase):
         try:
             if uid not in self._decoders:
                 self._decoders[uid] = discord.opus.Decoder()
-                self._decoders[uid].set_gain(8)   # Boost output volume — default gain=1 is too quiet
+                self._decoders[uid].set_gain(4)   # Boost output volume; 4x avoids the clipping that 8x causes on loud packets
             pcm = self._decoders[uid].decode(opus_bytes, fec=False)
         except Exception as exc:
             # Log Opus TOC byte (first byte of compressed data) for diagnostics
@@ -496,7 +496,7 @@ class STTSink(_AudioSinkBase):
                 del self._decoders[uid]
             try:
                 self._decoders[uid] = discord.opus.Decoder()
-                self._decoders[uid].set_gain(8)   # Apply gain to replacement decoder too
+                self._decoders[uid].set_gain(4)   # Apply gain to replacement decoder too
                 pcm = self._decoders[uid].decode(opus_bytes, fec=False)
                 log.info("STT: decoder reset succeeded for user %s seq=%d opus_len=%d",
                          uid, seq, len(opus_bytes) if opus_bytes else 0)
@@ -743,15 +743,25 @@ def _get_whisper_model():
 
 
 _WHISPER_HALLUCINATIONS = {
-    "thanks for watching", "thank you for watching", "thanks for watching!",
+    "thanks for watching", "thank you for watching",
     "please like and subscribe", "like and subscribe", "see you next time",
-    "see you in the next video", "bye", "goodbye", "you", "thank you",
-    "thanks", "okay", "ok", "um", "uh", "hmm",
+    "see you in the next video", "i'll see you next time", "i'll see you in the next",
+    "bye", "goodbye", "you", "thank you", "thanks", "okay", "ok", "um", "uh", "hmm",
+    "i don't know", "i don't know what", "i'm sorry", "sorry",
+    "please subscribe", "don't forget to subscribe", "hit the like button",
 }
 
 def _is_whisper_hallucination(text: str) -> bool:
     """Return True if text is a known Whisper hallucination artifact."""
-    return text.lower().strip().rstrip(".!?,") in _WHISPER_HALLUCINATIONS
+    normalized = text.lower().strip().rstrip(".!?,")
+    # Exact match
+    if normalized in _WHISPER_HALLUCINATIONS:
+        return True
+    # Substring match — catches variants like "I'll see you next time" containing "see you next time"
+    for phrase in _WHISPER_HALLUCINATIONS:
+        if len(phrase) >= 8 and phrase in normalized:
+            return True
+    return False
 
 
 def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
@@ -783,6 +793,11 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
 
         # Step 3: s16 → float32 [-1, 1]
         samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32) / 32768.0
+
+        # Step 3b: Pre-emphasis — y[n] = x[n] - 0.97*x[n-1]
+        # Discord's audio processing attenuates high frequencies (sibilance ~0.9% of energy).
+        # Pre-emphasis compensates by boosting above ~300Hz, which is standard in ASR pipelines.
+        samples[1:] -= 0.97 * samples[:-1]
 
         # Step 4: Normalize to target RMS (not peak) — preserves speech-to-noise ratio
         samples = _normalize_audio(samples, target_rms=0.12)
