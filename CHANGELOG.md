@@ -1,5 +1,10 @@
 # Changelog
 
+## v102
+- Fix STT hallucination: remove tanh soft-clip from `_normalize_audio()` — testing with large-v3 showed that pure linear normalization changed transcription from "Thanks for watching!" (hallucination, no_speech=0.696) to "Thank you." (no_speech=0.759), and at RMS=0.3 gave no_speech=0.676. The tanh soft-clip was distorting the audio in a way that pushed Whisper toward its hallucination mode.
+- Fix STT normalization: increase RMS target from 0.12 to 0.25 — bring quiet Opus-decoded speech further into Whisper's effective input range. Combined with linear-only normalization, higher RMS gives Whisper more signal to work with.
+- Fix STT threshold: revert `no_speech_threshold` from 0.1 back to 0.6 (Whisper default) — the aggressive 0.1 setting was discarding valid speech segments. The original rationale (CELT NB narrowband audio scores low on speech detection) was correct, but the aggressive threshold was making things worse, not better.
+
 ## v101
 - Fix v100 regression: the 15-tap triangular FIR low-pass filter (-3dB at ~3200Hz) destroyed the 2000-4000Hz frequency band (35%→9.2%), removing the consonant/sibilant information that Whisper needs for phoneme discrimination on CELT NB Opus audio. Replaced with simple decimation `mono[::3]` — since CELT NB has negligible energy above 8kHz (0.2% in 4-8kHz range), no anti-aliasing filter is needed. This replicates the same algorithm as `audioop.ratecv` but avoids the Python 3.12 C implementation bugs.
 

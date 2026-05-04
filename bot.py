@@ -320,17 +320,23 @@ def _calc_rms(data: bytes) -> float:
     return (sum(s * s for s in samples) / n) ** 0.5
 
 
-def _normalize_audio(samples: "np.ndarray", target_rms: float = 0.12) -> "np.ndarray":
-    """Normalize audio to a target RMS level, then soft-clip to prevent harsh peaks.
+def _normalize_audio(samples: "np.ndarray", target_rms: float = 0.25) -> "np.ndarray":
+    """Normalize audio to a target RMS level (pure linear scaling, no soft-clip).
 
     RMS-based normalization preserves the speech-to-noise ratio better than
     peak-based normalization.  When audio is mostly quiet with occasional loud
     transients (like Discord Opus output), peak normalization amplifies the
     noise floor along with everything else, making Whisper's job harder.
 
-    The two-stage approach:
-      1. Scale so RMS == *target_rms* (brings average level into Whisper's sweet spot)
-      2. Soft-clip any samples exceeding 0.95 to avoid harsh digital clipping
+    Pure linear scaling only (no tanh soft-clip).  Testing with large-v3 showed
+    that removing the tanh soft-clip changed the transcription result from
+    "Thanks for watching!" (hallucination) to "Thank you." (closer to speech),
+    with no_speech_prob dropping from 0.696 to 0.676 at RMS=0.3.  The soft-clip
+    was distorting the audio in a way that pushed Whisper toward its
+    hallucination mode.
+
+    The higher target RMS (0.25 vs 0.12) brings quiet Opus-decoded speech
+    further into Whisper's effective input range.
 
     Silent audio (RMS < 0.001) is returned as-is.
     """
@@ -339,9 +345,7 @@ def _normalize_audio(samples: "np.ndarray", target_rms: float = 0.12) -> "np.nda
     if rms < 0.001:
         return samples
     gain = target_rms / rms
-    scaled = samples * gain
-    # Soft-clip: tanh provides a smooth knee, avoiding the harshness of hard clipping
-    return np.tanh(scaled * 1.5) / 1.5
+    return samples * gain
 
 
 def _pcm_to_wav(pcm: bytes, sample_rate: int = 48000, channels: int = 2) -> bytes:
@@ -807,8 +811,8 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
         # Convert to float32 [-1, 1]
         samples = (decimated / 32768.0).astype(np.float32)
 
-        # Step 3: Normalize to target RMS (not peak) — preserves speech-to-noise ratio
-        samples = _normalize_audio(samples, target_rms=0.12)
+        # Step 3: Normalize to target RMS (linear only, no soft-clip) — preserves speech-to-noise ratio
+        samples = _normalize_audio(samples, target_rms=0.25)
 
         duration = len(samples) / 16000
         log.info("Whisper: input %.2fs (%d samples at 16kHz, peak=%.3f, rms=%.3f)",
@@ -833,10 +837,12 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
         # resampling artifacts).  Whisper's own internal processing handles
         # silence/noise rejection via no_speech_threshold and log_prob_threshold.
         #
-        # Thresholds relaxed from defaults because Discord Opus audio at gain=8
-        # still has a lower SNR than typical microphone input:
-        #   no_speech_threshold: 0.6 → 0.3  (less aggressive at discarding "no speech")
-        #   log_prob_threshold: -1.0 → -2.0 (accept lower-probability text)
+        #   no_speech_threshold: 0.6 (default) — use Whisper's standard sensitivity.
+        #     Previously set to 0.1 (aggressive) thinking CELT NB audio scores low on
+        #     speech detection, but testing showed this caused valid segments to be
+        #     discarded.
+        #   log_prob_threshold: -1.0 → -2.0 (relaxed — accept lower-probability text
+        #     since Discord Opus audio has lower SNR than typical mic input)
         segments, info = model.transcribe(
             samples,
             language="en",
@@ -846,7 +852,7 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
             temperature=0.0,                     # Greedy decoding (most deterministic, fewer hallucinations)
             compression_ratio_threshold=2.4,     # Raised from 2.0 — CELT NB audio is spectrally narrow and can look "compressed" to Whisper
             log_prob_threshold=-2.0,             # Relaxed — accept lower-probability text for quiet audio
-            no_speech_threshold=0.1,             # Aggressive — CELT NB narrowband audio scores low on Whisper's speech detector
+            no_speech_threshold=0.6,             # Default — use Whisper's built-in no_speech detector at standard sensitivity
         )
         segs = list(segments)
         text = " ".join(seg.text for seg in segs).strip()
