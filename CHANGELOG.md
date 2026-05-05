@@ -1,7 +1,7 @@
 # Changelog
 
-## v108
-- (Placeholder — next version)
+## v109
+- Fix TTS silent skip for STT-triggered responses: `speak_response()` now logs when the voice client is not connected (previously returned silently with zero diagnostic trail), and the second mid-stream disconnect check also logs. `_on_stt_transcript()` now pings `_voice_last_play[guild_id]` at the start of the pipeline (before Whisper transcription) to prevent `task_voice_idle_check` from disconnecting the bot during the ~8-11s Whisper+Claude processing window. Prior to this fix, if the last TTS play was more than `TTS_IDLE_TIMEOUT` (300s) ago, the idle checker would disconnect the bot between audio capture and TTS response — the hallucination diagnostic message would reach Claude, Claude would reply, but `speak_response()` would silently return because `_voice_clients.get(guild_id)` was `None`.
 
 ## v107
 - SSRC mapping audit: extract Synchronization Source (SSRC) from RTP header bytes 8-11 for every incoming audio packet. The `STTSink` now maintains an `_ssrc_map` dict tracking which SSRC belongs to which Discord user. Per-packet logs include `ssrc=N`, first-packet log shows SSRC+seq+ts, and `info.txt` saves the SSRC per packet. On each utterance, an SSRC audit log line reports the user's SSRC and the full mapping table — critical for verifying that the bot is actually receiving audio from the correct sender (SSRC mismatch = subscribed to wrong stream).

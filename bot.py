@@ -992,6 +992,11 @@ async def _transcribe_audio(pcm_bytes: bytes) -> str | None:
 
 async def _on_stt_transcript(guild_id: int, user_id: int, pcm_bytes: bytes) -> None:
     """Transcribe speech, call Claude, post to text channel, and speak the reply."""
+    import time as _time
+
+    # Prevent idle-disconnect while STT pipeline processes (Whisper + Claude ~8-11s)
+    _voice_last_play[guild_id] = _time.monotonic()
+
     transcript = await _transcribe_audio(pcm_bytes)
     if not transcript:
         return
@@ -1069,6 +1074,7 @@ async def speak_response(guild_id: int, text: str) -> None:
 
     vc = _voice_clients.get(guild_id)
     if vc is None or not vc.is_connected():
+        log.info("TTS: skipping guild=%s — voice client not connected (vc=%s)", guild_id, vc)
         return
 
     sentences = _split_sentences(text)
@@ -1085,6 +1091,7 @@ async def speak_response(guild_id: int, text: str) -> None:
 
         vc = _voice_clients.get(guild_id)
         if vc is None or not vc.is_connected():
+            log.info("TTS: aborting playback for guild=%s — voice disconnected mid-stream", guild_id)
             break
 
         # Wait if the voice client is still finishing the previous sentence
