@@ -54,7 +54,7 @@ def _load_libopus():
         pass
     raise RuntimeError("Cannot find libopus. Install: sudo apt install libopus0")
 
-_opus = _load_libus()
+_opus = _load_libopus()
 
 OPUS_APPLICATION_AUDIO = 2049
 OPUS_APPLICATION_VOIP = 2048

@@ -1,5 +1,11 @@
 # Changelog
 
+## v111
+- Fix typo in `test_decoder_state.py`: `_load_libus()` → `_load_libopus()` (NameError on line 57).
+
+## v110
+- Add `test_decoder_state.py` — offline decoder state comparison script: decodes saved Opus packets 4 ways (persistent discord.opus.Decoder, per-packet fresh decoder, persistent ctypes libopus, per-packet ctypes libopus), compares PCM metrics (RMS, peak, flat runs, pitch), and re-encodes decoded PCM back to Opus (Method E) to compare TOC bytes against original packets.
+
 ## v109
 - Fix TTS silent skip for STT-triggered responses: `speak_response()` now logs when the voice client is not connected (previously returned silently with zero diagnostic trail), and the second mid-stream disconnect check also logs. `_on_stt_transcript()` now pings `_voice_last_play[guild_id]` at the start of the pipeline (before Whisper transcription) to prevent `task_voice_idle_check` from disconnecting the bot during the ~8-11s Whisper+Claude processing window. Prior to this fix, if the last TTS play was more than `TTS_IDLE_TIMEOUT` (300s) ago, the idle checker would disconnect the bot between audio capture and TTS response — the hallucination diagnostic message would reach Claude, Claude would reply, but `speak_response()` would silently return because `_voice_clients.get(guild_id)` was `None`.
 
