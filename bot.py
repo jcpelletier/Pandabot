@@ -998,12 +998,14 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
         # resampling artifacts).  Whisper's own internal processing handles
         # silence/noise rejection via no_speech_threshold and log_prob_threshold.
         #
-        #   no_speech_threshold: 0.6 (default) — use Whisper's standard sensitivity.
-        #     Previously set to 0.1 (aggressive) thinking CELT NB audio scores low on
-        #     speech detection, but testing showed this caused valid segments to be
-        #     discarded.
-        #   log_prob_threshold: -1.0 → -2.0 (relaxed — accept lower-probability text
-        #     since Discord Opus audio has lower SNR than typical mic input)
+        #   initial_prompt: steers Whisper away from YouTube-style hallucinations
+        #     ("Thanks for watching!" etc.) that appear when audio looks like noise.
+        #     Providing a voice-chat context biases the token probabilities toward
+        #     short, conversational speech.
+        #
+        #   no_speech_threshold: 0.6 (default) — standard Whisper sensitivity.
+        #   log_prob_threshold: -2.0 (relaxed) — accept lower-probability text
+        #     since Discord Opus audio has lower SNR than typical mic input.
         segments, info = model.transcribe(
             samples,
             language="en",
@@ -1011,17 +1013,30 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
             vad_filter=False,                    # Disabled — was removing all audio
             condition_on_previous_text=False,    # Avoid compounding errors across utterances
             temperature=0.0,                     # Greedy decoding (most deterministic, fewer hallucinations)
-            compression_ratio_threshold=2.4,     # Raised from 2.0 — CELT NB audio is spectrally narrow and can look "compressed" to Whisper
+            compression_ratio_threshold=2.4,     # Raised from 2.0 — spectrally narrow audio can look "compressed"
             log_prob_threshold=-2.0,             # Relaxed — accept lower-probability text for quiet audio
-            no_speech_threshold=0.6,             # Default — use Whisper's built-in no_speech detector at standard sensitivity
+            no_speech_threshold=0.6,             # Default — use Whisper's built-in no_speech detector
+            initial_prompt="Voice chat transcription.",  # Steers away from YouTube hallucinations
         )
         segs = list(segments)
+        # Log per-segment detail including no_speech_prob so we can see why Whisper discards segments
+        for i, seg in enumerate(segs):
+            nsp = getattr(seg, 'no_speech_prob', None)
+            alp = getattr(seg, 'avg_logprob', None)
+            log.info(
+                "Whisper seg[%d]: text=%r no_speech_prob=%.3f avg_logprob=%.3f",
+                i, seg.text[:80],
+                nsp if nsp is not None else -1.0,
+                alp if alp is not None else 0.0,
+            )
         text = " ".join(seg.text for seg in segs).strip()
         log.info("Whisper: segs=%d lang_prob=%.2f text=%r",
                  len(segs), info.language_probability, text[:200])
+        if not segs:
+            log.info("Whisper: no segments returned — audio likely classified as non-speech (use !hear to diagnose)")
         if _is_whisper_hallucination(text):
-            log.info("Whisper: hallucination detected — replacing with diagnostic message")
-            return "[Audio reception issue: the user said something but the bot's voice receiver only captured noise/silence. This is a known debug issue — audio packets are received but contain no recognizable speech.]"
+            log.info("Whisper: hallucination detected — use !hear to play back what the bot captured")
+            return "[Audio reception issue: the user said something but the bot's voice receiver only captured noise/silence. Use **!hear** in the text channel to play back what the bot recorded.]"
         return text or None
     except Exception as exc:
         log.warning("Whisper transcription error: %s", exc, exc_info=True)
@@ -1476,6 +1491,67 @@ async def cmd_test_audio(ctx: commands.Context):
         "Run `analyze_loopback.py` on the server to compare input vs captured output."
     )
     log.info("Loopback test complete for guild %s", guild_id)
+
+
+@bot.command(name="hear")
+async def cmd_hear(ctx: commands.Context):
+    """Play back the last captured raw audio so you can hear what the bot recorded.
+
+    This is the single most important diagnostic tool for the STT pipeline.
+    The bot will play the last stt_raw_pcm.wav (48kHz stereo, exactly what
+    Opus decoded before resampling) through the voice channel.  If the audio
+    sounds like speech → Whisper configuration issue.  If it sounds like noise
+    → reception / Discord processing issue.
+    """
+    if ctx.guild is None:
+        await ctx.send("Voice commands only work in a server.")
+        return
+    guild_id = ctx.guild.id
+    vc = _voice_clients.get(guild_id)
+    if vc is None or not vc.is_connected():
+        await ctx.send("I'm not in a voice channel. Use `!join` first.")
+        return
+
+    import os as _os
+    raw_path = "/opt/discord-bot/stt_raw_pcm.wav"
+    debug_path = "/opt/discord-bot/stt_debug_latest.wav"
+
+    for path, label in [(raw_path, "raw 48kHz capture"), (debug_path, "16kHz Whisper input")]:
+        if not _os.path.exists(path):
+            continue
+        size_kb = _os.path.getsize(path) // 1024
+        if vc.is_playing():
+            vc.stop()
+            import asyncio as _asyncio
+            await _asyncio.sleep(0.3)
+        source = discord.FFmpegPCMAudio(path)
+        play_done: "asyncio.Future[bool]" = bot.loop.create_future()
+
+        def _after(err, _f=play_done):
+            if _f.done():
+                return
+            if err:
+                bot.loop.call_soon_threadsafe(_f.set_exception, Exception(err))
+            else:
+                bot.loop.call_soon_threadsafe(_f.set_result, True)
+
+        vc.play(source, after=_after)
+        _voice_last_play[guild_id] = __import__("time").monotonic()
+        await ctx.send(f"▶️ Playing **{label}** ({size_kb} KB) — listen and tell me if this sounds like your voice.")
+        try:
+            import asyncio as _asyncio2
+            await _asyncio2.wait_for(_asyncio2.shield(play_done), timeout=30)
+        except Exception as exc:
+            log.warning("Hear playback error (%s): %s", label, exc)
+        import asyncio as _asyncio3
+        await _asyncio3.sleep(0.5)
+
+    await ctx.send(
+        "Done. Does the audio sound like your voice? Reply with:\n"
+        "- `yes` → Audio is speech, Whisper config needs tuning\n"
+        "- `no`  → Audio is noise/garbled, reception pipeline still broken"
+    )
+
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):

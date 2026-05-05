@@ -1,5 +1,11 @@
 # Changelog
 
+## v114
+- Add `!hear` command: plays back the last captured `stt_raw_pcm.wav` (raw 48kHz stereo) and `stt_debug_latest.wav` (16kHz Whisper input) through the voice channel so the user can hear exactly what the bot recorded. This is the key diagnostic to determine whether the STT failure is in audio reception (noise) or in Whisper configuration (degraded but intelligible speech).
+- Improve Whisper: add `initial_prompt="Voice chat transcription."` to steer away from YouTube-style hallucinations ("Thanks for watching!" etc.) that appear when audio looks noise-like to the model.
+- Improve Whisper logging: log per-segment `no_speech_prob` and `avg_logprob` so we can see at runtime why segments are accepted or discarded; log a clear diagnostic hint when no segments are returned.
+- Improve hallucination message: tell the user to run `!hear` to play back what the bot captured.
+
 ## v113
 - No code changes — pre-commit hook requires v113 entry for the auto-bump from v112.
 
