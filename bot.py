@@ -471,10 +471,25 @@ class STTSink(_AudioSinkBase):
         _pkt_name = f'pkt_{uid}_{_seq}_{_ts}.bin'
         with open(_os.path.join(_pkt_dir, _pkt_name), 'wb') as _f:
             _f.write(opus_bytes)
+
+        # ALSO save data.opus separately (pre-decryption) for comparison
+        _raw_opus = getattr(data, "opus", None)
+        _dec_data = getattr(packet, "decrypted_data", None) if packet else None
+        if _raw_opus is not None:
+            with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_raw_opus.bin'), 'wb') as _f:
+                _f.write(_raw_opus)
+        if _dec_data is not None:
+            with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_decrypted.bin'), 'wb') as _f:
+                _f.write(_dec_data)
+
         with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_info.txt'), 'w') as _f:
             _f.write(f'uid={uid} seq={_seq} ts={_ts} pkt_type={pkt_type}\n')
-            _f.write(f'opus_len={len(opus_bytes)}\n')
+            _f.write(f'opus_len={len(opus_bytes)} (bytes actually decoded)\n')
             _f.write(f'toc_byte={opus_bytes[0]:02x} opus_bits={bin(opus_bytes[0])[2:].zfill(8)}\n')
+            _f.write(f'data.opus={"present" if _raw_opus is not None else "NONE"} len={len(_raw_opus) if _raw_opus is not None else 0} hex={_raw_opus[:32].hex() if _raw_opus is not None else ""}\n')
+            _f.write(f'packet.decrypted_data={"present" if _dec_data is not None else "NONE"} len={len(_dec_data) if _dec_data is not None else 0} hex={_dec_data[:32].hex() if _dec_data is not None else ""}\n')
+            if _raw_opus is not None and _dec_data is not None:
+                _f.write(f'SAME?={"YES" if _raw_opus == _dec_data else "DIFFERENT!"}\n')
 
         try:
             if uid not in self._decoders:

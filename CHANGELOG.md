@@ -1,5 +1,8 @@
 # Changelog
 
+## v104
+- Diagnose decrypted_data vs data.opus: save BOTH `packet.decrypted_data` and `data.opus` as separate `.bin` files for each packet (_decrypted.bin and _raw_opus.bin suffixes). Info.txt now includes comparison showing whether the two sources are identical or different — critical for determining if `decrypted_data` exposes the actual decrypted Opus payload or the pre-decryption ciphertext.
+
 ## v103
 - Instrumentation: simultaneous packet+WAV capture — STTSink now tracks which saved `.bin` Opus packets contribute to each utterance via `_utt_packets` dict. On silence/flush, saves `stt_utterance_packets.json` manifest mapping packet filenames to the PCM WAV. Enables offline correlation: decode the same packets 4 ways (discord.opus.Decoder fresh, direct libopus 48k stereo, direct libopus 16k mono, bot pipeline) and compare pitch autocorrelation/spectral metrics to determine root cause of robotic audio.
 - New analysis script: `analyze_correlated_capture.py` — server-side tool that reads the manifest, loads the live WAV, decodes packets 4 ways, computes pitch/spectral/RMS/ZCR/LR-corr metrics, transcribes all with Whisper medium, and prints a comparison table answering 4 key questions about decode-path integrity.
