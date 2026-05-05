@@ -1,5 +1,12 @@
 # Changelog
 
+## v106
+- (Placeholder — next version)
+
+## v105
+- Loopback audio reception test (`!test_audio`): bot generates a 1-second 440Hz sine wave, plays it into the voice channel while simultaneously listening in loopback mode. The `STTSink` gains `loopback_mode` (bypasses bot-user filter) and `suppress_transcribe` (prevents Whisper transcription of the test tone). New analysis script `analyze_loopback.py` compares original vs captured signal (cross-correlation, dominant frequency, SNR, RMS).
+- `_start_listening()` now accepts `**sink_kwargs` forwarded to `STTSink` constructor for per-call configuration.
+
 ## v104
 - Diagnose decrypted_data vs data.opus: save BOTH `packet.decrypted_data` and `data.opus` as separate `.bin` files for each packet (_decrypted.bin and _raw_opus.bin suffixes). Info.txt now includes comparison showing whether the two sources are identical or different — critical for determining if `decrypted_data` exposes the actual decrypted Opus payload or the pre-decryption ciphertext.
 

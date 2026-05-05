@@ -385,7 +385,8 @@ class STTSink(_AudioSinkBase):
     SAMPLE_WIDTH = 2    # bytes (16-bit)
     MIN_SECS     = 0.6  # discard clips shorter than this (raised from 0.4)
 
-    def __init__(self, guild_id: int):
+    def __init__(self, guild_id: int, *, loopback_mode: bool = False,
+                 suppress_transcribe: bool = False):
         if _AudioSinkBase is not object:
             super().__init__()
         self.guild_id = guild_id
@@ -401,6 +402,12 @@ class STTSink(_AudioSinkBase):
         # Packet filenames that contributed to each utterance — for correlating saved .bin
         # packets with the final debug WAV (simultaneous packet+WAV capture).
         self._utt_packets: dict[int, list[str]] = {}
+        # Loopback test mode: when True, allow capturing the bot's own audio playback
+        # so !test_audio can verify end-to-end audio reception.
+        self.loopback_mode = loopback_mode
+        # When True, skip the _on_stt_transcript call so loopback audio doesn't
+        # trigger a hallucinated Whisper transcription + Claude reply.
+        self._suppress_transcribe = suppress_transcribe
 
     def wants_opus(self) -> bool:
         # Must be True — voice_recv's internal decoder crashes on first bad Opus packet,
@@ -411,7 +418,7 @@ class STTSink(_AudioSinkBase):
         if user is None:
             return
         uid = user.id if hasattr(user, "id") else int(user)
-        if bot.user and uid == bot.user.id:
+        if bot.user and uid == bot.user.id and not self.loopback_mode:
             return
 
         # data.opus may be pre-decryption bytes; data.packet.decrypted_data is the real Opus payload
@@ -690,6 +697,9 @@ class STTSink(_AudioSinkBase):
         except Exception as _manifest_err:
             log.debug("STT: packet manifest save failed: %s", _manifest_err)
 
+        if self._suppress_transcribe:
+            log.info("STT: loopback mode — suppressing transcript for user %s", user_id)
+            return
         asyncio.run_coroutine_threadsafe(
             _on_stt_transcript(self.guild_id, user_id, bytes(buf)), bot.loop
         )
@@ -750,6 +760,9 @@ class STTSink(_AudioSinkBase):
                 except Exception as _manifest_err:
                     log.debug("STT: packet manifest save failed: %s", _manifest_err)
 
+            if self._suppress_transcribe:
+                log.info("STT: loopback mode — suppressing flush transcription for user %s", uid)
+                continue
             asyncio.run_coroutine_threadsafe(
                 _on_stt_transcript(self.guild_id, uid, bytes(buf)), bot.loop
             )
@@ -768,13 +781,24 @@ class STTSink(_AudioSinkBase):
         self._utt_stats.clear()
 
 
-def _start_listening(vc: discord.VoiceClient, guild_id: int) -> None:
-    """Attach an STTSink and begin receiving audio."""
+def _start_listening(vc: discord.VoiceClient, guild_id: int, **sink_kwargs) -> None:
+    """Attach an STTSink and begin receiving audio.
+
+    Parameters
+    ----------
+    vc : VoiceClient
+        The voice client to attach to.
+    guild_id : int
+        The guild ID for the sink.
+    **sink_kwargs
+        Extra keyword arguments forwarded to the STTSink constructor
+        (e.g. loopback_mode=True for the !test_audio loopback test).
+    """
     if not ENABLE_STT or _vr is None:
         return
     try:
-        vc.listen(STTSink(guild_id))
-        log.info("STT listening started in guild %s", guild_id)
+        vc.listen(STTSink(guild_id, **sink_kwargs))
+        log.info("STT listening started in guild %s (sink_kwargs=%s)", guild_id, sink_kwargs)
     except Exception as exc:
         log.warning("Could not start STT: %s", exc, exc_info=True)
 
@@ -1275,6 +1299,109 @@ async def cmd_leave(ctx: commands.Context):
     else:
         await ctx.send("I'm not in a voice channel.")
 
+
+@bot.command(name="test_audio")
+async def cmd_test_audio(ctx: commands.Context):
+    """Loopback test: play a known sine wave into voice and listen to what comes back.
+
+    Generates a 1-second 440Hz sine wave, plays it into the current voice
+    channel while simultaneously capturing it via STTSink (loopback mode).
+    The captured WAV and packet manifest are saved for offline analysis.
+    """
+    if ctx.guild is None:
+        await ctx.send("Voice commands only work in a server, not DMs.")
+        return
+    guild_id = ctx.guild.id
+    vc = _voice_clients.get(guild_id)
+    if vc is None or not vc.is_connected():
+        await ctx.send("I'm not in a voice channel. Use `!join` first.")
+        return
+
+    await ctx.send("🔊 **Starting loopback test...** Generating 440Hz sine wave.")
+
+    # --- Generate a 1-second 440Hz sine wave as a temp WAV file ---
+    import wave as _wave
+    import numpy as np
+    import tempfile
+    import time as _time
+    import os as _os
+
+    SAMPLE_RATE = 48000
+    DURATION = 1.0          # seconds
+    FREQ = 440.0            # A4 note
+    AMPLITUDE = 0.5         # -6dBFS
+
+    t = np.linspace(0, DURATION, int(SAMPLE_RATE * DURATION), endpoint=False)
+    # Stereo interleaved 16-bit PCM (same format STTSink uses)
+    samples_mono = (AMPLITUDE * np.sin(2 * np.pi * FREQ * t) * 32767).astype(np.int16)
+    samples_stereo = np.repeat(samples_mono, 2)  # duplicate to both channels
+
+    tmp_wav = _os.path.join(tempfile.gettempdir(), "panda_test_signal.wav")
+    with _wave.open(tmp_wav, "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(samples_stereo.tobytes())
+    log.info("Test signal WAV saved to %s (%d samples)", tmp_wav, len(samples_stereo))
+
+    # --- Stop existing listening, re-attach in loopback mode ---
+    _stop_listening(vc)
+    # Give a brief moment for the old sink to flush
+    await asyncio.sleep(0.5)
+
+    # Attach a fresh sink in loopback mode (captures bot's own audio, no transcription)
+    _start_listening(vc, guild_id, loopback_mode=True, suppress_transcribe=True)
+
+    # --- Play the test signal ---
+    source = discord.FFmpegPCMAudio(tmp_wav)
+    play_done: asyncio.Future = bot.loop.create_future()
+
+    def _after(err, _f=play_done):
+        if _f.done():
+            return
+        if err:
+            bot.loop.call_soon_threadsafe(_f.set_exception, Exception(err))
+        else:
+            bot.loop.call_soon_threadsafe(_f.set_result, True)
+
+    vc.play(source, after=_after)
+    _voice_last_play[guild_id] = _time.monotonic()
+    await ctx.send("▶️ Playing 1s 440Hz test tone into voice channel...")
+
+    try:
+        await asyncio.wait_for(asyncio.shield(play_done), timeout=30)
+        log.info("Test audio playback finished")
+    except Exception as exc:
+        log.warning("Test audio playback error: %s", exc)
+        await ctx.send(f"⚠️ Playback error: {exc}")
+        # Still attempt to recover — the sink may have captured something
+    finally:
+        # Clean up temp file
+        try:
+            _os.remove(tmp_wav)
+        except Exception:
+            pass
+
+    # --- Wait for the silence timer to fire and WAV to be saved ---
+    await ctx.send("⏳ Waiting for silence detection and WAV save...")
+    await asyncio.sleep(STT_SILENCE_TIMEOUT + 2.0)
+
+    # --- Stop loopback listening, restore normal listening ---
+    _stop_listening(vc)
+    await asyncio.sleep(0.5)
+    # Re-attach normal listening (no loopback)
+    _start_listening(vc, guild_id)
+
+    # Report results
+    await ctx.send(
+        "✅ **Loopback test complete!**\n"
+        f"- Played: 1s 440Hz sine wave (stereo, -6dBFS)\n"
+        f"- Captured WAV: `/opt/discord-bot/stt_raw_pcm.wav`\n"
+        f"- Captured packets: `/opt/discord-bot/stt_packets/`\n"
+        f"- Packet manifest: `/opt/discord-bot/stt_utterance_packets.json`\n\n"
+        "Run `analyze_loopback.py` on the server to compare input vs captured output."
+    )
+    log.info("Loopback test complete for guild %s", guild_id)
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
