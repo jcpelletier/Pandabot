@@ -1,5 +1,12 @@
 # Changelog
 
+## v108
+- (Placeholder — next version)
+
+## v107
+- SSRC mapping audit: extract Synchronization Source (SSRC) from RTP header bytes 8-11 for every incoming audio packet. The `STTSink` now maintains an `_ssrc_map` dict tracking which SSRC belongs to which Discord user. Per-packet logs include `ssrc=N`, first-packet log shows SSRC+seq+ts, and `info.txt` saves the SSRC per packet. On each utterance, an SSRC audit log line reports the user's SSRC and the full mapping table — critical for verifying that the bot is actually receiving audio from the correct sender (SSRC mismatch = subscribed to wrong stream).
+- Whisper hallucination handling: instead of returning `None` (which silenced the bot entirely), the hallucination detector now returns a diagnostic message: `"[Audio reception issue: the user said something but the bot's voice receiver only captured noise/silence. This is a known debug issue — audio packets are received but contain no recognizable speech.]"`. This ensures the bot speaks an audible response each time (confirming audio OUTPUT still works) and provides debug context to the LLM.
+
 ## v106
 - (Placeholder — next version)
 

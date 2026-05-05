@@ -402,6 +402,9 @@ class STTSink(_AudioSinkBase):
         # Packet filenames that contributed to each utterance — for correlating saved .bin
         # packets with the final debug WAV (simultaneous packet+WAV capture).
         self._utt_packets: dict[int, list[str]] = {}
+        # SSRC tracking: maps SSRC → user_id for auditing which audio stream we're receiving.
+        # Logged on first packet and at silence/flush for SSRC mapping audit.
+        self._ssrc_map: dict[int, int] = {}  # ssrc → user_id
         # Loopback test mode: when True, allow capturing the bot's own audio playback
         # so !test_audio can verify end-to-end audio reception.
         self.loopback_mode = loopback_mode
@@ -430,6 +433,7 @@ class STTSink(_AudioSinkBase):
         pkt_type = "UNKNOWN"
         seq = -1
         ts = -1
+        ssrc = -1
         if packet is not None:
             pkt_cls = type(packet).__name__
             if pkt_cls == "SilencePacket":
@@ -438,11 +442,12 @@ class STTSink(_AudioSinkBase):
                 pkt_type = "FAKE"
             elif pkt_cls == "RTPPacket":
                 pkt_type = "RTP"
-                # RTP header: first 12 bytes; seq=bytes 2-3, timestamp=bytes 4-7
+                # RTP header: first 12 bytes; seq=bytes 2-3, timestamp=bytes 4-7, SSRC=bytes 8-11
                 hdr = getattr(packet, "header", None)
                 if hdr and len(hdr) >= 12:
-                    seq = (hdr[2] << 8) | hdr[3]
-                    ts  = (hdr[4] << 24) | (hdr[5] << 16) | (hdr[6] << 8) | hdr[7]
+                    seq  = (hdr[2] << 8) | hdr[3]
+                    ts   = (hdr[4] << 24) | (hdr[5] << 16) | (hdr[6] << 8) | hdr[7]
+                    ssrc = (hdr[8] << 24) | (hdr[9] << 16) | (hdr[10] << 8) | hdr[11]
             else:
                 pkt_type = pkt_cls
 
@@ -453,14 +458,15 @@ class STTSink(_AudioSinkBase):
             dec_data = getattr(packet, "decrypted_data", None) if packet else None
             # Log extended bit from RTP header (bit 4 of first byte)
             ext_bit = "?"
+            user_id_str = user.id if hasattr(user, "id") else str(user)
             if hdr is not None and len(hdr) >= 1:
                 ext_bit = "1" if (hdr[0] & 0b00010000) else "0"
             # Try to get encryption mode from the voice source
             src = getattr(data, "source", None)
             enc_mode = getattr(src, "mode", "n/a") if src is not None else "n/a"
             log.info(
-                "STT first packet: type=%s seq=%d ts=%d ext=%s mode=%s data.opus=%s decrypted_data=%s",
-                pkt_type, seq, ts, ext_bit, enc_mode,
+                "STT first packet: user=%s type=%s ssrc=%d seq=%d ts=%d ext=%s mode=%s data.opus=%s decrypted_data=%s",
+                user_id_str, pkt_type, ssrc, seq, ts, ext_bit, enc_mode,
                 raw_opus[:16].hex() if raw_opus else None,
                 dec_data[:16].hex() if dec_data else None,
             )
@@ -490,7 +496,7 @@ class STTSink(_AudioSinkBase):
                 _f.write(_dec_data)
 
         with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_info.txt'), 'w') as _f:
-            _f.write(f'uid={uid} seq={_seq} ts={_ts} pkt_type={pkt_type}\n')
+            _f.write(f'uid={uid} seq={_seq} ts={_ts} ssrc={ssrc} pkt_type={pkt_type}\n')
             _f.write(f'opus_len={len(opus_bytes)} (bytes actually decoded)\n')
             _f.write(f'toc_byte={opus_bytes[0]:02x} opus_bits={bin(opus_bytes[0])[2:].zfill(8)}\n')
             _f.write(f'data.opus={"present" if _raw_opus is not None else "NONE"} len={len(_raw_opus) if _raw_opus is not None else 0} hex={_raw_opus[:32].hex() if _raw_opus is not None else ""}\n')
@@ -537,6 +543,16 @@ class STTSink(_AudioSinkBase):
         self._pkt_count = _pkt_count
         _log_this = _pkt_count <= 50 or (_pkt_count % 100 == 0)
 
+        # Track SSRC-to-user mapping (only for RTP packets with valid SSRC)
+        if pkt_type == "RTP" and ssrc > 0:
+            existing_uid = self._ssrc_map.get(ssrc)
+            if existing_uid is None:
+                self._ssrc_map[ssrc] = uid
+                log.info("STT SSRC map: ssrc=%d → user=%s (new mapping)", ssrc, uid)
+            elif existing_uid != uid:
+                log.warning("STT SSRC CONFLICT: ssrc=%d mapped to user=%s but now seen from user=%s!",
+                            ssrc, existing_uid, uid)
+
         if _log_this:
             # Compute PCM stats
             pcm_len = len(pcm)
@@ -570,9 +586,9 @@ class STTSink(_AudioSinkBase):
                 prev_val = val
 
             log.info(
-                "STT pkt #%d: type=%s seq=%d ts=%d opus=%dB pcm=%dB(%d samples) "
+                "STT pkt #%d: type=%s ssrc=%d seq=%d ts=%d opus=%dB pcm=%dB(%d samples) "
                 "rms=%.0f min=%d max=%d zeros=%d flat_run=%d",
-                _pkt_count, pkt_type, seq, ts,
+                _pkt_count, pkt_type, ssrc, seq, ts,
                 len(opus_bytes) if opus_bytes else 0,
                 pcm_len, pcm_samples,
                 rms, min_val, max_val, zero_count, max_flat_run,
@@ -644,8 +660,15 @@ class STTSink(_AudioSinkBase):
             self._timers.pop(user_id, None)
             stats = self._utt_stats.pop(user_id, None)
             pkt_list = self._utt_packets.pop(user_id, [])
+            # Log SSRC-to-user mapping at silence (mapping audit)
+            ssrc_reverse = {v: k for k, v in self._ssrc_map.items()}
+            user_ssrc = ssrc_reverse.get(user_id, -1)
+            self._ssrc_map_snapshot = dict(self._ssrc_map)
         if not buf:
             return
+        # Log SSRC mapping audit on each utterance
+        ssrc_map_str = ", ".join(f"ssrc={s}->user={u}" for s, u in (getattr(self, "_ssrc_map_snapshot", {}) or {}).items())
+        log.info("STT SSRC audit: user=%s ssrc=%s map={%s}", user_id, user_ssrc, ssrc_map_str or "empty")
         min_bytes = int(self.MIN_SECS * self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
         if len(buf) < min_bytes:
             return
@@ -953,8 +976,8 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
         log.info("Whisper: segs=%d lang_prob=%.2f text=%r",
                  len(segs), info.language_probability, text[:200])
         if _is_whisper_hallucination(text):
-            log.info("Whisper: hallucination detected, discarding")
-            return None
+            log.info("Whisper: hallucination detected — replacing with diagnostic message")
+            return "[Audio reception issue: the user said something but the bot's voice receiver only captured noise/silence. This is a known debug issue — audio packets are received but contain no recognizable speech.]"
         return text or None
     except Exception as exc:
         log.warning("Whisper transcription error: %s", exc, exc_info=True)
