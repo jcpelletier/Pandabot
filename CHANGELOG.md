@@ -1,5 +1,13 @@
 # Changelog
 
+## v113
+- No code changes — pre-commit hook requires v113 entry for the auto-bump from v112.
+
+## v112
+- Audio content quality fix: reset Opus decoder at utterance start to clear Comfort Noise Generator (CNG) prediction state accumulated from SILK NB frames between utterances (4.3% of packets). Previously, CNG parameters in the decoder's inter-frame prediction memory (adaptive codebook, LPC coefficients, pitch synthesis filter) destroyed the pitch harmonic structure of the next utterance's CELT NB frames, causing PitchAuto to drop from ~0.54 to ~0.12-0.18. Now the decoder is recreated on each speech→silence→speech transition, giving a clean prediction slate.
+- CRC32 checksum tracking: compute `zlib.crc32` of every Opus payload and store per-utterance in `_utt_crcs` dict. CRC32 lists are saved to the utterance manifest (`packet_crc32_first5`, `packet_crc32_count`) for unambiguous correlation between saved `.bin` packet files and debug WAV recordings.
+- Fix `test_decoder_state.py` bugs: Methods C/D/E crash from ctypes `LP_c_short` list-slice bug in re-encode loop (use `ctypes.Array` slice instead of Python list slice for `opus_encode` input). Pre-initialize `metrics_c`/`metrics_d`/`pcm_c`/`pcm_d` to avoid `NameError` in summary when all packets fail to decode.
+
 ## v111
 - Fix typo in `test_decoder_state.py`: `_load_libus()` → `_load_libopus()` (NameError on line 57).
 

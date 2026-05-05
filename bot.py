@@ -402,6 +402,11 @@ class STTSink(_AudioSinkBase):
         # Packet filenames that contributed to each utterance — for correlating saved .bin
         # packets with the final debug WAV (simultaneous packet+WAV capture).
         self._utt_packets: dict[int, list[str]] = {}
+        # CRC32 checksums of each Opus packet in the utterance — for unambiguous
+        # correlation between saved .bin files and the raw PCM debug WAV. Two files
+        # with the same CRC32 list in the same order are guaranteed to be the same
+        # utterance.
+        self._utt_crcs: dict[int, list[int]] = {}
         # SSRC tracking: maps SSRC → user_id for auditing which audio stream we're receiving.
         # Logged on first packet and at silence/flush for SSRC mapping audit.
         self._ssrc_map: dict[int, int] = {}  # ssrc → user_id
@@ -615,6 +620,12 @@ class STTSink(_AudioSinkBase):
             self._noise_floor[uid] = noise_floor
             self._noise_samples[uid] = noise_count + 1
 
+        # Compute CRC32 of the Opus payload for correlating saved .bin packets
+        # with the debug WAV. This is the only reliable way to confirm whether
+        # a saved packet set came from the same utterance as a debug WAV.
+        import zlib as _zlib
+        _opus_crc = _zlib.crc32(opus_bytes) & 0xFFFFFFFF
+
         # Build the packet filename for correlation (same name used for saved .bin above)
         if _seq >= 0 and _ts >= 0:
             _pkt_name = f'pkt_{uid}_{_seq}_{_ts}'
@@ -625,11 +636,31 @@ class STTSink(_AudioSinkBase):
             in_utterance = uid in self._buffers
 
             if is_speech:
+                # NEW UTTERANCE DETECTED: Reset decoder to clear any accumulated
+                # Comfort Noise Generator (CNG) state from the inter-utterance gap.
+                #
+                # Between utterances, Discord sends SILK NB CNG frames (4.3% of
+                # all packets). These write comfort noise parameters into the
+                # decoder's internal prediction memory (adaptive codebook, LPC
+                # coefficients, pitch synthesis filter state). When the next
+                # utterance's CELT NB frames arrive, the decoder has CNG state
+                # in its inter-frame prediction, which destroys the pitch
+                # harmonic structure (PitchAuto drops from 0.54 -> 0.12-0.18).
+                #
+                # Recreating the decoder at utterance start gives us a clean
+                # slate with zero prediction memory, allowing the CELT NB
+                # packets to reconstruct proper pitch structure.
+                if not in_utterance and uid in self._decoders:
+                    old_decoder = self._decoders.pop(uid, None)
+                    log.info("STT: decoder reset for user %s at utterance start (cleared CNG prediction state)",
+                             uid)
                 # Speech frame: (re)start the silence timer and accumulate
                 timer = self._timers.pop(uid, None)
                 if timer:
                     timer.cancel()
                 self._buffers.setdefault(uid, bytearray()).extend(pcm)
+                # Track CRC32 alongside packet name for correlation
+                self._utt_crcs.setdefault(uid, []).append(_opus_crc)
 
                 # Track the packet filename that contributed to this utterance
                 if _pkt_name is not None:
@@ -651,6 +682,8 @@ class STTSink(_AudioSinkBase):
                 self._buffers[uid].extend(pcm)
                 if _pkt_name is not None:
                     self._utt_packets.setdefault(uid, []).append(_pkt_name)
+                # Also track CRC32 for silence frames in the middle of speech
+                self._utt_crcs.setdefault(uid, []).append(_opus_crc)
             # silence before any speech → ignore
 
     def _on_silence(self, user_id: int) -> None:
@@ -660,6 +693,7 @@ class STTSink(_AudioSinkBase):
             self._timers.pop(user_id, None)
             stats = self._utt_stats.pop(user_id, None)
             pkt_list = self._utt_packets.pop(user_id, [])
+            crc_list = self._utt_crcs.pop(user_id, [])
             # Log SSRC-to-user mapping at silence (mapping audit)
             ssrc_reverse = {v: k for k, v in self._ssrc_map.items()}
             user_ssrc = ssrc_reverse.get(user_id, -1)
@@ -713,10 +747,13 @@ class STTSink(_AudioSinkBase):
                     "pcm_bytes": len(buf),
                     "packet_count": len(pkt_list),
                     "packets": pkt_list,
+                    "packet_crc32_first5": crc_list[:5] if crc_list else [],
+                    "packet_crc32_count": len(crc_list),
                 }
                 with open(manifest_path, "w") as _mf:
                     _json2.dump(manifest, _mf, indent=2)
-                log.info("STT: packet manifest saved to %s (%d packets)", manifest_path, len(pkt_list))
+                log.info("STT: packet manifest saved to %s (%d packets, %d CRC32s)",
+                         manifest_path, len(pkt_list), len(crc_list))
         except Exception as _manifest_err:
             log.debug("STT: packet manifest save failed: %s", _manifest_err)
 
@@ -736,12 +773,14 @@ class STTSink(_AudioSinkBase):
             uids = list(self._buffers.keys())
             bufs = {uid: self._buffers.pop(uid) for uid in uids}
             pkts = {}
+            crcs_map = {}
             for uid in uids:
                 timer = self._timers.pop(uid, None)
                 if timer:
                     timer.cancel()
                 stats = self._utt_stats.pop(uid, None)
                 pkts[uid] = self._utt_packets.pop(uid, [])
+                crcs_map[uid] = self._utt_crcs.pop(uid, [])
         for uid, buf in bufs.items():
             if not buf:
                 continue
@@ -766,6 +805,7 @@ class STTSink(_AudioSinkBase):
 
             # Save packet manifest for correlation
             pkt_list = pkts.get(uid, [])
+            crc_list = crcs_map.get(uid, [])
             if pkt_list:
                 try:
                     import json as _json2
@@ -776,10 +816,13 @@ class STTSink(_AudioSinkBase):
                         "pcm_bytes": len(buf),
                         "packet_count": len(pkt_list),
                         "packets": pkt_list,
+                        "packet_crc32_first5": crc_list[:5] if crc_list else [],
+                        "packet_crc32_count": len(crc_list),
                     }
                     with open(manifest_path, "w") as _mf:
                         _json2.dump(manifest, _mf, indent=2)
-                    log.info("STT: packet manifest saved to %s (%d packets)", manifest_path, len(pkt_list))
+                    log.info("STT: packet manifest saved to %s (%d packets, %d CRC32s)",
+                             manifest_path, len(pkt_list), len(crc_list))
                 except Exception as _manifest_err:
                     log.debug("STT: packet manifest save failed: %s", _manifest_err)
 
@@ -798,6 +841,7 @@ class STTSink(_AudioSinkBase):
             self._buffers.clear()
             self._timers.clear()
             self._utt_packets.clear()
+            self._utt_crcs.clear()
         self._decoders.clear()
         self._noise_floor.clear()
         self._noise_samples.clear()
