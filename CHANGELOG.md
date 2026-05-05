@@ -1,5 +1,9 @@
 # Changelog
 
+## v103
+- Instrumentation: simultaneous packet+WAV capture — STTSink now tracks which saved `.bin` Opus packets contribute to each utterance via `_utt_packets` dict. On silence/flush, saves `stt_utterance_packets.json` manifest mapping packet filenames to the PCM WAV. Enables offline correlation: decode the same packets 4 ways (discord.opus.Decoder fresh, direct libopus 48k stereo, direct libopus 16k mono, bot pipeline) and compare pitch autocorrelation/spectral metrics to determine root cause of robotic audio.
+- New analysis script: `analyze_correlated_capture.py` — server-side tool that reads the manifest, loads the live WAV, decodes packets 4 ways, computes pitch/spectral/RMS/ZCR/LR-corr metrics, transcribes all with Whisper medium, and prints a comparison table answering 4 key questions about decode-path integrity.
+
 ## v102
 - Fix STT hallucination: remove tanh soft-clip from `_normalize_audio()` — testing with large-v3 showed that pure linear normalization changed transcription from "Thanks for watching!" (hallucination, no_speech=0.696) to "Thank you." (no_speech=0.759), and at RMS=0.3 gave no_speech=0.676. The tanh soft-clip was distorting the audio in a way that pushed Whisper toward its hallucination mode.
 - Fix STT normalization: increase RMS target from 0.12 to 0.25 — bring quiet Opus-decoded speech further into Whisper's effective input range. Combined with linear-only normalization, higher RMS gives Whisper more signal to work with.

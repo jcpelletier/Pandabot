@@ -398,6 +398,9 @@ class STTSink(_AudioSinkBase):
         self._noise_samples: dict[int, int] = {}
         # Stats for the current utterance (reset on each new utterance start)
         self._utt_stats: dict[int, dict] = {}
+        # Packet filenames that contributed to each utterance — for correlating saved .bin
+        # packets with the final debug WAV (simultaneous packet+WAV capture).
+        self._utt_packets: dict[int, list[str]] = {}
 
     def wants_opus(self) -> bool:
         # Must be True — voice_recv's internal decoder crashes on first bad Opus packet,
@@ -458,23 +461,20 @@ class STTSink(_AudioSinkBase):
         if not opus_bytes:
             return
 
-        # --- Save first 10 raw packets for offline analysis ---
-        if not hasattr(self, '_packet_save_count'):
-            self._packet_save_count = 0
-        if self._packet_save_count < 10:
-            import os as _os
-            _pkt_dir = '/opt/discord-bot/stt_packets'
-            _os.makedirs(_pkt_dir, exist_ok=True)
-            _seq = seq
-            _ts = ts
-            _pkt_name = f'pkt_{uid}_{_seq}_{_ts}.bin'
-            with open(_os.path.join(_pkt_dir, _pkt_name), 'wb') as _f:
-                _f.write(opus_bytes)
-            with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_info.txt'), 'w') as _f:
-                _f.write(f'uid={uid} seq={_seq} ts={_ts} pkt_type={pkt_type}\n')
-                _f.write(f'opus_len={len(opus_bytes)}\n')
-                _f.write(f'toc_byte={opus_bytes[0]:02x} opus_bits={bin(opus_bytes[0])[2:].zfill(8)}\n')
-            self._packet_save_count += 1
+        # --- Save raw packets for offline analysis ---
+        # Save ALL packets for diagnostic reconstruction
+        import os as _os
+        _pkt_dir = '/opt/discord-bot/stt_packets'
+        _os.makedirs(_pkt_dir, exist_ok=True)
+        _seq = seq
+        _ts = ts
+        _pkt_name = f'pkt_{uid}_{_seq}_{_ts}.bin'
+        with open(_os.path.join(_pkt_dir, _pkt_name), 'wb') as _f:
+            _f.write(opus_bytes)
+        with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_info.txt'), 'w') as _f:
+            _f.write(f'uid={uid} seq={_seq} ts={_ts} pkt_type={pkt_type}\n')
+            _f.write(f'opus_len={len(opus_bytes)}\n')
+            _f.write(f'toc_byte={opus_bytes[0]:02x} opus_bits={bin(opus_bytes[0])[2:].zfill(8)}\n')
 
         try:
             if uid not in self._decoders:
@@ -577,6 +577,12 @@ class STTSink(_AudioSinkBase):
             self._noise_floor[uid] = noise_floor
             self._noise_samples[uid] = noise_count + 1
 
+        # Build the packet filename for correlation (same name used for saved .bin above)
+        if _seq >= 0 and _ts >= 0:
+            _pkt_name = f'pkt_{uid}_{_seq}_{_ts}'
+        else:
+            _pkt_name = None
+
         with self._lock:
             in_utterance = uid in self._buffers
 
@@ -586,6 +592,10 @@ class STTSink(_AudioSinkBase):
                 if timer:
                     timer.cancel()
                 self._buffers.setdefault(uid, bytearray()).extend(pcm)
+
+                # Track the packet filename that contributed to this utterance
+                if _pkt_name is not None:
+                    self._utt_packets.setdefault(uid, []).append(_pkt_name)
 
                 # Track utterance stats
                 if uid not in self._utt_stats:
@@ -601,6 +611,8 @@ class STTSink(_AudioSinkBase):
             elif in_utterance:
                 # Silence frame mid-utterance: keep it so Whisper hears natural pauses
                 self._buffers[uid].extend(pcm)
+                if _pkt_name is not None:
+                    self._utt_packets.setdefault(uid, []).append(_pkt_name)
             # silence before any speech → ignore
 
     def _on_silence(self, user_id: int) -> None:
@@ -609,6 +621,7 @@ class STTSink(_AudioSinkBase):
             buf = self._buffers.pop(user_id, None)
             self._timers.pop(user_id, None)
             stats = self._utt_stats.pop(user_id, None)
+            pkt_list = self._utt_packets.pop(user_id, [])
         if not buf:
             return
         min_bytes = int(self.MIN_SECS * self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
@@ -632,6 +645,7 @@ class STTSink(_AudioSinkBase):
         # DEBUG: Save raw decoded PCM as WAV so we can hear what the Opus decoder actually produces
         try:
             import wave as _wave
+            import json as _json
             raw_path = "/opt/discord-bot/stt_raw_pcm.wav"
             with _wave.open(raw_path, "wb") as wf:
                 wf.setnchannels(2)
@@ -641,6 +655,25 @@ class STTSink(_AudioSinkBase):
             log.info("STT: raw PCM WAV saved to %s (%.2fs, %d bytes)", raw_path, duration, len(buf))
         except Exception as _raw_err:
             log.debug("Raw PCM WAV save failed: %s", _raw_err)
+
+        # Save packet manifest for correlating saved .bin packets with this utterance
+        try:
+            import json as _json2
+            import os as _os2
+            if pkt_list:
+                manifest_path = "/opt/discord-bot/stt_utterance_packets.json"
+                manifest = {
+                    "user_id": user_id,
+                    "duration_secs": round(duration, 3),
+                    "pcm_bytes": len(buf),
+                    "packet_count": len(pkt_list),
+                    "packets": pkt_list,
+                }
+                with open(manifest_path, "w") as _mf:
+                    _json2.dump(manifest, _mf, indent=2)
+                log.info("STT: packet manifest saved to %s (%d packets)", manifest_path, len(pkt_list))
+        except Exception as _manifest_err:
+            log.debug("STT: packet manifest save failed: %s", _manifest_err)
 
         asyncio.run_coroutine_threadsafe(
             _on_stt_transcript(self.guild_id, user_id, bytes(buf)), bot.loop
@@ -654,11 +687,13 @@ class STTSink(_AudioSinkBase):
         with self._lock:
             uids = list(self._buffers.keys())
             bufs = {uid: self._buffers.pop(uid) for uid in uids}
+            pkts = {}
             for uid in uids:
                 timer = self._timers.pop(uid, None)
                 if timer:
                     timer.cancel()
                 stats = self._utt_stats.pop(uid, None)
+                pkts[uid] = self._utt_packets.pop(uid, [])
         for uid, buf in bufs.items():
             if not buf:
                 continue
@@ -681,6 +716,25 @@ class STTSink(_AudioSinkBase):
             except Exception as _raw_err:
                 log.debug("Raw PCM WAV save failed: %s", _raw_err)
 
+            # Save packet manifest for correlation
+            pkt_list = pkts.get(uid, [])
+            if pkt_list:
+                try:
+                    import json as _json2
+                    manifest_path = "/opt/discord-bot/stt_utterance_packets.json"
+                    manifest = {
+                        "user_id": uid,
+                        "duration_secs": round(duration, 3),
+                        "pcm_bytes": len(buf),
+                        "packet_count": len(pkt_list),
+                        "packets": pkt_list,
+                    }
+                    with open(manifest_path, "w") as _mf:
+                        _json2.dump(manifest, _mf, indent=2)
+                    log.info("STT: packet manifest saved to %s (%d packets)", manifest_path, len(pkt_list))
+                except Exception as _manifest_err:
+                    log.debug("STT: packet manifest save failed: %s", _manifest_err)
+
             asyncio.run_coroutine_threadsafe(
                 _on_stt_transcript(self.guild_id, uid, bytes(buf)), bot.loop
             )
@@ -692,6 +746,7 @@ class STTSink(_AudioSinkBase):
                 timer.cancel()
             self._buffers.clear()
             self._timers.clear()
+            self._utt_packets.clear()
         self._decoders.clear()
         self._noise_floor.clear()
         self._noise_samples.clear()
