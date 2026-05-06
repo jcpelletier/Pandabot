@@ -193,6 +193,8 @@ def _build_system_prompt() -> str:
         JENKINS_JOBS, ALLOWED_SYSTEMD_SERVICES,
     )
     now = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    _p = get_provider()
+    _llm_line = f"You are powered by {_p.primary_model} (provider: {get_provider_name()})."
 
     # --- Services block ---
     if SERVER_DESCRIPTION:
@@ -247,6 +249,7 @@ def _build_system_prompt() -> str:
 
     return textwrap.dedent(f"""\
         You are {BOT_NAME}, a helpful assistant for a home Ubuntu Server machine.
+        {_llm_line}
         Current server date/time: {now}.
         {services_block}
 
@@ -1320,6 +1323,10 @@ def _run_claude_loop(
                     canonical_content.append({"type": "text", "text": b.text})
                 elif b.type == "tool_use":
                     canonical_content.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+                elif b.type == "thinking":
+                    canonical_content.append({"type": "thinking", "thinking": b.thinking, "signature": b.signature})
+                elif b.type == "reasoning_content":
+                    canonical_content.append({"type": "reasoning_content", "text": b.text})
             messages.append({"role": "assistant", "content": canonical_content})
 
             tool_results = []

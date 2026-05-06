@@ -1,5 +1,9 @@
 # Changelog
 
+## v120
+- Fix 400 errors on tool-call queries: DeepSeek reasoning models return `reasoning_content` that must be echoed back each turn; the OpenAI-compat provider now captures and replays it. Same passthrough added for Anthropic thinking blocks.
+- Inject live LLM provider and model name into the system prompt so the bot accurately answers "what model are you running on?" instead of hallucinating.
+
 ## v119
 - Increase channel history context from 10 to 15 messages.
 

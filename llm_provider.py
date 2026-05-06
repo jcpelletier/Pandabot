@@ -20,11 +20,13 @@ log = logging.getLogger("panda-bot")
 
 @dataclass
 class ContentBlock:
-    type: str           # "text" or "tool_use"
+    type: str           # "text", "tool_use", or "thinking"
     text: str | None = None
     id: str | None = None
     name: str | None = None
     input: dict | None = None
+    thinking: str | None = None
+    signature: str | None = None
 
 
 @dataclass
@@ -76,6 +78,12 @@ class AnthropicProvider:
                     id=block.id,
                     name=block.name,
                     input=block.input,
+                ))
+            elif block.type == "thinking":
+                content.append(ContentBlock(
+                    type="thinking",
+                    thinking=block.thinking,
+                    signature=block.signature,
                 ))
         return NormalizedResponse(
             stop_reason="end_turn" if response.stop_reason == "end_turn" else "tool_use",
@@ -184,6 +192,7 @@ class OpenAICompatProvider:
                 elif isinstance(content, list):
                     tool_calls = []
                     text_parts = []
+                    reasoning_parts = []
                     for block in content:
                         # Support both plain dicts (canonical) and SDK objects (legacy)
                         bt = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
@@ -202,6 +211,9 @@ class OpenAICompatProvider:
                         elif bt == "text":
                             txt = block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
                             text_parts.append(txt)
+                        elif bt == "reasoning_content":
+                            txt = block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
+                            reasoning_parts.append(txt)
 
                     combined_text: str | None = "\n".join(text_parts) if text_parts else None
                     oai_msg: dict = {
@@ -210,6 +222,8 @@ class OpenAICompatProvider:
                     }
                     if tool_calls:
                         oai_msg["tool_calls"] = tool_calls
+                    if reasoning_parts:
+                        oai_msg["reasoning_content"] = reasoning_parts[0]
                     result.append(oai_msg)
 
         return result
@@ -234,6 +248,12 @@ class OpenAICompatProvider:
         choice = response.choices[0]
         msg = choice.message
         content: list[ContentBlock] = []
+
+        # DeepSeek reasoning models return reasoning_content alongside content.
+        # Must be echoed back in subsequent turns or the API returns 400.
+        reasoning = getattr(msg, "reasoning_content", None)
+        if reasoning:
+            content.append(ContentBlock(type="reasoning_content", text=reasoning))
 
         if msg.content:
             content.append(ContentBlock(type="text", text=msg.content))
