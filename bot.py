@@ -1190,7 +1190,7 @@ async def speak_response(guild_id: int, text: str) -> None:
             break
 
 
-async def build_history(channel: discord.abc.Messageable, before: discord.Message, limit: int = 10) -> list[dict]:
+async def build_history(channel: discord.abc.Messageable, before: discord.Message, limit: int = 15) -> list[dict]:
     """
     Return up to `limit` messages before `before` as Claude-formatted turns.
 

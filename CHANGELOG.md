@@ -1,5 +1,8 @@
 # Changelog
 
+## v119
+- Increase channel history context from 10 to 15 messages.
+
 ## v118
 - Respond to all messages in a channel without requiring an @mention. Mention text is still stripped if present.
 
