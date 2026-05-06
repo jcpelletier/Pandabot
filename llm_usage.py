@@ -15,9 +15,9 @@ _PRICING: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-6":          (3.00,  15.00),
     "claude-opus-4-5":           (15.00,  75.00),
     "claude-opus-4-7":           (15.00,  75.00),
-    # DeepSeek (openai-compat)
-    "deepseek-chat":              (0.27,   1.10),
-    "deepseek-reasoner":          (0.55,   2.19),
+    # DeepSeek (openai-compat) — pricing per platform.deepseek.com, cache-miss rates
+    "deepseek-v4-flash":          (0.14,   0.28),
+    "deepseek-v4-pro":            (0.435,  0.87),
 }
 _DEFAULT_PRICING = (3.00, 15.00)  # fallback for unknown models
 

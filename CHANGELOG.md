@@ -1,11 +1,15 @@
 # Changelog
 
+## v117
+- Fix DeepSeek model name: `OPENAI_COMPAT_PRIMARY_MODEL` corrected to `deepseek-v4-flash` (was `deepseek-chat`).
+- Fix DeepSeek pricing in `llm_usage`: `deepseek-v4-flash` $0.14/$0.28 per M tokens, `deepseek-v4-pro` $0.435/$0.87 per M tokens (cache-miss rates from platform.deepseek.com).
+
 ## v116
 - Add `llm_provider.py`: pluggable LLM backend abstraction supporting Anthropic and any OpenAI-compatible API (DeepSeek, Groq, Ollama, etc.). Providers expose `format_tool_definitions`, `complete`, and `complete_simple`; the agentic loop and scheduler use `get_provider()` throughout.
-- Switch active backend to DeepSeek V4 Flash (`deepseek-chat`) via `LLM_PROVIDER=openai_compat`. No upgrade model set; DeepSeek handles all operations including `manage_schedule`.
+- Switch active backend to DeepSeek V4 Flash (`deepseek-v4-flash`) via `LLM_PROVIDER=openai_compat`. No upgrade model set; DeepSeek handles all operations including `manage_schedule`.
 - Retain model-upgrade path for `manage_schedule`: when `OPENAI_COMPAT_UPGRADE_MODEL` is set, the primary model's tool-call choice triggers a re-issue to the upgrade model. Currently unused (upgrade_model empty).
 - Add `provider` column to `llm_usage` table (additive migration, existing rows default to `anthropic`). `query_llm_usage(by_model)` now shows provider alongside model for cross-provider cost comparison.
-- Add DeepSeek pricing to `llm_usage`: `deepseek-chat` at $0.27/M input, $1.10/M output.
+- Add DeepSeek pricing to `llm_usage`: `deepseek-v4-flash` at $0.14/M input, $0.28/M output; `deepseek-v4-pro` at $0.435/M input, $0.87/M output.
 - Message history is now stored as canonical plain dicts (Anthropic format); the OpenAI-compat provider translates on the way out, enforcing strict role ordering and content-gap rules.
 - Add `openai>=1.0.0` to `requirements.txt`.
 
