@@ -632,3 +632,154 @@ class TestHardwareInfo:
         assert "ASUSTeK" in result
         assert "Z97-AR" in result
         assert "i7-4790K" in result
+
+
+# ---------------------------------------------------------------------------
+# query_media_library — file_type filtering (find_files)
+# ---------------------------------------------------------------------------
+
+class TestQueryMediaLibraryFileType:
+    """Tests for the file_type parameter in query_media_library(action='find_files').
+
+    Regression: Pandabot hallucinated "Blade Runner 2049" existed in the library
+    because find_files returned non-video files (ROMs, images, subtitles) whose
+    names happened to contain "blade".  The file_type="video" default prevents this
+    by filtering to known video extensions and adding [VIDEO]/[OTHER] labels.
+    """
+
+    FAKE_ROOT = "/mnt/media/Media/Movies"
+
+    FAKE_FILES: list[tuple[str, int, int]] = [
+        # (filename, size_bytes, mtime_timestamp)
+        ("Blade Runner 2049 (2017).mkv",  20_000_000_000, 1_700_000_000),
+        ("blade_runner_2049_poster.jpg",         500_000, 1_700_000_000),
+        ("blade_runner_2049.srt",                 50_000, 1_700_000_000),
+        ("Blade.avi",                        15_000_000_000, 1_700_000_000),
+        ("subs.zip",                           1_000_000, 1_700_000_000),
+        ("Thumbs.db",                            100_000, 1_700_000_000),
+        ("THE_MOVIE.MKV",                    10_000_000_000, 1_700_000_000),
+    ]
+
+    VIDEO_NAMES = {"Blade Runner 2049 (2017).mkv", "Blade.avi", "THE_MOVIE.MKV"}
+    OTHER_NAMES = {"blade_runner_2049_poster.jpg", "blade_runner_2049.srt", "subs.zip", "Thumbs.db"}
+
+    @pytest.fixture
+    def patch_fs(self, monkeypatch):
+        """Mock filesystem operations so tests don't need real /mnt/media."""
+        _files = self.FAKE_FILES
+
+        def _walk(root, *a, **kw):
+            yield (root, [], [f for f, _, _ in _files])
+
+        def _stat(path, *a, **kw):
+            # Ensure path is a string (may be pathlib.Path from pytest internals)
+            if hasattr(path, "name"):
+                # Called by pytest internals with pathlib.Path — don't interfere
+                return os.stat(str(path), *a, **kw)
+            fname = os.path.basename(str(path).replace("\\", "/"))
+            for name, size, mtime in _files:
+                if name == fname:
+                    m = MagicMock()
+                    m.st_size = size
+                    m.st_mtime = mtime
+                    return m
+            return MagicMock(st_size=0, st_mtime=0)
+
+        monkeypatch.setattr(os.path, "realpath", lambda p: str(p).replace("\\", "/"))
+        monkeypatch.setattr(os.path, "isdir",    lambda p: True)
+        monkeypatch.setattr(os.path, "isabs",    lambda p: str(p).startswith("/"))
+        monkeypatch.setattr(os.path, "normpath", lambda p: p)
+        monkeypatch.setattr(os.path, "relpath",  lambda p, s=None: os.path.basename(str(p).replace("\\", "/")))
+        monkeypatch.setattr(os, "walk", _walk)
+        monkeypatch.setattr(os, "stat", _stat)
+
+    # ── Tests ──────────────────────────────────────────────────────────────────
+
+    def test_video_only_filters_non_video_files(self, patch_fs):
+        """Default file_type='video' excludes .jpg, .srt, .zip, .db files."""
+        result = tools.query_media_library(
+            action="find_files", path=self.FAKE_ROOT, pattern="", limit=100,
+            file_type="video",
+        )
+        for name, _, _ in self.FAKE_FILES:
+            if name in self.VIDEO_NAMES:
+                assert name in result, f"Expected video file {name!r} in results"
+            else:
+                assert name not in result, f"Non-video file {name!r} should be filtered out"
+
+    def test_video_only_has_video_tag(self, patch_fs):
+        """With file_type='video', only [VIDEO] tag should appear."""
+        result = tools.query_media_library(
+            action="find_files", path=self.FAKE_ROOT, pattern="", limit=100,
+            file_type="video",
+        )
+        assert "[VIDEO]" in result
+        assert "[OTHER]" not in result
+
+    def test_all_includes_every_file(self, patch_fs):
+        """file_type='all' includes all files regardless of extension."""
+        result = tools.query_media_library(
+            action="find_files", path=self.FAKE_ROOT, pattern="", limit=100,
+            file_type="all",
+        )
+        for name, _, _ in self.FAKE_FILES:
+            assert name in result, f"Expected {name!r} in results with file_type=all"
+        assert "All files" in result
+        assert "[VIDEO]" in result
+        assert "[OTHER]" in result
+
+    def test_default_param_is_video(self, patch_fs):
+        """Omitting file_type should default to video (filtered)."""
+        result = tools.query_media_library(
+            action="find_files", path=self.FAKE_ROOT, pattern="", limit=100,
+        )
+        for name, _, _ in self.FAKE_FILES:
+            if name in self.VIDEO_NAMES:
+                assert name in result
+            else:
+                assert name not in result
+
+    def test_uppercase_extensions_recognized(self, patch_fs):
+        """.MKV (uppercase) should be treated as a video file."""
+        result = tools.query_media_library(
+            action="find_files", path=self.FAKE_ROOT, pattern="", limit=100,
+            file_type="video",
+        )
+        assert "THE_MOVIE.MKV" in result
+        assert "[VIDEO]" in result
+
+    def test_header_label_varies_by_type(self, patch_fs):
+        """Header says 'Video files' for video filter, 'All files' for all."""
+        video_res = tools.query_media_library(
+            action="find_files", path=self.FAKE_ROOT, pattern="", limit=100,
+            file_type="video",
+        )
+        all_res = tools.query_media_library(
+            action="find_files", path=self.FAKE_ROOT, pattern="", limit=100,
+            file_type="all",
+        )
+        assert "Video files" in video_res
+        assert "All files" in all_res
+        assert "Video files" not in all_res
+
+    def test_no_video_files_message(self, patch_fs, monkeypatch):
+        """When no video files exist, message should say 'No video files found'."""
+        def _walk_no_vid(root, *a, **kw):
+            yield (root, [], ["poster.jpg", "subs.srt", "Thumbs.db"])
+        monkeypatch.setattr(os, "walk", _walk_no_vid)
+        result = tools.query_media_library(
+            action="find_files", path=self.FAKE_ROOT, pattern="", limit=100,
+            file_type="video",
+        )
+        assert "No (video files) files found under" in result
+
+    def test_no_files_all_message(self, patch_fs, monkeypatch):
+        """With file_type='all' and no files, message should say 'No files found'."""
+        def _walk_empty(root, *a, **kw):
+            yield (root, [], [])
+        monkeypatch.setattr(os, "walk", _walk_empty)
+        result = tools.query_media_library(
+            action="find_files", path=self.FAKE_ROOT, pattern="", limit=100,
+            file_type="all",
+        )
+        assert "No files found under" in result

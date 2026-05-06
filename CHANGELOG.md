@@ -1,5 +1,9 @@
 # Changelog
 
+## v115
+- Fix movie hallucination bug: `query_media_library(find_files)` now defaults to `file_type="video"`, filtering results to known video extensions (`.mkv`, `.mp4`, `.avi`, etc.) and tagging each result as `[VIDEO]` or `[OTHER]`. The tool schema exposes the new `file_type` parameter (`"video"` | `"all"`). The system prompt now includes a cross-verification rule: `query_jellyfin(search_movies)` is the authority on what movies exist — filesystem matches must be verified via `file_info` before reporting as movies.
+- New tests: `TestQueryMediaLibraryFileType` (8 tests) and `TestQueryMediaLibrarySchema` (3 tests) covering video filtering, all-files mode, header labels, and schema validation.
+
 ## v114
 - Add `!hear` command: plays back the last captured `stt_raw_pcm.wav` (raw 48kHz stereo) and `stt_debug_latest.wav` (16kHz Whisper input) through the voice channel so the user can hear exactly what the bot recorded. This is the key diagnostic to determine whether the STT failure is in audio reception (noise) or in Whisper configuration (degraded but intelligible speech).
 - Improve Whisper: add `initial_prompt="Voice chat transcription."` to steer away from YouTube-style hallucinations ("Thanks for watching!" etc.) that appear when audio looks noise-like to the model.

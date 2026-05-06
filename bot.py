@@ -264,6 +264,16 @@ def _build_system_prompt() -> str:
         ratings, and plot summaries for every movie. Only use query_media_library
         when the user specifically needs filesystem details like file size, codec,
         or bitrate.
+
+        CRITICAL — cross-verification rule: query_jellyfin is the AUTHORITY
+        on what movies exist in the library. If query_jellyfin(search_movies)
+        says a movie is NOT in the library, trust it. If you later find matching
+        filenames via query_media_library(find_files), you MUST call
+        query_media_library(file_info) on at least one result to verify it is
+        actually a playable video file before reporting it as a movie.
+        Non-video files (ROMs, images, subtitles, game assets) can have names
+        that look like movies but are not playable content — the [OTHER] tag
+        on a find_files result means it is NOT a video file.
         {jenkins_instructions}
         When the user asks for something at a future time, on a condition, or on a
         recurring schedule, call manage_schedule(action='create') rather than

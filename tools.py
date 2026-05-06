@@ -1618,7 +1618,8 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
         return f"Unknown action '{action}'. Use: delete, delete_matching, rename, rename_all, or move."
 
 
-def query_media_library(action: str, path: str = "", pattern: str = "", limit: int = 20) -> str:
+def query_media_library(action: str, path: str = "", pattern: str = "",
+                        limit: int = 20, file_type: str = "video") -> str:
     """Inspect files in the media library or staging area."""
     ALLOWED_ROOTS = [p for p in [MEDIA_PATH, STAGING_PATH] if p]
 
@@ -1753,25 +1754,32 @@ def query_media_library(action: str, path: str = "", pattern: str = "", limit: i
             for fname in files:
                 if pattern and pattern.lower() not in fname.lower():
                     continue
+                # File-type filter
+                ext = os.path.splitext(fname)[1].lower()
+                if file_type == "video" and ext not in VIDEO_EXTS:
+                    continue
                 full = os.path.join(dirpath, fname)
                 try:
                     stat = os.stat(full)
                     rel = os.path.relpath(full, root)
-                    entries.append((rel, stat.st_size, stat.st_mtime))
+                    entries.append((rel, stat.st_size, stat.st_mtime, ext))
                 except Exception:
                     pass
 
         if not entries:
-            msg = f"No video files found under {root}"
+            filter_note = f" ({file_type} files)" if file_type == "video" else ""
+            msg = f"No{filter_note} files found under {root}"
             return msg + (f" matching '{pattern}'" if pattern else "") + "."
 
         entries.sort(key=lambda x: -x[2])  # newest first
         shown = entries[:limit]
         total = len(entries)
-        lines = [f"Video files in {root}  ({total} total, showing {len(shown)}):"]
-        for rel, size, mtime in shown:
+        header_label = "Video files" if file_type == "video" else "All files"
+        lines = [f"{header_label} in {root}  ({total} total, showing {len(shown)}):"]
+        for rel, size, mtime, ext in shown:
             dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
-            lines.append(f"  {rel}  [{_fmt_bytes(size)}]  modified {dt}")
+            kind = "[VIDEO]" if ext in VIDEO_EXTS else "[OTHER]"
+            lines.append(f"  {rel}  [{_fmt_bytes(size)}]  modified {dt}  {kind}")
         return "\n".join(lines)
 
     else:
@@ -2294,8 +2302,12 @@ def _build_tool_definitions() -> list[dict]:
                 "bitrate, and all audio/subtitle tracks. Use this to answer 'why wasn't X "
                 "converted?' (check video bitrate — NVENC re-encodes land at ~3–8 Mbps; "
                 "original rips are typically 15–40 Mbps) or 'how long is this movie?'.\n"
-                "find_files: recursively list all files in a directory with sizes and modification "
-                f"dates, optionally filtered by name pattern. Path can be absolute or relative to {MEDIA_PATH}."
+                "find_files: recursively list files in a directory with sizes, modification "
+                f"dates, and file type tags. Defaults to video files only (.mkv, .mp4, .avi, "
+                "etc.) so non-video files (ROMs, images, subtitles, metadata) are excluded. "
+                "Set file_type='all' to include every file type. "
+                "Each result line includes a [VIDEO] or [OTHER] tag for easy identification. "
+                "Path can be absolute or relative to {MEDIA_PATH}."
             ),
             "input_schema": {
                 "type": "object",
@@ -2324,6 +2336,17 @@ def _build_tool_definitions() -> list[dict]:
                         "type": "integer",
                         "description": "find_files only: max results to return (1–100, default 20).",
                         "default": 20,
+                    },
+                    "file_type": {
+                        "type": "string",
+                        "enum": ["video", "all"],
+                        "description": (
+                            "find_files only: 'video' (default) returns only playable video files "
+                            "(.mkv, .mp4, .avi, .m4v, .mov, .ts, .wmv, .flv, .mpg, .mpeg). "
+                            "'all' returns every file type (ROMs, images, subtitles, etc.). "
+                            "Use 'all' only when explicitly looking for non-video files."
+                        ),
+                        "default": "video",
                     },
                 },
                 "required": ["action"],
@@ -2867,6 +2890,7 @@ def execute_tool(name: str, inputs: dict) -> str:
             path=inputs.get("path", ""),
             pattern=inputs.get("pattern", ""),
             limit=inputs.get("limit", 20),
+            file_type=inputs.get("file_type", "video"),
         )
     if name == "get_system_stats":          # backward compat for any saved scheduled tasks
         return get_system_stats()

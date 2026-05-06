@@ -255,3 +255,38 @@ class TestSchemaStructure:
         defs = tools._build_tool_definitions()
         names = [d["name"] for d in defs]
         assert len(names) == len(set(names)), "Duplicate tool names found"
+
+
+# ---------------------------------------------------------------------------
+# query_media_library — file_type property in schema
+# ---------------------------------------------------------------------------
+
+class TestQueryMediaLibrarySchema:
+    """Verify the file_type parameter is present in the tool schema."""
+
+    def test_file_type_property_exists(self, monkeypatch):
+        """query_media_library schema should have a file_type property."""
+        monkeypatch.setattr(tools, "ENABLE_JELLYFIN", False)
+        defs = tools._build_tool_definitions()
+        qml = _tool(defs, "query_media_library")
+        props = qml["input_schema"]["properties"]
+        assert "file_type" in props, "file_type property missing from query_media_library schema"
+
+    def test_file_type_has_valid_enum(self, monkeypatch):
+        """file_type should have enum [video, all] and default video."""
+        monkeypatch.setattr(tools, "ENABLE_JELLYFIN", False)
+        defs = tools._build_tool_definitions()
+        qml = _tool(defs, "query_media_library")
+        ft = qml["input_schema"]["properties"]["file_type"]
+        assert ft.get("type") == "string"
+        assert "video" in ft.get("enum", [])
+        assert "all" in ft.get("enum", [])
+        assert ft.get("default") == "video", "file_type should default to 'video'"
+
+    def test_file_type_description_mentions_filtering(self, monkeypatch):
+        """The find_files action description should mention filtering."""
+        monkeypatch.setattr(tools, "ENABLE_JELLYFIN", False)
+        defs = tools._build_tool_definitions()
+        qml = _tool(defs, "query_media_library")
+        desc = qml["description"]
+        assert "VIDEO" in desc or "video" in desc or "file_type" in desc
