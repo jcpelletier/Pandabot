@@ -2847,23 +2847,38 @@ def execute_tool(name: str, inputs: dict) -> str:
     if name == "get_disk_usage":            # backward compat for any saved scheduled tasks
         return get_disk_usage()
     if name == "get_log_tail":
+        log_name = inputs.get("log_name")
+        if not log_name:
+            return "Error: get_log_tail requires a non-empty 'log_name' parameter."
         return get_log_tail(
-            log_name=inputs["log_name"],
+            log_name=log_name,
             lines=inputs.get("lines", 50),
         )
     if name == "get_service_status":
-        return get_service_status(inputs["service_name"])
+        service_name = inputs.get("service_name")
+        if not service_name:
+            return "Error: get_service_status requires a non-empty 'service_name' parameter."
+        return get_service_status(service_name)
     if name == "trigger_jenkins_job":
-        return trigger_jenkins_job(inputs["job_name"])
+        job_name = inputs.get("job_name")
+        if not job_name:
+            return "Error: trigger_jenkins_job requires a non-empty 'job_name' parameter."
+        return trigger_jenkins_job(job_name)
     if name == "set_jenkins_schedule":
+        job_name = inputs.get("job_name")
+        if not job_name:
+            return "Error: set_jenkins_schedule requires a non-empty 'job_name' parameter."
         return set_jenkins_schedule(
-            job_name=inputs["job_name"],
+            job_name=job_name,
             schedule=inputs.get("schedule", ""),
             confirmed=inputs.get("confirmed", False),
         )
     if name == "query_jenkins":
+        action = inputs.get("action")
+        if not action:
+            return "Error: query_jenkins requires a non-empty 'action' parameter (status, history, or log)."
         return query_jenkins(
-            action=inputs["action"],
+            action=action,
             job_name=inputs.get("job_name"),
             build_number=inputs.get("build_number"),
             count=inputs.get("count", 10),
@@ -2885,8 +2900,11 @@ def execute_tool(name: str, inputs: dict) -> str:
             lines=inputs.get("lines", 100),
         )
     if name == "query_media_library":
+        action = inputs.get("action")
+        if not action:
+            return "Error: query_media_library requires a non-empty 'action' parameter (list_dir, file_info, or find_files)."
         return query_media_library(
-            action=inputs["action"],
+            action=action,
             path=inputs.get("path", ""),
             pattern=inputs.get("pattern", ""),
             limit=inputs.get("limit", 20),

@@ -1,5 +1,10 @@
 # Changelog
 
+## v122
+- Fix misleading "Error talking to Claude" messages — changed to "Error processing request" so the error text doesn't falsely blame the LLM provider (Claude/DeepSeek/etc.)
+- Add parameter validation in `execute_tool()` — missing required parameters now produce a clear error message instead of a raw `KeyError` that appears as "Error talking to Claude: 'action'"
+- Increase tool-call limit from 10 to 25 — smaller/faster models (DeepSeek Flash) tend to make more sequential tool calls and were hitting the limit mid-query
+
 ## v120
 - Fix 400 errors on tool-call queries: DeepSeek reasoning models return `reasoning_content` that must be echoed back each turn; the OpenAI-compat provider now captures and replays it. Same passthrough added for Anthropic thinking blocks.
 - Inject live LLM provider and model name into the system prompt so the bot accurately answers "what model are you running on?" instead of hallucinating.

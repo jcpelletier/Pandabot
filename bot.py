@@ -1092,8 +1092,8 @@ async def _on_stt_transcript(guild_id: int, user_id: int, pcm_bytes: bytes) -> N
             None, _run_claude_loop, transcript, None, channel.id, None
         )
     except Exception as exc:
-        log.exception("Claude query failed for STT input")
-        reply = f"Error talking to Claude: {exc}"
+        log.exception("LLM query failed for STT input")
+        reply = f"Error processing request: {exc}"
 
     for chunk in split_message(reply):
         await channel.send(chunk)
@@ -1243,7 +1243,7 @@ def _run_claude_loop(
     formatted_tools = provider.format_tool_definitions(TOOL_DEFINITIONS)
     system_prompt = _build_system_prompt()
 
-    for _ in range(10):  # safety: max 10 tool-call rounds
+    for _ in range(25):  # safety: max 25 tool-call rounds
         response = provider.complete(
             system_prompt=system_prompt,
             messages=messages,
@@ -1674,8 +1674,8 @@ async def on_message(message: discord.Message):
     try:
         reply = await handle_claude_query(content, message)
     except Exception as e:
-        log.exception("Claude query failed")
-        reply = f"Error talking to Claude: {e}"
+        log.exception("LLM query failed")
+        reply = f"Error processing request: {e}"
     finally:
         typing_task.cancel()
 
