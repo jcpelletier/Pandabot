@@ -95,15 +95,24 @@ def fake_execute(monkeypatch):
 @pytest.fixture
 def mock_claude(monkeypatch):
     """
-    Stub bot.claude so generative_prompt tests don't hit the real API.
-    Returns the mock so tests can set .messages.create.return_value.
+    Stub the LLM provider so generative_prompt tests don't hit the real API.
+    Returns the mock provider so tests can inspect calls and set return values.
     """
-    mc = MagicMock()
-    resp = MagicMock()
-    resp.content = [MagicMock(text="LLM says hello")]
-    mc.messages.create.return_value = resp
-    monkeypatch.setattr(bot, "claude", mc)
-    return mc
+    import llm_provider
+
+    class _MockProvider:
+        primary_model = "mock-model"
+        upgrade_model = ""
+        _calls: list = []
+        _response_text: str = "LLM says hello"
+
+        def complete_simple(self, messages, model, max_tokens=800):
+            self._calls.append({"messages": messages, "model": model})
+            return (self._response_text, 10, 5)
+
+    mp = _MockProvider()
+    monkeypatch.setattr(llm_provider, "_provider", mp)
+    return mp
 
 
 # ---------------------------------------------------------------------------
@@ -215,32 +224,24 @@ async def test_generative_prompt_calls_llm(tmp_db, posted, fake_execute, mock_cl
         generative_prompt="Summarise this in one sentence: {results}",
     )
     await bot.fire_scheduled_task(task)
-    assert mock_claude.messages.create.called
+    assert len(mock_claude._calls) > 0
 
 
 @pytest.mark.asyncio
 async def test_generative_prompt_substitutes_results(tmp_db, posted, fake_execute, mock_claude):
     fake_execute["get_service_status"] = "TOOL_OUTPUT_MARKER"
     tc = json.dumps([{"tool": "get_service_status", "args": {}}])
-    captured_prompts: list[str] = []
-
-    original_create = mock_claude.messages.create
-    def spy_create(**kwargs):
-        for msg in kwargs.get("messages", []):
-            captured_prompts.append(msg.get("content", ""))
-        return original_create(**kwargs)
-    mock_claude.messages.create.side_effect = spy_create
-
     task = _task(tool_calls=tc, generative_prompt="Report: {results}")
     await bot.fire_scheduled_task(task)
-    assert any("TOOL_OUTPUT_MARKER" in p for p in captured_prompts)
+    all_content = " ".join(
+        msg.get("content", "") for call in mock_claude._calls for msg in call["messages"]
+    )
+    assert "TOOL_OUTPUT_MARKER" in all_content
 
 
 @pytest.mark.asyncio
 async def test_generative_prompt_output_posted(tmp_db, posted, fake_execute, mock_claude):
-    resp = MagicMock()
-    resp.content = [MagicMock(text="Everything looks good!")]
-    mock_claude.messages.create.return_value = resp
+    mock_claude._response_text = "Everything looks good!"
     task = _task(generative_prompt="Say something about {results}")
     await bot.fire_scheduled_task(task)
     assert any("Everything looks good!" in m for m in posted)

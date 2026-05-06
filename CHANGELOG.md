@@ -1,5 +1,14 @@
 # Changelog
 
+## v116
+- Add `llm_provider.py`: pluggable LLM backend abstraction supporting Anthropic and any OpenAI-compatible API (DeepSeek, Groq, Ollama, etc.). Providers expose `format_tool_definitions`, `complete`, and `complete_simple`; the agentic loop and scheduler use `get_provider()` throughout.
+- Switch active backend to DeepSeek V4 Flash (`deepseek-chat`) via `LLM_PROVIDER=openai_compat`. No upgrade model set; DeepSeek handles all operations including `manage_schedule`.
+- Retain model-upgrade path for `manage_schedule`: when `OPENAI_COMPAT_UPGRADE_MODEL` is set, the primary model's tool-call choice triggers a re-issue to the upgrade model. Currently unused (upgrade_model empty).
+- Add `provider` column to `llm_usage` table (additive migration, existing rows default to `anthropic`). `query_llm_usage(by_model)` now shows provider alongside model for cross-provider cost comparison.
+- Add DeepSeek pricing to `llm_usage`: `deepseek-chat` at $0.27/M input, $1.10/M output.
+- Message history is now stored as canonical plain dicts (Anthropic format); the OpenAI-compat provider translates on the way out, enforcing strict role ordering and content-gap rules.
+- Add `openai>=1.0.0` to `requirements.txt`.
+
 ## v115
 - Fix movie hallucination bug: `query_media_library(find_files)` now defaults to `file_type="video"`, filtering results to known video extensions (`.mkv`, `.mp4`, `.avi`, etc.) and tagging each result as `[VIDEO]` or `[OTHER]`. The tool schema exposes the new `file_type` parameter (`"video"` | `"all"`). The system prompt now includes a cross-verification rule: `query_jellyfin(search_movies)` is the authority on what movies exist — filesystem matches must be verified via `file_info` before reporting as movies.
 - New tests: `TestQueryMediaLibraryFileType` (8 tests) and `TestQueryMediaLibrarySchema` (3 tests) covering video filtering, all-files mode, header labels, and schema validation.

@@ -32,11 +32,12 @@ import wave
 
 import aiohttp
 from aiohttp import web
-import anthropic
 import discord
 from discord.ext import commands
 
 import llm_usage
+import llm_provider
+from llm_provider import get_provider, get_provider_name
 from tools import TOOL_DEFINITIONS, execute_tool  # noqa: E402 (used in fire_scheduled_task too)
 
 # ---------------------------------------------------------------------------
@@ -97,7 +98,7 @@ def _read_changelog_entry(version: int) -> str:
 
 DISCORD_TOKEN              = os.environ["DISCORD_TOKEN"]
 DISCORD_CHANNEL_ID         = int(os.environ["DISCORD_CHANNEL_ID"])
-ANTHROPIC_API_KEY          = os.environ["ANTHROPIC_API_KEY"]
+ANTHROPIC_API_KEY          = os.environ.get("ANTHROPIC_API_KEY", "")  # required only when LLM_PROVIDER=anthropic
 WEBHOOK_PORT               = int(os.environ.get("WEBHOOK_PORT", "8765"))
 WEBHOOK_SECRET             = os.environ.get("WEBHOOK_SECRET", "")
 TAILSCALE_IP               = os.environ.get("TAILSCALE_IP", "")
@@ -294,7 +295,6 @@ DISCORD_MSG_LIMIT = 1900  # leave headroom below the 2000-char limit
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 if ENABLE_TTS or ENABLE_STT:
     try:
@@ -1227,41 +1227,48 @@ def _run_claude_loop(
     channel_id: int | None = None,
     conversation_id: str | None = None,
 ) -> str:
-    """Synchronous Claude agentic loop (run in a thread executor)."""
+    """Synchronous LLM agentic loop (run in a thread executor)."""
     import time as _time
     conv_id = conversation_id or str(uuid.uuid4())
     messages = (history or []) + [{"role": "user", "content": user_message}]
     tools_called: list[str] = []
     t0 = _time.monotonic()
 
+    provider = get_provider()
+    provider_name = get_provider_name()
+    # Format tool definitions once; cache the result for the upgrade re-issue.
+    formatted_tools = provider.format_tool_definitions(TOOL_DEFINITIONS)
     system_prompt = _build_system_prompt()
+
     for _ in range(10):  # safety: max 10 tool-call rounds
-        response = claude.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=4096,
-            system=system_prompt,
-            tools=TOOL_DEFINITIONS,
+        response = provider.complete(
+            system_prompt=system_prompt,
             messages=messages,
+            formatted_tools=formatted_tools,
+            model=provider.primary_model,
+            max_tokens=4096,
         )
         llm_usage.log_call(
             conversation_id=conv_id,
-            model="claude-haiku-4-5",
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
+            model=response.model,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
             user_message=user_message,
             context="main",
+            provider=provider_name,
         )
         log.info(
-            "Claude stop_reason=%s in=%d out=%d cost=$%.5f",
+            "LLM stop_reason=%s model=%s in=%d out=%d cost=$%.5f",
             response.stop_reason,
-            response.usage.input_tokens,
-            response.usage.output_tokens,
-            llm_usage.cost_usd("claude-haiku-4-5", response.usage.input_tokens, response.usage.output_tokens),
+            response.model,
+            response.input_tokens,
+            response.output_tokens,
+            llm_usage.cost_usd(response.model, response.input_tokens, response.output_tokens),
         )
 
         if response.stop_reason == "end_turn":
             for block in response.content:
-                if hasattr(block, "text"):
+                if block.type == "text" and block.text:
                     _ai_event(
                         "BotQuery",
                         message=user_message[:200],
@@ -1272,35 +1279,49 @@ def _run_claude_loop(
             return "(no text response)"
 
         if response.stop_reason == "tool_use":
-            # manage_schedule has a complex schema — upgrade to Sonnet to fill parameters
-            # accurately. Haiku already decided to call it; Sonnet re-issues with same context.
-            if any(b.type == "tool_use" and b.name == "manage_schedule" for b in response.content):
-                log.info("manage_schedule detected — upgrading to Sonnet for parameter accuracy")
-                response = claude.messages.create(
-                    model="claude-sonnet-4-5",
-                    max_tokens=4096,
-                    system=system_prompt,
-                    tools=TOOL_DEFINITIONS,
+            # manage_schedule has a complex schema — upgrade to a higher-capability model
+            # to fill parameters accurately when an upgrade model is configured.
+            # The primary already decided to call it; the upgrade re-issues with the same
+            # context and formatted_tools (already converted — no double-conversion).
+            if (
+                provider.upgrade_model
+                and any(b.type == "tool_use" and b.name == "manage_schedule" for b in response.content)
+            ):
+                log.info("manage_schedule detected — upgrading to %s for parameter accuracy", provider.upgrade_model)
+                response = provider.complete(
+                    system_prompt=system_prompt,
                     messages=messages,
+                    formatted_tools=formatted_tools,
+                    model=provider.upgrade_model,
+                    max_tokens=4096,
                 )
                 llm_usage.log_call(
                     conversation_id=conv_id,
-                    model="claude-sonnet-4-5",
-                    input_tokens=response.usage.input_tokens,
-                    output_tokens=response.usage.output_tokens,
+                    model=response.model,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
                     user_message=user_message,
-                    context="sonnet_upgrade",
+                    context="model_upgrade",
+                    provider=provider_name,
                 )
                 log.info(
-                    "Sonnet stop_reason=%s in=%d out=%d cost=$%.5f",
+                    "Upgrade stop_reason=%s model=%s in=%d out=%d cost=$%.5f",
                     response.stop_reason,
-                    response.usage.input_tokens,
-                    response.usage.output_tokens,
-                    llm_usage.cost_usd("claude-sonnet-4-5", response.usage.input_tokens, response.usage.output_tokens),
+                    response.model,
+                    response.input_tokens,
+                    response.output_tokens,
+                    llm_usage.cost_usd(response.model, response.input_tokens, response.output_tokens),
                 )
 
-            # Append assistant turn (may include thinking blocks + tool_use blocks)
-            messages.append({"role": "assistant", "content": response.content})
+            # Append assistant turn as canonical plain dicts (accepted by both providers).
+            canonical_content = []
+            for b in response.content:
+                if b.type == "text":
+                    canonical_content.append({"type": "text", "text": b.text})
+                elif b.type == "tool_use":
+                    canonical_content.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+            messages.append({"role": "assistant", "content": canonical_content})
+
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
@@ -1313,8 +1334,8 @@ def _run_claude_loop(
                     else:
                         log.debug("Tool result (%s): %.200s", block.name, result)
                     # Save pending confirmation when a destructive preview is shown.
-                    # The bot will execute confirmed=True directly when the user says yes,
-                    # bypassing Claude (which is unreliable at this step).
+                    # The bot executes confirmed=True directly when the user says yes,
+                    # bypassing the LLM (which is unreliable at this step).
                     _confirm_tools = {"manage_files", "set_jenkins_schedule"}
                     if (
                         channel_id is not None
@@ -1877,22 +1898,24 @@ async def fire_scheduled_task(task: dict) -> None:
             message = task["static_message"]
 
         elif task["generative_prompt"]:
-            # One small Haiku call for tasks that need fresh synthesis
+            # One small LLM call for tasks that need fresh synthesis
             prompt = task["generative_prompt"].replace("{results}", combined)
-            resp = await loop.run_in_executor(None, lambda: claude.messages.create(
-                model="claude-haiku-4-5",
-                max_tokens=800,
-                messages=[{"role": "user", "content": prompt}],
-            ))
+            _prov = get_provider()
+            _prov_name = get_provider_name()
+            _gen_msgs = [{"role": "user", "content": prompt}]
+            text, in_tok, out_tok = await loop.run_in_executor(
+                None, lambda: _prov.complete_simple(_gen_msgs, _prov.primary_model, 800)
+            )
             llm_usage.log_call(
                 conversation_id=task_conv_id,
-                model="claude-haiku-4-5",
-                input_tokens=resp.usage.input_tokens,
-                output_tokens=resp.usage.output_tokens,
+                model=_prov.primary_model,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
                 user_message=task_user_msg,
                 context="scheduled_generative",
+                provider=_prov_name,
             )
-            message = resp.content[0].text
+            message = text
 
         elif task_type == "condition_check" and task["condition_pattern"]:
             met = bool(re.search(task["condition_pattern"], combined, re.IGNORECASE))
@@ -1902,20 +1925,22 @@ async def fire_scheduled_task(task: dict) -> None:
                 # generative_prompt takes priority over met_message when condition is satisfied
                 if task["generative_prompt"]:
                     prompt = task["generative_prompt"].replace("{results}", combined)
-                    resp = await loop.run_in_executor(None, lambda: claude.messages.create(
-                        model="claude-haiku-4-5",
-                        max_tokens=400,
-                        messages=[{"role": "user", "content": prompt}],
-                    ))
+                    _prov = get_provider()
+                    _prov_name = get_provider_name()
+                    _gen_msgs = [{"role": "user", "content": prompt}]
+                    text, in_tok, out_tok = await loop.run_in_executor(
+                        None, lambda: _prov.complete_simple(_gen_msgs, _prov.primary_model, 400)
+                    )
                     llm_usage.log_call(
                         conversation_id=task_conv_id,
-                        model="claude-haiku-4-5",
-                        input_tokens=resp.usage.input_tokens,
-                        output_tokens=resp.usage.output_tokens,
+                        model=_prov.primary_model,
+                        input_tokens=in_tok,
+                        output_tokens=out_tok,
                         user_message=task_user_msg,
                         context="scheduled_generative",
+                        provider=_prov_name,
                     )
-                    message = resp.content[0].text
+                    message = text
                 else:
                     message = task["met_message"] or f"✅ Done: {task['description']}"
                 await loop.run_in_executor(None, sched.mark_done, task_id)
