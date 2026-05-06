@@ -1224,6 +1224,7 @@ DISCORD_CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0"))
 def manage_schedule(action: str, **kwargs) -> str:
     """Create, list, or cancel scheduled tasks."""
     import scheduler as sched
+    sched.init_db()
 
     if action == "list":
         tasks = sched.list_pending()

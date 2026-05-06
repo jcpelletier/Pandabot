@@ -1,5 +1,8 @@
 # Changelog
 
+## v123
+- Fix "no such table: scheduled_tasks" error when asking the bot about scheduled tasks on a fresh DB — `manage_schedule` now calls `init_db()` before querying, so the table always exists.
+
 ## v122
 - Fix misleading "Error talking to Claude" messages — changed to "Error processing request" so the error text doesn't falsely blame the LLM provider (Claude/DeepSeek/etc.)
 - Add parameter validation in `execute_tool()` — missing required parameters now produce a clear error message instead of a raw `KeyError` that appears as "Error talking to Claude: 'action'"
