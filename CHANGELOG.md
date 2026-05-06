@@ -1,5 +1,8 @@
 # Changelog
 
+## v124
+- Fix scheduled tasks being wiped on every deploy — `scheduler.db` (and `llm_usage.db`) are now in `.gitignore` and untracked from git. Previously `git pull` overwrote the live database with the empty placeholder committed in v109.
+
 ## v123
 - Fix "no such table: scheduled_tasks" error when asking the bot about scheduled tasks on a fresh DB — `manage_schedule` now calls `init_db()` before querying, so the table always exists.
 
