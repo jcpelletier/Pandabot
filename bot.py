@@ -1,7 +1,7 @@
 """
 Panda Discord bot — server status assistant + Jenkins failure notifier.
 
-Responds to @mentions (and DMs) by querying Claude with a curated set of
+Responds to all messages (and DMs) by querying Claude with a curated set of
 read-only server tools.  Also runs a local-only HTTP webhook that Jenkins
 (and other scripts) POST to for failure alerts.
 
@@ -1628,17 +1628,8 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    is_dm = isinstance(message.channel, discord.DMChannel)
-    is_mention = bot.user in message.mentions
-
-    if not (is_dm or is_mention):
-        await bot.process_commands(message)
-        return
-
-    # Strip the mention text
-    content = message.content
-    if is_mention:
-        content = content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
+    # Strip the mention text if present, then respond to all messages
+    content = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
     if not content:
         await message.channel.send("Hey! Ask me anything about the server status.")
         return

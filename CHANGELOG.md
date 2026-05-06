@@ -1,5 +1,8 @@
 # Changelog
 
+## v118
+- Respond to all messages in a channel without requiring an @mention. Mention text is still stripped if present.
+
 ## v117
 - Fix DeepSeek model name: `OPENAI_COMPAT_PRIMARY_MODEL` corrected to `deepseek-v4-flash` (was `deepseek-chat`).
 - Fix DeepSeek pricing in `llm_usage`: `deepseek-v4-flash` $0.14/$0.28 per M tokens, `deepseek-v4-pro` $0.435/$0.87 per M tokens (cache-miss rates from platform.deepseek.com).
