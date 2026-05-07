@@ -1,5 +1,8 @@
 # Changelog
 
+## v125
+- Restrict Pandabot to its configured channel only — was accidentally responding in all channels including #pandabot-qa
+
 ## v124
 - Fix scheduled tasks being wiped on every deploy — `scheduler.db` (and `llm_usage.db`) are now in `.gitignore` and untracked from git. Previously `git pull` overwrote the live database with the empty placeholder committed in v109.
 

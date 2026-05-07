@@ -1635,6 +1635,10 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
+    if message.channel.id != DISCORD_CHANNEL_ID:
+        await bot.process_commands(message)
+        return
+
     # Strip the mention text if present, then respond to all messages
     content = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
     if not content:
