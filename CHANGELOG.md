@@ -1,5 +1,8 @@
 # Changelog
 
+## v127
+- Fix condition_check tasks with generative_prompt firing the LLM immediately on first check regardless of whether the condition was met (caused premature "disc finished ripping" notifications)
+
 ## v126
 - Add TRUSTED_BOT_IDS env var: comma-separated bot user IDs whose messages bypass the bot filter in on_message, allowing PandaQA to send test prompts to #pandabot and receive replies
 

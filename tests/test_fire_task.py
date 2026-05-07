@@ -374,6 +374,52 @@ async def test_condition_max_attempts_marks_done(tmp_db, posted, fake_execute):
 
 
 # ---------------------------------------------------------------------------
+# condition_check — with generative_prompt (regression: must not fire LLM until met)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_condition_check_generative_prompt_not_called_when_not_met(
+    tmp_db, posted, fake_execute, mock_claude
+):
+    """generative_prompt must NOT be called on condition_check when condition is not met."""
+    fake_execute["get_log_tail"] = "still ripping..."
+    tc = json.dumps([{"tool": "get_log_tail", "args": {}}])
+    task = _task(
+        task_type="condition_check",
+        tool_calls=tc,
+        condition_pattern="Rip completed successfully",
+        generative_prompt="Tell the user: {results}",
+        met_message="🎬 Disc finished ripping!",
+        attempt=0,
+        max_attempts=5,
+    )
+    await bot.fire_scheduled_task(task)
+    assert mock_claude._calls == [], "LLM must not be called when condition is not yet met"
+    assert not any("🎬 Disc finished ripping!" in m for m in posted)
+
+
+@pytest.mark.asyncio
+async def test_condition_check_generative_prompt_called_when_met(
+    tmp_db, posted, fake_execute, mock_claude
+):
+    """generative_prompt IS called when condition_check condition is satisfied."""
+    fake_execute["get_log_tail"] = "Rip completed successfully for DS9S1D2"
+    tc = json.dumps([{"tool": "get_log_tail", "args": {}}])
+    mock_claude._response_text = "🎬 Disc finished ripping! DS9S1D2 is done."
+    task = _task(
+        task_type="condition_check",
+        tool_calls=tc,
+        condition_pattern="Rip completed successfully",
+        generative_prompt="Tell the user: {results}",
+        attempt=0,
+        max_attempts=5,
+    )
+    await bot.fire_scheduled_task(task)
+    assert len(mock_claude._calls) == 1
+    assert any("DS9S1D2 is done." in m for m in posted)
+
+
+# ---------------------------------------------------------------------------
 # recurring
 # ---------------------------------------------------------------------------
 

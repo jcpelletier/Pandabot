@@ -1901,26 +1901,6 @@ async def fire_scheduled_task(task: dict) -> None:
             # Pre-written at schedule time — zero LLM cost
             message = task["static_message"]
 
-        elif task["generative_prompt"]:
-            # One small LLM call for tasks that need fresh synthesis
-            prompt = task["generative_prompt"].replace("{results}", combined)
-            _prov = get_provider()
-            _prov_name = get_provider_name()
-            _gen_msgs = [{"role": "user", "content": prompt}]
-            text, in_tok, out_tok = await loop.run_in_executor(
-                None, lambda: _prov.complete_simple(_gen_msgs, _prov.primary_model, 800)
-            )
-            llm_usage.log_call(
-                conversation_id=task_conv_id,
-                model=_prov.primary_model,
-                input_tokens=in_tok,
-                output_tokens=out_tok,
-                user_message=task_user_msg,
-                context="scheduled_generative",
-                provider=_prov_name,
-            )
-            message = text
-
         elif task_type == "condition_check" and task["condition_pattern"]:
             met = bool(re.search(task["condition_pattern"], combined, re.IGNORECASE))
             new_attempt = attempt + 1
@@ -1979,6 +1959,26 @@ async def fire_scheduled_task(task: dict) -> None:
 
             await post_notification_to(channel_id, message)
             return
+
+        elif task["generative_prompt"]:
+            # One small LLM call for tasks that need fresh synthesis (one_shot / recurring)
+            prompt = task["generative_prompt"].replace("{results}", combined)
+            _prov = get_provider()
+            _prov_name = get_provider_name()
+            _gen_msgs = [{"role": "user", "content": prompt}]
+            text, in_tok, out_tok = await loop.run_in_executor(
+                None, lambda: _prov.complete_simple(_gen_msgs, _prov.primary_model, 800)
+            )
+            llm_usage.log_call(
+                conversation_id=task_conv_id,
+                model=_prov.primary_model,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                user_message=task_user_msg,
+                context="scheduled_generative",
+                provider=_prov_name,
+            )
+            message = text
 
         else:
             # Default: optional intro + tool results
