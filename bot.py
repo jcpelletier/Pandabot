@@ -98,6 +98,8 @@ def _read_changelog_entry(version: int) -> str:
 
 DISCORD_TOKEN              = os.environ["DISCORD_TOKEN"]
 DISCORD_CHANNEL_ID         = int(os.environ["DISCORD_CHANNEL_ID"])
+# Bot user IDs allowed to send prompts (e.g. PandaQA). Comma-separated.
+TRUSTED_BOT_IDS            = {int(x) for x in os.environ.get("TRUSTED_BOT_IDS", "").split(",") if x.strip()}
 ANTHROPIC_API_KEY          = os.environ.get("ANTHROPIC_API_KEY", "")  # required only when LLM_PROVIDER=anthropic
 WEBHOOK_PORT               = int(os.environ.get("WEBHOOK_PORT", "8765"))
 WEBHOOK_SECRET             = os.environ.get("WEBHOOK_SECRET", "")
@@ -1632,7 +1634,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot:
+    if message.author.bot and message.author.id not in TRUSTED_BOT_IDS:
         return
 
     if message.channel.id != DISCORD_CHANNEL_ID:

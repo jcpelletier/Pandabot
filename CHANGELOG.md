@@ -1,5 +1,8 @@
 # Changelog
 
+## v126
+- Add TRUSTED_BOT_IDS env var: comma-separated bot user IDs whose messages bypass the bot filter in on_message, allowing PandaQA to send test prompts to #pandabot and receive replies
+
 ## v125
 - Restrict Pandabot to its configured channel only — was accidentally responding in all channels including #pandabot-qa
 
