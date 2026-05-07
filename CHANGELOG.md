@@ -1,5 +1,8 @@
 # Changelog
 
+## v128
+- Add OpenProject integration behind ENABLE_OPENPROJECT flag: list/get projects, list/search/get work packages, list versions and version tickets, list project members, create projects, add/remove project members
+
 ## v127
 - Fix condition_check tasks with generative_prompt firing the LLM immediately on first check regardless of whether the condition was met (caused premature "disc finished ripping" notifications)
 

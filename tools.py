@@ -29,6 +29,7 @@ ENABLE_SMART         = os.environ.get("ENABLE_SMART",         "true").lower() ==
 ENABLE_WRITE_ACTIONS     = os.environ.get("ENABLE_WRITE_ACTIONS",     "true").lower()  == "true"
 ENABLE_GAMING            = os.environ.get("ENABLE_GAMING",            "true").lower()  == "true"
 ENABLE_CRAWL_ANALYTICS   = os.environ.get("ENABLE_CRAWL_ANALYTICS",   "false").lower() == "true"
+ENABLE_OPENPROJECT       = os.environ.get("ENABLE_OPENPROJECT",       "false").lower() == "true"
 STEAM_LIBRARY_PATH   = os.path.expanduser(
     os.environ.get("STEAM_LIBRARY_PATH", "~/.steam/steam/steamapps")
 )
@@ -69,6 +70,10 @@ AZURE_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 
 CRAWL_ANALYTICS_URL   = os.environ.get("CRAWL_ANALYTICS_URL",   "")
 CRAWL_ANALYTICS_TOKEN = os.environ.get("CRAWL_ANALYTICS_TOKEN", "")
+
+OP_URL      = os.environ.get("OPENPROJECT_URL",      "").rstrip("/")
+OP_USER     = os.environ.get("OPENPROJECT_USER",     "")
+OP_PASSWORD = os.environ.get("OPENPROJECT_PASSWORD", "")
 
 STAGING_PATH = os.environ.get("STAGING_PATH", "/mnt/media/Video")
 MEDIA_PATH   = os.environ.get("MEDIA_PATH",   "/mnt/media/Media")
@@ -2161,6 +2166,222 @@ def query_llm_usage(action: str = "recent", days: int = 30, limit: int = 20) -> 
 
 
 # ---------------------------------------------------------------------------
+# OpenProject
+# ---------------------------------------------------------------------------
+
+def _op(method: str, path: str, **kwargs) -> dict:
+    url = f"{OP_URL}/api/v3{path}"
+    r = requests.request(method, url, auth=(OP_USER, OP_PASSWORD),
+                         headers={"Content-Type": "application/json"}, timeout=15, **kwargs)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
+def _op_slim_wp(wp: dict) -> dict:
+    lnk = wp.get("_links", {})
+    return {
+        "id":          wp.get("id"),
+        "subject":     wp.get("subject"),
+        "type":        lnk.get("type", {}).get("title"),
+        "status":      lnk.get("status", {}).get("title"),
+        "priority":    lnk.get("priority", {}).get("title"),
+        "assignee":    lnk.get("assignee", {}).get("title"),
+        "version":     lnk.get("version", {}).get("title"),
+        "project":     lnk.get("project", {}).get("title"),
+        "description": (wp.get("description") or {}).get("raw", ""),
+        "due_date":    wp.get("dueDate"),
+        "start_date":  wp.get("startDate"),
+        "created_at":  wp.get("createdAt"),
+        "updated_at":  wp.get("updatedAt"),
+    }
+
+
+def _op_slim_project(p: dict) -> dict:
+    return {
+        "id":          p.get("id"),
+        "identifier":  p.get("identifier"),
+        "name":        p.get("name"),
+        "description": (p.get("description") or {}).get("raw", ""),
+        "active":      p.get("active", True),
+        "created_at":  p.get("createdAt"),
+    }
+
+
+def list_op_projects() -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        data = _op("GET", "/projects?pageSize=100")
+        projects = [_op_slim_project(p) for p in data.get("_embedded", {}).get("elements", [])]
+        return json.dumps(projects, indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def get_op_project(project: str) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        data = _op("GET", f"/projects/{project}")
+        return json.dumps(_op_slim_project(data), indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def list_op_work_packages(project: str, status: str = "open", limit: int = 25) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        if status == "open":
+            filters = json.dumps([{"status": {"operator": "o", "values": []}}])
+        elif status == "closed":
+            filters = json.dumps([{"status": {"operator": "c", "values": []}}])
+        else:
+            filters = json.dumps([])
+        import urllib.parse
+        params = f"?filters={urllib.parse.quote(filters)}&pageSize={limit}&sortBy=%5B%5B%22updatedAt%22%2C%22desc%22%5D%5D"
+        data = _op("GET", f"/projects/{project}/work_packages{params}")
+        wps = [_op_slim_wp(wp) for wp in data.get("_embedded", {}).get("elements", [])]
+        return json.dumps({"total": data.get("total", len(wps)), "shown": len(wps), "work_packages": wps}, indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def get_op_work_package(wp_id: int) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        return json.dumps(_op_slim_wp(_op("GET", f"/work_packages/{wp_id}")), indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def list_op_versions(project: str) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        data = _op("GET", f"/projects/{project}/versions")
+        versions = [
+            {"id": v.get("id"), "name": v.get("name"), "status": v.get("status"),
+             "start_date": v.get("startDate"), "end_date": v.get("endDate")}
+            for v in data.get("_embedded", {}).get("elements", [])
+        ]
+        return json.dumps(versions, indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def list_op_version_tickets(version_id: int) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        import urllib.parse
+        filters = urllib.parse.quote(json.dumps([{"version": {"operator": "=", "values": [str(version_id)]}}]))
+        data = _op("GET", f"/work_packages?filters={filters}&pageSize=100")
+        wps = [_op_slim_wp(wp) for wp in data.get("_embedded", {}).get("elements", [])]
+        return json.dumps({"version_id": version_id, "count": len(wps), "work_packages": wps}, indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def search_op_work_packages(query: str, project: str = "", limit: int = 25) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        import urllib.parse
+        filters = urllib.parse.quote(json.dumps([{"subjectOrId": {"operator": "**", "values": [query]}}]))
+        path = f"/projects/{project}/work_packages" if project else "/work_packages"
+        data = _op("GET", f"{path}?filters={filters}&pageSize={limit}")
+        wps = [_op_slim_wp(wp) for wp in data.get("_embedded", {}).get("elements", [])]
+        return json.dumps({"query": query, "total": data.get("total", len(wps)), "shown": len(wps), "work_packages": wps}, indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def list_op_project_members(project: str) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        data = _op("GET", f"/projects/{project}/members?pageSize=100")
+        members = [
+            {"id": m.get("id"),
+             "name": m.get("_links", {}).get("principal", {}).get("title"),
+             "roles": [r.get("title") for r in m.get("_links", {}).get("roles", [])]}
+            for m in data.get("_embedded", {}).get("elements", [])
+        ]
+        return json.dumps(members, indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def create_op_project(name: str, identifier: str, description: str = "") -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        body = {"name": name, "identifier": identifier}
+        if description:
+            body["description"] = {"format": "markdown", "raw": description}
+        return json.dumps(_op_slim_project(_op("POST", "/projects", json=body)), indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def _op_find_user(login_or_email: str) -> dict | None:
+    import urllib.parse
+    for field in ("login", "email"):
+        filters = urllib.parse.quote(json.dumps([{field: {"operator": "=", "values": [login_or_email]}}]))
+        elements = _op("GET", f"/users?filters={filters}").get("_embedded", {}).get("elements", [])
+        if elements:
+            return elements[0]
+    return None
+
+
+def _op_find_role(name: str) -> dict | None:
+    for r in _op("GET", "/roles").get("_embedded", {}).get("elements", []):
+        if r.get("name", "").lower() == name.lower():
+            return r
+    return None
+
+
+def add_op_project_member(project: str, user: str, role: str) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        user_obj = _op_find_user(user)
+        if not user_obj:
+            return f"User not found: {user!r}"
+        role_obj = _op_find_role(role)
+        if not role_obj:
+            names = [r.get("name") for r in _op("GET", "/roles").get("_embedded", {}).get("elements", [])]
+            return f"Role not found: {role!r}. Available: {names}"
+        body = {"_links": {
+            "project":   {"href": _op("GET", f"/projects/{project}")["_links"]["self"]["href"]},
+            "principal": {"href": user_obj["_links"]["self"]["href"]},
+            "roles":     [{"href": role_obj["_links"]["self"]["href"]}],
+        }}
+        result = _op("POST", "/memberships", json=body)
+        lnk = result.get("_links", {})
+        return json.dumps({
+            "membership_id": result.get("id"),
+            "user":    lnk.get("principal", {}).get("title"),
+            "project": lnk.get("project", {}).get("title"),
+            "roles":   [r.get("title") for r in lnk.get("roles", [])],
+        }, indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def remove_op_project_member(membership_id: int) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        _op("DELETE", f"/memberships/{membership_id}")
+        return f"Membership {membership_id} removed."
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+# ---------------------------------------------------------------------------
 # Tool schema definitions for Claude — built dynamically from feature flags
 # ---------------------------------------------------------------------------
 
@@ -2834,6 +3055,137 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
 
+    # --- OpenProject ---
+    if ENABLE_OPENPROJECT and OP_URL:
+        tools += [
+            {
+                "name": "list_op_projects",
+                "description": "List all OpenProject projects visible to this bot.",
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "get_op_project",
+                "description": "Get details for a specific OpenProject project by ID or identifier slug.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project ID or identifier slug."},
+                    },
+                    "required": ["project"],
+                },
+            },
+            {
+                "name": "list_op_work_packages",
+                "description": (
+                    "List work packages (tickets) in a project, sorted by last update. "
+                    "Filter by status: open (default), closed, or all."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project ID or identifier."},
+                        "status":  {"type": "string", "enum": ["open", "closed", "all"], "description": "Status filter. Default: open.", "default": "open"},
+                        "limit":   {"type": "integer", "description": "Max results. Default: 25.", "default": 25},
+                    },
+                    "required": ["project"],
+                },
+            },
+            {
+                "name": "get_op_work_package",
+                "description": "Get full details for a specific work package by numeric ID.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer", "description": "Work package numeric ID."},
+                    },
+                    "required": ["id"],
+                },
+            },
+            {
+                "name": "list_op_versions",
+                "description": "List versions (releases/sprints) defined in a project.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project ID or identifier."},
+                    },
+                    "required": ["project"],
+                },
+            },
+            {
+                "name": "list_op_version_tickets",
+                "description": "List all work packages assigned to a specific version/release by version ID.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "version_id": {"type": "integer", "description": "Version numeric ID (from list_op_versions)."},
+                    },
+                    "required": ["version_id"],
+                },
+            },
+            {
+                "name": "search_op_work_packages",
+                "description": "Full-text search across work packages by subject or ID. Optionally scope to a project.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query":   {"type": "string", "description": "Search text."},
+                        "project": {"type": "string", "description": "Optional project ID or identifier to scope the search.", "default": ""},
+                        "limit":   {"type": "integer", "description": "Max results. Default: 25.", "default": 25},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "list_op_project_members",
+                "description": "List members and their roles in a project.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project ID or identifier."},
+                    },
+                    "required": ["project"],
+                },
+            },
+            {
+                "name": "create_op_project",
+                "description": "Create a new OpenProject project.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name":        {"type": "string", "description": "Human-readable project name."},
+                        "identifier":  {"type": "string", "description": "URL slug (lowercase, hyphens). Must be unique."},
+                        "description": {"type": "string", "description": "Optional markdown description.", "default": ""},
+                    },
+                    "required": ["name", "identifier"],
+                },
+            },
+            {
+                "name": "add_op_project_member",
+                "description": "Add a user to a project with a specified role. Accepts user login or email and role name.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project ID or identifier."},
+                        "user":    {"type": "string", "description": "User login or email address."},
+                        "role":    {"type": "string", "description": "Role name (e.g. 'Member', 'Project admin')."},
+                    },
+                    "required": ["project", "user", "role"],
+                },
+            },
+            {
+                "name": "remove_op_project_member",
+                "description": "Remove a user from a project by membership ID (from list_op_project_members).",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "membership_id": {"type": "integer", "description": "Membership ID to remove."},
+                    },
+                    "required": ["membership_id"],
+                },
+            },
+        ]
+
     return tools
 
 
@@ -2968,4 +3320,26 @@ def execute_tool(name: str, inputs: dict) -> str:
             days=inputs.get("days", 30),
             limit=inputs.get("limit", 20),
         )
+    if name == "list_op_projects":
+        return list_op_projects()
+    if name == "get_op_project":
+        return get_op_project(inputs["project"])
+    if name == "list_op_work_packages":
+        return list_op_work_packages(inputs["project"], inputs.get("status", "open"), inputs.get("limit", 25))
+    if name == "get_op_work_package":
+        return get_op_work_package(inputs["id"])
+    if name == "list_op_versions":
+        return list_op_versions(inputs["project"])
+    if name == "list_op_version_tickets":
+        return list_op_version_tickets(inputs["version_id"])
+    if name == "search_op_work_packages":
+        return search_op_work_packages(inputs["query"], inputs.get("project", ""), inputs.get("limit", 25))
+    if name == "list_op_project_members":
+        return list_op_project_members(inputs["project"])
+    if name == "create_op_project":
+        return create_op_project(inputs["name"], inputs["identifier"], inputs.get("description", ""))
+    if name == "add_op_project_member":
+        return add_op_project_member(inputs["project"], inputs["user"], inputs["role"])
+    if name == "remove_op_project_member":
+        return remove_op_project_member(inputs["membership_id"])
     return f"Unknown tool: {name}"
