@@ -326,6 +326,21 @@ def split_message(text: str) -> list[str]:
     return chunks
 
 
+async def send_with_retry(channel, content: str, retries: int = 3) -> None:
+    """Send a message, retrying on transient Discord 5xx errors."""
+    delay = 1.0
+    for attempt in range(retries):
+        try:
+            await channel.send(content)
+            return
+        except discord.errors.DiscordServerError:
+            if attempt == retries - 1:
+                raise
+            log.warning("Discord 5xx on send, retrying in %.0fs (attempt %d/%d)", delay, attempt + 1, retries)
+            await asyncio.sleep(delay)
+            delay *= 2
+
+
 def _calc_rms(data: bytes) -> float:
     """Return RMS amplitude of raw 16-bit LE PCM bytes (0–32767 scale)."""
     n = len(data) // 2
@@ -1086,7 +1101,7 @@ async def _on_stt_transcript(guild_id: int, user_id: int, pcm_bytes: bytes) -> N
         log.warning("STT: default channel %s not found", DISCORD_CHANNEL_ID)
         return
 
-    await channel.send(f"🎤 **{display_name}:** {transcript}")
+    await send_with_retry(channel, f"🎤 **{display_name}:** {transcript}")
 
     loop = asyncio.get_running_loop()
     try:
@@ -1098,7 +1113,7 @@ async def _on_stt_transcript(guild_id: int, user_id: int, pcm_bytes: bytes) -> N
         reply = f"Error processing request: {exc}"
 
     for chunk in split_message(reply):
-        await channel.send(chunk)
+        await send_with_retry(channel, chunk)
 
     if ENABLE_TTS:
         asyncio.create_task(speak_response(guild_id, reply))
@@ -1644,7 +1659,7 @@ async def on_message(message: discord.Message):
     # Strip the mention text if present, then respond to all messages
     content = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
     if not content:
-        await message.channel.send("Hey! Ask me anything about the server status.")
+        await send_with_retry(message.channel, "Hey! Ask me anything about the server status.")
         return
 
     # --- Pending-confirmation shortcut ---
@@ -1663,7 +1678,7 @@ async def on_message(message: discord.Message):
             log.exception("Pending confirmation execution failed")
             reply = f"Error executing confirmed action: {e}"
         for chunk in split_message(reply):
-            await message.channel.send(chunk)
+            await send_with_retry(message.channel, chunk)
         await bot.process_commands(message)
         return
 
@@ -1686,7 +1701,7 @@ async def on_message(message: discord.Message):
         typing_task.cancel()
 
     for chunk in split_message(reply):
-        await message.channel.send(chunk)
+        await send_with_retry(message.channel, chunk)
 
     if ENABLE_TTS and message.guild is not None:
         asyncio.create_task(speak_response(message.guild.id, reply))
@@ -1710,7 +1725,7 @@ async def post_notification_to(channel_id: int, text: str):
         log.error("Channel %s not found for notification", channel_id)
         return
     for chunk in split_message(text):
-        await channel.send(chunk)
+        await send_with_retry(channel, chunk)
 
 
 async def handle_notify(request: web.Request) -> web.Response:

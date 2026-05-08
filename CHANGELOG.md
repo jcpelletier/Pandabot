@@ -1,5 +1,8 @@
 # Changelog
 
+## v130
+- Add send_with_retry() helper: all channel.send calls now retry up to 3 times with exponential backoff (1s, 2s, 4s) on transient Discord 5xx errors
+
 ## v129
 - Fix get_performance_history timing out when PCP/pmcd is unavailable: reduce timeout from 30s to 10s and add sar (sysstat) fallback for CPU queries that includes average idle %
 
