@@ -119,6 +119,8 @@ HARDWARE_DESCRIPTION = os.environ.get("HARDWARE_DESCRIPTION",
 # Operator connection context — included in system prompt when set.
 # Example: "wsl ssh -i ~/.ssh/id_ed25519 genesis@192.168.1.100"
 OPERATOR_SSH_CMD     = os.environ.get("OPERATOR_SSH_CMD", "")
+# Discord user ID to @ping when a scheduled task posts a terminal result.
+SCHEDULED_TASK_PING_USER_ID = os.environ.get("SCHEDULED_TASK_PING_USER_ID", "")
 AI_ENDPOINT                = os.environ.get("APPINSIGHTS_ENDPOINT", "")
 
 # TTS
@@ -1757,6 +1759,13 @@ async def post_notification_to(channel_id: int, text: str):
         await send_with_retry(channel, chunk)
 
 
+async def post_scheduled_notification(channel_id: int, text: str):
+    """Send a scheduled task result, prepending an @ping if SCHEDULED_TASK_PING_USER_ID is set."""
+    if SCHEDULED_TASK_PING_USER_ID:
+        text = f"<@{SCHEDULED_TASK_PING_USER_ID}> {text}"
+    await post_notification_to(channel_id, text)
+
+
 async def handle_notify(request: web.Request) -> web.Response:
     """
     POST /notify
@@ -1975,7 +1984,7 @@ async def fire_scheduled_task(task: dict) -> None:
                 _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
                           description=task["description"][:100], outcome="condition_met",
                           attempt=str(new_attempt))
-                await post_notification_to(channel_id, message)
+                await post_scheduled_notification(channel_id, message)
                 return
 
             if new_attempt >= max_att:
@@ -1987,6 +1996,7 @@ async def fire_scheduled_task(task: dict) -> None:
                 _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
                           description=task["description"][:100], outcome="gave_up",
                           attempt=str(new_attempt))
+                await post_scheduled_notification(channel_id, message)  # terminal — ping
             else:
                 message = (
                     task["not_met_message"]
@@ -2000,8 +2010,7 @@ async def fire_scheduled_task(task: dict) -> None:
                 _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
                           description=task["description"][:100], outcome="condition_pending",
                           attempt=str(new_attempt), next_check_min=str(interval))
-
-            await post_notification_to(channel_id, message)
+                await post_notification_to(channel_id, message)  # still pending — no ping
             return
 
         elif task["generative_prompt"]:
@@ -2041,14 +2050,14 @@ async def fire_scheduled_task(task: dict) -> None:
         _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
                   description=task["description"][:100], outcome="success",
                   duration_ms=str(int((_time.monotonic() - t0) * 1000)))
-        await post_notification_to(channel_id, message)
+        await post_scheduled_notification(channel_id, message)
 
     except Exception as exc:
         log.exception("fire_scheduled_task error for #%d", task_id)
         _ai_trace("Error", f"Scheduled task #{task_id} failed: {exc}",
                   task_id=str(task_id), description=task["description"][:100])
         await loop.run_in_executor(None, sched.mark_done, task_id)
-        await post_notification_to(
+        await post_scheduled_notification(
             channel_id, f"⚠️ Scheduled task #{task_id} failed — check bot logs"
         )
 

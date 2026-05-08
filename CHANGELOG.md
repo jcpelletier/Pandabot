@@ -1,5 +1,8 @@
 # Changelog
 
+## v134
+- Add SCHEDULED_TASK_PING_USER_ID env var: when set, @pings that user on all terminal scheduled task results (condition met, gave up, success, error) but not on intermediate condition-check pending messages
+
 ## v133
 - Fix typing indicator: use channel._state.http.send_typing() directly instead of channel.typing() which leaks background tasks and causes 429 rate limits
 
