@@ -1708,7 +1708,7 @@ async def on_message(message: discord.Message):
         try:
             while True:
                 try:
-                    await message.channel.typing()
+                    await message.channel._state.http.send_typing(message.channel.id)
                 except Exception as exc:
                     log.warning("Typing indicator failed (will retry): %s", exc)
                 await asyncio.sleep(8)

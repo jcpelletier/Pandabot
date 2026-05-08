@@ -1,5 +1,8 @@
 # Changelog
 
+## v133
+- Fix typing indicator: use channel._state.http.send_typing() directly instead of channel.typing() which leaks background tasks and causes 429 rate limits
+
 ## v132
 - Fix typing indicator crash: catch all exceptions in _keep_typing() loop so Discord errors don't silently kill the indicator
 - Add OPERATOR_SSH_CMD env var: when set, system prompt includes WSL SSH connection context so bot tailors command examples to the operator's machine
