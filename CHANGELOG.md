@@ -1,5 +1,8 @@
 # Changelog
 
+## v129
+- Fix get_performance_history timing out when PCP/pmcd is unavailable: reduce timeout from 30s to 10s and add sar (sysstat) fallback for CPU queries that includes average idle %
+
 ## v128
 - Add OpenProject integration behind ENABLE_OPENPROJECT flag: list/get projects, list/search/get work packages, list versions and version tickets, list project members, create projects, add/remove project members
 

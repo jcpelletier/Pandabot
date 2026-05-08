@@ -926,46 +926,128 @@ def get_performance_history(metric: str = "cpu", hours: int = 1) -> str:
         "-o", "csv",
     ] + config["metrics"]
 
+    pcp_error = None
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
             err = result.stderr.strip()
             if "Cannot connect" in err or "Connection refused" in err:
-                return "PCP daemon (pmcd) is not running — historical metrics unavailable."
-            if "No data" in err or "no data" in err:
-                return f"No {metric} data yet — pmlogger may have just started. Try again in a few minutes."
-            return f"pmrep error: {err}"
+                pcp_error = "pmcd not running"
+            elif "No data" in err or "no data" in err:
+                pcp_error = "no data"
+            else:
+                pcp_error = f"pmrep error: {err}"
+        else:
+            output = result.stdout.strip()
+            if not output:
+                pcp_error = "no output"
+            else:
+                lines = output.splitlines()
+                header_line = lines[0] if lines else ""
+                data_lines  = lines[1:] if len(lines) > 1 else []
+                if len(data_lines) > 35:
+                    data_lines = data_lines[-35:]
 
+                out = [
+                    f"=== {metric.upper()} history — last {hours}h (sampled every {interval}) ===",
+                    config["note"],
+                ]
+                if extra_info:
+                    out.append(extra_info.strip())
+                out.append(header_line)
+                out.extend(data_lines)
+                return "\n".join(out)
+
+    except FileNotFoundError:
+        pcp_error = "pmrep not found"
+    except subprocess.TimeoutExpired:
+        pcp_error = "pmrep timed out"
+    except Exception as e:
+        pcp_error = str(e)
+
+    # Fallback to sar (sysstat) for CPU metrics when PCP is unavailable
+    if metric == "cpu":
+        return _get_cpu_history_sar(hours, pcp_error)
+
+    return (
+        f"PCP unavailable ({pcp_error}) and no fallback exists for {metric} metrics. "
+        "Install/start PCP: sudo apt install pcp cockpit-pcp && sudo systemctl start pmcd pmlogger"
+    )
+
+
+def _get_cpu_history_sar(hours: int, pcp_error: str) -> str:
+    """Fallback CPU history using sar from sysstat."""
+    import datetime
+
+    start_time = (datetime.datetime.now() - datetime.timedelta(hours=hours)).strftime("%H:%M:%S")
+
+    try:
+        result = subprocess.run(
+            ["sar", "-u", "-s", start_time],
+            capture_output=True, text=True, timeout=10,
+        )
         output = result.stdout.strip()
         if not output:
             return (
-                f"No {metric} data available for the past {hours}h. "
-                "pmlogger may have just started collecting — data builds up over time."
+                f"PCP unavailable ({pcp_error}) and sar returned no data. "
+                "Install sysstat: sudo apt install sysstat"
             )
 
         lines = output.splitlines()
-        # Always keep the CSV header (first line) + cap data rows at 35
-        header_line = lines[0] if lines else ""
-        data_lines  = lines[1:] if len(lines) > 1 else []
-        if len(data_lines) > 35:
-            data_lines = data_lines[-35:]
+        # sar output: header lines, then data rows ending with an "Average:" line
+        data_rows = []
+        avg_line = ""
+        idle_values = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("Linux") or stripped.startswith("Average"):
+                if stripped.startswith("Average"):
+                    avg_line = stripped
+                continue
+            parts = stripped.split()
+            # Data rows have time in first column; idle % is last numeric column before EOL
+            # Header row contains "%idle" — skip it
+            if "%idle" in stripped:
+                continue
+            try:
+                idle_values.append(float(parts[-1]))
+                data_rows.append(stripped)
+            except (ValueError, IndexError):
+                continue
+
+        if not data_rows and not avg_line:
+            return (
+                f"PCP unavailable ({pcp_error}). sar is installed but has no data for the "
+                f"past {hours}h — sysstat logging may not be enabled "
+                "(check /etc/default/sysstat: set ENABLED=true, then sudo systemctl enable --now sysstat)."
+            )
+
+        # Cap rows at 35 (keep most recent)
+        if len(data_rows) > 35:
+            data_rows = data_rows[-35:]
+
+        avg_idle = sum(idle_values) / len(idle_values) if idle_values else None
 
         out = [
-            f"=== {metric.upper()} history — last {hours}h (sampled every {interval}) ===",
-            config["note"],
+            f"=== CPU history — last {hours}h (via sar/sysstat; PCP unavailable: {pcp_error}) ===",
+            "Columns: time  CPU  %user  %nice  %system  %iowait  %steal  %idle",
         ]
-        if extra_info:
-            out.append(extra_info.strip())
-        out.append(header_line)
-        out.extend(data_lines)
+        if avg_idle is not None:
+            out.append(f"Average idle over window: {avg_idle:.1f}%  (average busy: {100 - avg_idle:.1f}%)")
+        out.extend(data_rows)
+        if avg_line:
+            out.append(avg_line)
         return "\n".join(out)
 
     except FileNotFoundError:
-        return "pmrep not found — PCP may not be installed (sudo apt install pcp cockpit-pcp)."
+        return (
+            f"PCP unavailable ({pcp_error}) and sar not found. "
+            "Install either: sudo apt install pcp cockpit-pcp  OR  sudo apt install sysstat"
+        )
     except subprocess.TimeoutExpired:
-        return "pmrep timed out after 30s."
+        return f"PCP unavailable ({pcp_error}) and sar timed out."
     except Exception as e:
-        return f"Error querying performance history: {e}"
+        return f"PCP unavailable ({pcp_error}); sar fallback failed: {e}"
 
 
 def query_system_health(aspect: str = "stats") -> str:
