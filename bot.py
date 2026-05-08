@@ -116,6 +116,9 @@ TZ_NAME              = os.environ.get("TZ_NAME",    "America/New_York (Eastern T
 SERVER_DESCRIPTION   = os.environ.get("SERVER_DESCRIPTION",  "")
 HARDWARE_DESCRIPTION = os.environ.get("HARDWARE_DESCRIPTION",
                            "NVIDIA GTX 970 (4 GB VRAM), 2 TB NTFS HDD at /mnt/media")
+# Operator connection context — included in system prompt when set.
+# Example: "wsl ssh -i ~/.ssh/id_ed25519 genesis@192.168.1.100"
+OPERATOR_SSH_CMD     = os.environ.get("OPERATOR_SSH_CMD", "")
 AI_ENDPOINT                = os.environ.get("APPINSIGHTS_ENDPOINT", "")
 
 # TTS
@@ -249,6 +252,18 @@ def _build_system_prompt() -> str:
             confirmed execution directly when the user replies yes.
         """)
 
+    if OPERATOR_SSH_CMD:
+        _operator_block = textwrap.dedent(f"""
+        Operator connection: the person chatting with you connects to this server
+        from a Windows machine using WSL. Their SSH command is:
+          {OPERATOR_SSH_CMD}
+        When advising on server commands that require a remote shell, present them
+        in this form: {OPERATOR_SSH_CMD} "<command>"
+        For multi-line scripts, suggest: {OPERATOR_SSH_CMD} bash << 'EOF' ... EOF
+        """).strip()
+    else:
+        _operator_block = ""
+
     return textwrap.dedent(f"""\
         You are {BOT_NAME}, a helpful assistant for a home Ubuntu Server machine.
         {_llm_line}
@@ -289,6 +304,7 @@ def _build_system_prompt() -> str:
 
         Be concise. When reporting log extracts, summarise rather than quoting
         everything unless the user asks for raw output.
+        {_operator_block}
     """)
 
 DISCORD_MSG_LIMIT = 1900  # leave headroom below the 2000-char limit
@@ -1691,7 +1707,10 @@ async def on_message(message: discord.Message):
         """Re-trigger the typing indicator every 8s so it stays visible for long queries."""
         try:
             while True:
-                await message.channel.typing()
+                try:
+                    await message.channel.typing()
+                except Exception as exc:
+                    log.warning("Typing indicator failed (will retry): %s", exc)
                 await asyncio.sleep(8)
         except asyncio.CancelledError:
             pass
