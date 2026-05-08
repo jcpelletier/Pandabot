@@ -1112,8 +1112,13 @@ async def _on_stt_transcript(guild_id: int, user_id: int, pcm_bytes: bytes) -> N
         log.exception("LLM query failed for STT input")
         reply = f"Error processing request: {exc}"
 
+    if not reply or not reply.strip():
+        log.warning("LLM returned empty reply for STT input — sending fallback")
+        reply = "Sorry, I wasn't able to generate a response. Please try again."
+
     for chunk in split_message(reply):
-        await send_with_retry(channel, chunk)
+        if chunk.strip():
+            await send_with_retry(channel, chunk)
 
     if ENABLE_TTS:
         asyncio.create_task(speak_response(guild_id, reply))
@@ -1700,8 +1705,13 @@ async def on_message(message: discord.Message):
     finally:
         typing_task.cancel()
 
+    if not reply or not reply.strip():
+        log.warning("LLM returned empty reply — sending fallback")
+        reply = "Sorry, I wasn't able to generate a response. Please try again."
+
     for chunk in split_message(reply):
-        await send_with_retry(message.channel, chunk)
+        if chunk.strip():
+            await send_with_retry(message.channel, chunk)
 
     if ENABLE_TTS and message.guild is not None:
         asyncio.create_task(speak_response(message.guild.id, reply))

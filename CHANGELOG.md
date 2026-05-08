@@ -1,5 +1,8 @@
 # Changelog
 
+## v131
+- Fix silent empty replies: add fallback message when LLM returns blank response, and skip empty chunks before sending
+
 ## v130
 - Add send_with_retry() helper: all channel.send calls now retry up to 3 times with exponential backoff (1s, 2s, 4s) on transient Discord 5xx errors
 
