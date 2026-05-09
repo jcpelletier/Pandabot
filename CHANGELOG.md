@@ -1,5 +1,8 @@
 # Changelog
 
+## v138
+- Add update_op_work_package tool: update subject, type, description, assignee, status, dates on existing work packages via PATCH with lockVersion
+
 ## v137
 - Add OpenProject tools: set_op_project_parent (hierarchy via PATCH), create_op_work_package, list_op_types; create_op_project now accepts optional parent arg
 

@@ -2448,6 +2448,43 @@ def create_op_work_package(project: str, subject: str, type_id: int = 1,
         return f"OpenProject error: {e}"
 
 
+def update_op_work_package(wp_id: int, subject: str = "", type_id: int = 0,
+                            description: str = "", assignee: str = "",
+                            status: str = "", start_date: str = "",
+                            due_date: str = "") -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        current = _op("GET", f"/work_packages/{wp_id}")
+        lock_version = current.get("lockVersion", 0)
+        body: dict = {"lockVersion": lock_version, "_links": {}}
+        if subject:
+            body["subject"] = subject
+        if description:
+            body["description"] = {"format": "markdown", "raw": description}
+        if start_date:
+            body["startDate"] = start_date
+        if due_date:
+            body["dueDate"] = due_date
+        if type_id:
+            body["_links"]["type"] = {"href": f"/api/v3/types/{type_id}"}
+        if assignee:
+            user = _op_find_user(assignee)
+            if not user:
+                return f"User not found: {assignee!r}"
+            body["_links"]["assignee"] = {"href": user["_links"]["self"]["href"]}
+        if status:
+            statuses = _op("GET", "/statuses").get("_embedded", {}).get("elements", [])
+            match = next((s for s in statuses if s.get("name", "").lower() == status.lower()), None)
+            if not match:
+                names = [s.get("name") for s in statuses]
+                return f"Status not found: {status!r}. Available: {names}"
+            body["_links"]["status"] = {"href": match["_links"]["self"]["href"]}
+        return json.dumps(_op_slim_wp(_op("PATCH", f"/work_packages/{wp_id}", json=body)), indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
 def list_op_types(project: str = "") -> str:
     if not ENABLE_OPENPROJECT:
         return "OpenProject integration is not enabled."
@@ -3327,6 +3364,24 @@ def _build_tool_definitions() -> list[dict]:
                 },
             },
             {
+                "name": "update_op_work_package",
+                "description": "Update an existing work package. Only provided fields are changed. type_id: 1=Task, 2=Milestone, 3=Summary task, 4=Feature, 5=Epic, 6=User story, 7=Bug.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "wp_id":       {"type": "integer", "description": "Work package numeric ID."},
+                        "subject":     {"type": "string", "description": "New title.", "default": ""},
+                        "type_id":     {"type": "integer", "description": "Type: 1=Task, 2=Milestone, 3=Summary task, 4=Feature, 5=Epic, 6=User story, 7=Bug. 0=no change.", "default": 0},
+                        "description": {"type": "string", "description": "New markdown description.", "default": ""},
+                        "assignee":    {"type": "string", "description": "User login or email to assign.", "default": ""},
+                        "status":      {"type": "string", "description": "Status name (e.g. 'In Progress', 'Closed').", "default": ""},
+                        "start_date":  {"type": "string", "description": "Start date (YYYY-MM-DD).", "default": ""},
+                        "due_date":    {"type": "string", "description": "Due date (YYYY-MM-DD).", "default": ""},
+                    },
+                    "required": ["wp_id"],
+                },
+            },
+            {
                 "name": "list_op_types",
                 "description": "List available work package types. Optionally scope to a project to see only that project's enabled types.",
                 "input_schema": {
@@ -3523,6 +3578,12 @@ def execute_tool(name: str, inputs: dict) -> str:
             inputs.get("type_id", 1), inputs.get("description", ""),
             inputs.get("assignee", ""), inputs.get("start_date", ""),
             inputs.get("due_date", ""), inputs.get("parent_wp_id", 0),
+        )
+    if name == "update_op_work_package":
+        return update_op_work_package(
+            inputs["wp_id"], inputs.get("subject", ""), inputs.get("type_id", 0),
+            inputs.get("description", ""), inputs.get("assignee", ""),
+            inputs.get("status", ""), inputs.get("start_date", ""), inputs.get("due_date", ""),
         )
     if name == "list_op_types":
         return list_op_types(inputs.get("project", ""))
