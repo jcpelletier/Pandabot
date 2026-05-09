@@ -1,5 +1,8 @@
 # Changelog
 
+## v135
+- Fix notify-discord.sh execute bit: was tracked as 100644 in git so every pull landed it as non-executable, causing Jenkins post-build steps to fail with Permission denied
+
 ## v134
 - Add SCHEDULED_TASK_PING_USER_ID env var: when set, @pings that user on all terminal scheduled task results (condition met, gave up, success, error) but not on intermediate condition-check pending messages
 
