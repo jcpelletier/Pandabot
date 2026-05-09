@@ -1,5 +1,8 @@
 # Changelog
 
+## v140
+- Add parent_wp_id to update_op_work_package: pass a work package ID to reparent, or -1 to clear the parent entirely
+
 ## v139
 - Fix send_with_retry: also retry on aiohttp.ClientConnectorError and OSError (network blips), not just Discord 5xx — previously a momentary connection failure silently dropped the reply
 

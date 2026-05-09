@@ -2451,7 +2451,7 @@ def create_op_work_package(project: str, subject: str, type_id: int = 1,
 def update_op_work_package(wp_id: int, subject: str = "", type_id: int = 0,
                             description: str = "", assignee: str = "",
                             status: str = "", start_date: str = "",
-                            due_date: str = "") -> str:
+                            due_date: str = "", parent_wp_id: int = 0) -> str:
     if not ENABLE_OPENPROJECT:
         return "OpenProject integration is not enabled."
     try:
@@ -2480,6 +2480,10 @@ def update_op_work_package(wp_id: int, subject: str = "", type_id: int = 0,
                 names = [s.get("name") for s in statuses]
                 return f"Status not found: {status!r}. Available: {names}"
             body["_links"]["status"] = {"href": match["_links"]["self"]["href"]}
+        if parent_wp_id == -1:
+            body["_links"]["parent"] = {"href": None}
+        elif parent_wp_id > 0:
+            body["_links"]["parent"] = {"href": f"/api/v3/work_packages/{parent_wp_id}"}
         return json.dumps(_op_slim_wp(_op("PATCH", f"/work_packages/{wp_id}", json=body)), indent=2)
     except Exception as e:
         return f"OpenProject error: {e}"
@@ -3369,14 +3373,15 @@ def _build_tool_definitions() -> list[dict]:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "wp_id":       {"type": "integer", "description": "Work package numeric ID."},
-                        "subject":     {"type": "string", "description": "New title.", "default": ""},
-                        "type_id":     {"type": "integer", "description": "Type: 1=Task, 2=Milestone, 3=Summary task, 4=Feature, 5=Epic, 6=User story, 7=Bug. 0=no change.", "default": 0},
-                        "description": {"type": "string", "description": "New markdown description.", "default": ""},
-                        "assignee":    {"type": "string", "description": "User login or email to assign.", "default": ""},
-                        "status":      {"type": "string", "description": "Status name (e.g. 'In Progress', 'Closed').", "default": ""},
-                        "start_date":  {"type": "string", "description": "Start date (YYYY-MM-DD).", "default": ""},
-                        "due_date":    {"type": "string", "description": "Due date (YYYY-MM-DD).", "default": ""},
+                        "wp_id":        {"type": "integer", "description": "Work package numeric ID."},
+                        "subject":      {"type": "string", "description": "New title.", "default": ""},
+                        "type_id":      {"type": "integer", "description": "Type: 1=Task, 2=Milestone, 3=Summary task, 4=Feature, 5=Epic, 6=User story, 7=Bug. 0=no change.", "default": 0},
+                        "description":  {"type": "string", "description": "New markdown description.", "default": ""},
+                        "assignee":     {"type": "string", "description": "User login or email to assign.", "default": ""},
+                        "status":       {"type": "string", "description": "Status name (e.g. 'In Progress', 'Closed').", "default": ""},
+                        "start_date":   {"type": "string", "description": "Start date (YYYY-MM-DD).", "default": ""},
+                        "due_date":     {"type": "string", "description": "Due date (YYYY-MM-DD).", "default": ""},
+                        "parent_wp_id": {"type": "integer", "description": "Set parent work package ID, or -1 to remove the parent (make top-level). 0=no change.", "default": 0},
                     },
                     "required": ["wp_id"],
                 },
@@ -3584,6 +3589,7 @@ def execute_tool(name: str, inputs: dict) -> str:
             inputs["wp_id"], inputs.get("subject", ""), inputs.get("type_id", 0),
             inputs.get("description", ""), inputs.get("assignee", ""),
             inputs.get("status", ""), inputs.get("start_date", ""), inputs.get("due_date", ""),
+            inputs.get("parent_wp_id", 0),
         )
     if name == "list_op_types":
         return list_op_types(inputs.get("project", ""))
