@@ -2395,14 +2395,68 @@ def list_op_project_members(project: str) -> str:
         return f"OpenProject error: {e}"
 
 
-def create_op_project(name: str, identifier: str, description: str = "") -> str:
+def create_op_project(name: str, identifier: str, description: str = "", parent: str = "") -> str:
     if not ENABLE_OPENPROJECT:
         return "OpenProject integration is not enabled."
     try:
-        body = {"name": name, "identifier": identifier}
+        body: dict = {"name": name, "identifier": identifier}
         if description:
             body["description"] = {"format": "markdown", "raw": description}
+        if parent:
+            body["_links"] = {"parent": {"href": f"/api/v3/projects/{parent}"}}
         return json.dumps(_op_slim_project(_op("POST", "/projects", json=body)), indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def set_op_project_parent(project: str, parent: str) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        if parent in ("", "none", "null"):
+            body = {"_links": {"parent": {"href": None}}}
+        else:
+            body = {"_links": {"parent": {"href": f"/api/v3/projects/{parent}"}}}
+        return json.dumps(_op_slim_project(_op("PATCH", f"/projects/{project}", json=body)), indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def create_op_work_package(project: str, subject: str, type_id: int = 1,
+                            description: str = "", assignee: str = "",
+                            start_date: str = "", due_date: str = "",
+                            parent_wp_id: int = 0) -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        body: dict = {"subject": subject, "_links": {"type": {"href": f"/api/v3/types/{type_id}"}}}
+        if description:
+            body["description"] = {"format": "markdown", "raw": description}
+        if start_date:
+            body["startDate"] = start_date
+        if due_date:
+            body["dueDate"] = due_date
+        if assignee:
+            user = _op_find_user(assignee)
+            if not user:
+                return f"User not found: {assignee!r}"
+            body["_links"]["assignee"] = {"href": user["_links"]["self"]["href"]}
+        if parent_wp_id:
+            body["_links"]["parent"] = {"href": f"/api/v3/work_packages/{parent_wp_id}"}
+        return json.dumps(_op_slim_wp(_op("POST", f"/projects/{project}/work_packages", json=body)), indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
+def list_op_types(project: str = "") -> str:
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        path = f"/projects/{project}/types" if project else "/types"
+        data = _op("GET", path)
+        types = [{"id": t.get("id"), "name": t.get("name")}
+                 for t in data.get("_embedded", {}).get("elements", [])]
+        return json.dumps(types, indent=2)
     except Exception as e:
         return f"OpenProject error: {e}"
 
@@ -3230,15 +3284,57 @@ def _build_tool_definitions() -> list[dict]:
             },
             {
                 "name": "create_op_project",
-                "description": "Create a new OpenProject project.",
+                "description": "Create a new OpenProject project, optionally nested under a parent project.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "name":        {"type": "string", "description": "Human-readable project name."},
                         "identifier":  {"type": "string", "description": "URL slug (lowercase, hyphens). Must be unique."},
                         "description": {"type": "string", "description": "Optional markdown description.", "default": ""},
+                        "parent":      {"type": "string", "description": "Optional parent project ID or identifier slug.", "default": ""},
                     },
                     "required": ["name", "identifier"],
+                },
+            },
+            {
+                "name": "set_op_project_parent",
+                "description": "Set or remove the parent project for an existing OpenProject project, establishing the hierarchy. Pass parent='none' to make it a top-level project.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project ID or identifier to update."},
+                        "parent":  {"type": "string", "description": "Parent project ID or identifier, or 'none' to remove the parent."},
+                    },
+                    "required": ["project", "parent"],
+                },
+            },
+            {
+                "name": "create_op_work_package",
+                "description": "Create a work package (ticket) in a project. type_id: 1=Task, 2=Milestone, 3=Summary task, 4=Feature, 5=Epic, 6=User story, 7=Bug.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "project":      {"type": "string", "description": "Project ID or identifier."},
+                        "subject":      {"type": "string", "description": "Title of the work package."},
+                        "type_id":      {"type": "integer", "description": "Type: 1=Task, 2=Milestone, 3=Summary task, 4=Feature, 5=Epic, 6=User story, 7=Bug. Default: 1.", "default": 1},
+                        "description":  {"type": "string", "description": "Optional markdown description.", "default": ""},
+                        "assignee":     {"type": "string", "description": "Optional user login or email to assign.", "default": ""},
+                        "start_date":   {"type": "string", "description": "Optional start date (YYYY-MM-DD).", "default": ""},
+                        "due_date":     {"type": "string", "description": "Optional due date (YYYY-MM-DD).", "default": ""},
+                        "parent_wp_id": {"type": "integer", "description": "Optional parent work package ID to nest under.", "default": 0},
+                    },
+                    "required": ["project", "subject"],
+                },
+            },
+            {
+                "name": "list_op_types",
+                "description": "List available work package types. Optionally scope to a project to see only that project's enabled types.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Optional project ID or identifier to scope to that project's types.", "default": ""},
+                    },
+                    "required": [],
                 },
             },
             {
@@ -3418,7 +3514,18 @@ def execute_tool(name: str, inputs: dict) -> str:
     if name == "list_op_project_members":
         return list_op_project_members(inputs["project"])
     if name == "create_op_project":
-        return create_op_project(inputs["name"], inputs["identifier"], inputs.get("description", ""))
+        return create_op_project(inputs["name"], inputs["identifier"], inputs.get("description", ""), inputs.get("parent", ""))
+    if name == "set_op_project_parent":
+        return set_op_project_parent(inputs["project"], inputs["parent"])
+    if name == "create_op_work_package":
+        return create_op_work_package(
+            inputs["project"], inputs["subject"],
+            inputs.get("type_id", 1), inputs.get("description", ""),
+            inputs.get("assignee", ""), inputs.get("start_date", ""),
+            inputs.get("due_date", ""), inputs.get("parent_wp_id", 0),
+        )
+    if name == "list_op_types":
+        return list_op_types(inputs.get("project", ""))
     if name == "add_op_project_member":
         return add_op_project_member(inputs["project"], inputs["user"], inputs["role"])
     if name == "remove_op_project_member":

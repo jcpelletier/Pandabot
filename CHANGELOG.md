@@ -1,5 +1,8 @@
 # Changelog
 
+## v137
+- Add OpenProject tools: set_op_project_parent (hierarchy via PATCH), create_op_work_package, list_op_types; create_op_project now accepts optional parent arg
+
 ## v136
 - Switch OpenProject auth from OPENPROJECT_USER/OPENPROJECT_PASSWORD to OPENPROJECT_API_KEY; use Basic Auth with "apikey" username per OpenProject API v3 spec
 
