@@ -345,16 +345,17 @@ def split_message(text: str) -> list[str]:
 
 
 async def send_with_retry(channel, content: str, retries: int = 3) -> None:
-    """Send a message, retrying on transient Discord 5xx errors."""
+    """Send a message, retrying on transient Discord 5xx or network errors."""
+    import aiohttp
     delay = 1.0
     for attempt in range(retries):
         try:
             await channel.send(content)
             return
-        except discord.errors.DiscordServerError:
+        except (discord.errors.DiscordServerError, aiohttp.ClientConnectorError, OSError) as e:
             if attempt == retries - 1:
                 raise
-            log.warning("Discord 5xx on send, retrying in %.0fs (attempt %d/%d)", delay, attempt + 1, retries)
+            log.warning("Transient send error (%s), retrying in %.0fs (attempt %d/%d)", type(e).__name__, delay, attempt + 1, retries)
             await asyncio.sleep(delay)
             delay *= 2
 

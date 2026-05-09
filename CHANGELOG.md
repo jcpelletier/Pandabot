@@ -1,5 +1,8 @@
 # Changelog
 
+## v139
+- Fix send_with_retry: also retry on aiohttp.ClientConnectorError and OSError (network blips), not just Discord 5xx — previously a momentary connection failure silently dropped the reply
+
 ## v138
 - Add update_op_work_package tool: update subject, type, description, assignee, status, dates on existing work packages via PATCH with lockVersion
 
