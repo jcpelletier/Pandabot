@@ -71,9 +71,8 @@ AZURE_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 CRAWL_ANALYTICS_URL   = os.environ.get("CRAWL_ANALYTICS_URL",   "")
 CRAWL_ANALYTICS_TOKEN = os.environ.get("CRAWL_ANALYTICS_TOKEN", "")
 
-OP_URL      = os.environ.get("OPENPROJECT_URL",      "").rstrip("/")
-OP_USER     = os.environ.get("OPENPROJECT_USER",     "")
-OP_PASSWORD = os.environ.get("OPENPROJECT_PASSWORD", "")
+OP_URL     = os.environ.get("OPENPROJECT_URL",     "").rstrip("/")
+OP_API_KEY = os.environ.get("OPENPROJECT_API_KEY", "")
 
 STAGING_PATH = os.environ.get("STAGING_PATH", "/mnt/media/Video")
 MEDIA_PATH   = os.environ.get("MEDIA_PATH",   "/mnt/media/Media")
@@ -2253,7 +2252,7 @@ def query_llm_usage(action: str = "recent", days: int = 30, limit: int = 20) -> 
 
 def _op(method: str, path: str, **kwargs) -> dict:
     url = f"{OP_URL}/api/v3{path}"
-    r = requests.request(method, url, auth=(OP_USER, OP_PASSWORD),
+    r = requests.request(method, url, auth=("apikey", OP_API_KEY),
                          headers={"Content-Type": "application/json"}, timeout=15, **kwargs)
     r.raise_for_status()
     return r.json() if r.content else {}

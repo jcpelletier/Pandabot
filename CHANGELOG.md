@@ -1,5 +1,8 @@
 # Changelog
 
+## v136
+- Switch OpenProject auth from OPENPROJECT_USER/OPENPROJECT_PASSWORD to OPENPROJECT_API_KEY; use Basic Auth with "apikey" username per OpenProject API v3 spec
+
 ## v135
 - Fix notify-discord.sh execute bit: was tracked as 100644 in git so every pull landed it as non-executable, causing Jenkins post-build steps to fail with Permission denied
 
