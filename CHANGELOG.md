@@ -1,5 +1,8 @@
 # Changelog
 
+## v157
+- Fix DAVE decryption: deduplicate process_proposals() and process_commit() on DaveSession in addition to process_welcome() — dual WS connections both call process_commit() on the same session; the second call fails, triggering _recover_from_invalid_commit → reinit_dave_session which resets the entire DAVE session and discards all established cryptors (NoValidCryptorFound manager_count=1); skipping duplicate payloads within 1s prevents the recovery loop
+
 ## v156
 - Fix DAVE decryption root cause: deduplicate process_welcome() calls on DaveSession — two concurrent WebSocket connections both receive and process the same MLS welcome payload, with the second call corrupting the group state; now skipped when same payload arrives within 1s on the same session instance
 

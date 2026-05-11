@@ -92,21 +92,21 @@ for _n in ('discord.gateway', 'discord.voice_state'):
 # DAVE MLS deduplication — applied at class level before any voice connects.
 #
 # Root cause: two concurrent WebSocket connections share the same
-# VoiceConnectionState and the same DaveSession. When Discord delivers an
-# MLS welcome, both WebSocket receive loops call process_welcome() with the
-# same payload bytes within the same millisecond. The second call corrupts
-# the MLS group state — the remote user ends up in user_ids but with no
-# sender cryptor (NoValidCryptorFound manager_count=1).
+# VoiceConnectionState and DaveSession. Both WS receive loops deliver the
+# same MLS binary frames within the same millisecond. The affected methods:
 #
-# Same race applies to reinit_dave_session: both connections fire it from
-# SESSION_DESCRIPTION, each sending a key package. We debounce both:
+#   • reinit_dave_session — both fire on SESSION_DESCRIPTION (op 4); each
+#     sends a key package, Discord sends two MLS welcome responses.
+#   • process_proposals — both WS call it and each sends a CommitWelcome;
+#     two commits in flight causes one to be rejected on the other side.
+#   • process_commit — both WS call it; the second call fails because the
+#     commit was already applied, triggering _recover_from_invalid_commit →
+#     reinit_dave_session, which resets the entire DAVE session.
+#   • process_welcome — both WS call it; second call corrupts MLS state.
 #
-#   • reinit_dave_session — drop if called within 1 s on the same state obj
-#   • DaveSession.process_welcome — drop if called with the same payload
-#     bytes within 1 s on the same session obj
-#
-# Legitimate later reinits (user joins/leaves, seconds after connect) and
-# genuinely different welcomes pass through unaffected.
+# Fix: deduplicate each method on (session_id, payload_hash) within 1 s.
+# process_proposals returns None when skipped (no CommitWelcome → no second
+# commit sent to Discord). All other methods return None on skip too (void).
 # ---------------------------------------------------------------------------
 import hashlib as _hashlib
 import time as _time_module
@@ -139,27 +139,44 @@ except Exception:
 try:
     import davey as _davey
 
-    _orig_process_welcome = _davey.DaveSession.process_welcome
-    _welcome_last: dict[int, tuple[bytes, float]] = {}  # id(session) -> (hash, time)
-    _WELCOME_DEBOUNCE_SECS = 1.0
+    _mls_last: dict[tuple[int, str], tuple[bytes, float]] = {}  # (id(session), method) -> (hash, time)
+    _MLS_DEDUP_SECS = 1.0
 
-    def _deduped_process_welcome(self, welcome: bytes) -> None:
+    def _mls_is_duplicate(session_id: int, method: str, payload: bytes) -> bool:
         now = _time_module.monotonic()
-        obj_id = id(self)
-        h = _hashlib.sha256(welcome).digest()
-        last = _welcome_last.get(obj_id)
+        h = _hashlib.sha256(payload).digest()
+        key = (session_id, method)
+        last = _mls_last.get(key)
         if last is not None:
             last_h, last_t = last
-            if h == last_h and now - last_t < _WELCOME_DEBOUNCE_SECS:
-                log.info(
-                    "DAVE: skipping duplicate process_welcome (same payload, %.0f ms since last)",
-                    (now - last_t) * 1000,
-                )
-                return
-        _welcome_last[obj_id] = (h, now)
-        log.info("DAVE: process_welcome proceeding")
-        _orig_process_welcome(self, welcome)
+            if h == last_h and now - last_t < _MLS_DEDUP_SECS:
+                log.info("DAVE: skipping duplicate %s (%.0f ms since last)", method, (now - last_t) * 1000)
+                return True
+        _mls_last[key] = (h, now)
+        log.info("DAVE: %s proceeding", method)
+        return False
 
+    _orig_process_proposals = _davey.DaveSession.process_proposals
+    _orig_process_commit = _davey.DaveSession.process_commit
+    _orig_process_welcome = _davey.DaveSession.process_welcome
+
+    def _deduped_process_proposals(self, optype, payload: bytes):
+        if _mls_is_duplicate(id(self), "process_proposals", bytes(optype) + payload):
+            return None
+        return _orig_process_proposals(self, optype, payload)
+
+    def _deduped_process_commit(self, payload: bytes) -> None:
+        if _mls_is_duplicate(id(self), "process_commit", payload):
+            return
+        _orig_process_commit(self, payload)
+
+    def _deduped_process_welcome(self, payload: bytes) -> None:
+        if _mls_is_duplicate(id(self), "process_welcome", payload):
+            return
+        _orig_process_welcome(self, payload)
+
+    _davey.DaveSession.process_proposals = _deduped_process_proposals
+    _davey.DaveSession.process_commit = _deduped_process_commit
     _davey.DaveSession.process_welcome = _deduped_process_welcome
 except Exception:
     pass  # davey unavailable in test environment
