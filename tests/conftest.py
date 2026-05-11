@@ -17,7 +17,16 @@ import sys
 import pytest
 from unittest.mock import MagicMock
 
+# discord-bot root on sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+# pandabot-core — sibling directory; needed since bot.py now imports from pandabot_core
+_PANDABOT_CORE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "pandabot-core",
+)
+if os.path.isdir(_PANDABOT_CORE):
+    sys.path.insert(0, _PANDABOT_CORE)
 
 # --- Required env vars ---
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
@@ -26,8 +35,8 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 # --- Stub heavy runtime deps so bot.py can be imported without the full stack ---
 _STUB_MODULES = [
-    "discord", "discord.ext", "discord.ext.commands",
-    "aiohttp",
+    "discord", "discord.ext", "discord.ext.commands", "discord.opus",
+    "aiohttp", "aiohttp.web",
     "anthropic",
 ]
 for _mod in _STUB_MODULES:
@@ -38,16 +47,26 @@ for _mod in _STUB_MODULES:
 @pytest.fixture
 def tmp_db(monkeypatch, tmp_path):
     """
-    Redirect scheduler.DB_PATH to a fresh isolated temp file for one test.
+    Redirect scheduler DB to a fresh isolated temp directory for one test.
 
-    Covers both direct scheduler calls and manage_schedule in tools.py —
-    both do `import scheduler` at call time so they pick up the patched path.
+    Sets PANDABOT_DATA_DIR so pandabot_core.scheduler.cfg.db_path() resolves
+    to tmp_path/scheduler.db. Also patches the legacy local scheduler.DB_PATH
+    if present, for any remaining tests that use it directly.
     The temp directory (and the DB file) are cleaned up automatically by pytest.
     """
-    import scheduler
-    db = str(tmp_path / "test_scheduler.db")
-    monkeypatch.setattr(scheduler, "DB_PATH", db)
-    scheduler.init_db()
+    monkeypatch.setenv("PANDABOT_DATA_DIR", str(tmp_path))
+    from pandabot_core import scheduler as core_sched
+    core_sched.init_db()
+    db = str(tmp_path / "scheduler.db")
+
+    # Patch legacy local scheduler if still imported by some tests
+    try:
+        import scheduler as local_sched
+        monkeypatch.setattr(local_sched, "DB_PATH", db)
+        local_sched.init_db()
+    except (ImportError, AttributeError):
+        pass
+
     yield db
 
 

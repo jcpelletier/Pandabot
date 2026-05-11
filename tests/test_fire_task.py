@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, AsyncMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import scheduler
+from pandabot_core import scheduler
 import tools
 import bot
 
@@ -98,7 +98,7 @@ def mock_claude(monkeypatch):
     Stub the LLM provider so generative_prompt tests don't hit the real API.
     Returns the mock provider so tests can inspect calls and set return values.
     """
-    import llm_provider
+    from pandabot_core.llm import provider as llm_provider
 
     class _MockProvider:
         primary_model = "mock-model"

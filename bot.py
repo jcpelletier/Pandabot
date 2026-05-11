@@ -35,20 +35,25 @@ from aiohttp import web
 import discord
 from discord.ext import commands
 
-import llm_usage
-import llm_provider
-from llm_provider import get_provider, get_provider_name
+# pandabot-core infrastructure — replaces local llm_usage, llm_provider, scheduler copies
+from pandabot_core.llm import usage as llm_usage
+from pandabot_core.llm import provider as llm_provider
+from pandabot_core.llm.provider import get_provider, get_provider_name
+from pandabot_core.llm.loop import run_claude_loop as _run_claude_loop_core
+from pandabot_core.telemetry import ai_event as _ai_event, ai_trace as _ai_trace
+from pandabot_core.discord_comms import (
+    keep_typing, split_message, send_with_retry as _send_with_retry,
+    build_history as _build_history, ConfirmationManager,
+)
+from pandabot_core import identity as _identity
+from pandabot_core import scheduler  # used in fire_scheduled_task and task_scheduler
+
 from tools import TOOL_DEFINITIONS, execute_tool  # noqa: E402 (used in fire_scheduled_task too)
 
 # ---------------------------------------------------------------------------
 # Pending-confirmation state
 # ---------------------------------------------------------------------------
-# Maps channel_id → {"name": tool_name, "inputs": {..., "confirmed": True}}
-# Set when Claude shows a manage_files/set_jenkins_schedule preview.
-# Consumed (and cleared) when the user replies with an affirmative.
-_pending_confirmations: dict[int, dict] = {}
-
-_AFFIRMATIVES = {"yes", "y", "yep", "yeah", "yup", "confirm", "ok", "okay", "sure", "do it"}
+_confirmations = ConfirmationManager()
 
 # ---------------------------------------------------------------------------
 # Voice / TTS state
@@ -136,97 +141,12 @@ STT_MODEL           = os.environ.get("STT_MODEL", "medium")
 STT_SILENCE_TIMEOUT = float(os.environ.get("STT_SILENCE_TIMEOUT_SECS", "1.5"))
 STT_RMS_THRESHOLD   = int(os.environ.get("STT_RMS_THRESHOLD", "500"))
 
-# ---------------------------------------------------------------------------
-# App Insights telemetry helpers — fire-and-forget, never raise
-# ---------------------------------------------------------------------------
-
-def _ai_event(name: str, **props: str) -> None:
-    """Send a custom event to App Insights in a daemon thread."""
-    if not AI_IKEY or not AI_ENDPOINT:
-        return
-    import threading, json as _json, urllib.request
-    payload = _json.dumps([{
-        "name": "Microsoft.ApplicationInsights.Event",
-        "time": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-        "iKey": AI_IKEY,
-        "tags": {"ai.cloud.roleName": "pandabot", "ai.device.type": "Other"},
-        "data": {"baseType": "EventData", "baseData": {
-            "ver": 2, "name": name,
-            "properties": {k: str(v) for k, v in props.items()},
-        }},
-    }]).encode()
-    def _send():
-        try:
-            urllib.request.urlopen(
-                urllib.request.Request(AI_ENDPOINT, payload, {"Content-Type": "application/json"}),
-                timeout=5,
-            )
-        except Exception:
-            pass
-    threading.Thread(target=_send, daemon=True).start()
-
-
-def _ai_trace(severity: str, message: str, **props: str) -> None:
-    """Send a trace message to App Insights. severity: Verbose|Information|Warning|Error|Critical"""
-    if not AI_IKEY or not AI_ENDPOINT:
-        return
-    import threading, json as _json, urllib.request
-    level = {"verbose": 0, "information": 1, "warning": 2, "error": 3, "critical": 4}.get(
-        severity.lower(), 1
-    )
-    payload = _json.dumps([{
-        "name": "Microsoft.ApplicationInsights.Message",
-        "time": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-        "iKey": AI_IKEY,
-        "tags": {"ai.cloud.roleName": "pandabot", "ai.device.type": "Other"},
-        "data": {"baseType": "MessageData", "baseData": {
-            "ver": 2, "message": message, "severityLevel": level,
-            "properties": {k: str(v) for k, v in props.items()},
-        }},
-    }]).encode()
-    def _send():
-        try:
-            urllib.request.urlopen(
-                urllib.request.Request(AI_ENDPOINT, payload, {"Content-Type": "application/json"}),
-                timeout=5,
-            )
-        except Exception:
-            pass
-    threading.Thread(target=_send, daemon=True).start()
-
 def _build_system_prompt() -> str:
-    from tools import (
-        ENABLE_JELLYFIN, ENABLE_JENKINS, ENABLE_RIPPING,
-        JENKINS_JOBS, ALLOWED_SYSTEMD_SERVICES,
-    )
-    now = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    """Delegate to pandabot_core.identity, injecting Pandabot-specific sections."""
+    from tools import ENABLE_JENKINS
     _p = get_provider()
-    _llm_line = f"You are powered by {_p.primary_model} (provider: {get_provider_name()})."
+    llm_line = f"You are powered by {_p.primary_model} (provider: {get_provider_name()})."
 
-    # --- Services block ---
-    if SERVER_DESCRIPTION:
-        # Deployer provided a free-form description — use it verbatim.
-        # Supports literal \n sequences in the .env value for multi-line output.
-        services_block = SERVER_DESCRIPTION.strip().replace("\\n", "\n")
-    else:
-        # Auto-build from feature flags
-        svc_lines = ["The server runs:"]
-        if ENABLE_JELLYFIN:
-            svc_lines.append("  - Jellyfin (Docker, port 8096) — media server")
-        if ENABLE_JENKINS:
-            jobs_fmt = ", ".join(JENKINS_JOBS)
-            svc_lines.append(f"  - Jenkins (Docker, port 8080) — CI/CD server (jobs: {jobs_fmt})")
-        for svc in sorted(ALLOWED_SYSTEMD_SERVICES):
-            svc_lines.append(f"  - {svc} (systemd)")
-        if TAILSCALE_IP:
-            svc_lines.append(f"  - Tailscale VPN (IP {TAILSCALE_IP})")
-        else:
-            svc_lines.append("  - Tailscale VPN")
-        if ENABLE_RIPPING:
-            svc_lines.append("  - MakeMKV + abcde for disc ripping (udev auto-rip pipeline)")
-        services_block = "\n".join(svc_lines)
-
-    # --- Jenkins triggering instructions (only when enabled) ---
     jenkins_instructions = ""
     if ENABLE_JENKINS:
         jenkins_instructions = textwrap.dedent("""\
@@ -238,7 +158,7 @@ def _build_system_prompt() -> str:
              separate step. Use the timing hints from the trigger response.
              tool_calls: [get_jenkins_build_status for that job]
              condition_pattern: '"result":\\s*"(SUCCESS|FAILURE|UNSTABLE|ABORTED)"'
-             generative_prompt: summarise the result in 1–2 sentences from {{results}}
+             generative_prompt: summarise the result in 1-2 sentences from {{results}}
           3. Tell the user the job is running and that you'll notify them when done.
 
         When the user asks to change or view a Jenkins job schedule:
@@ -254,60 +174,30 @@ def _build_system_prompt() -> str:
             confirmed execution directly when the user replies yes.
         """)
 
-    if OPERATOR_SSH_CMD:
-        _operator_block = textwrap.dedent(f"""
-        Operator connection: the person chatting with you connects to this server
-        from a Windows machine using WSL. Their SSH command is:
-          {OPERATOR_SSH_CMD}
-        When advising on server commands that require a remote shell, present them
-        in this form: {OPERATOR_SSH_CMD} "<command>"
-        For multi-line scripts, suggest: {OPERATOR_SSH_CMD} bash << 'EOF' ... EOF
-        """).strip()
-    else:
-        _operator_block = ""
+    pandabot_extras = [
+        "For any question about what movies are in the library -- including genre "
+        "or mood recommendations (stoner, horror, 80s, feel-good, etc.) -- call "
+        "query_jellyfin(search_movies). It returns Jellyfin metadata: genres, "
+        "ratings, and plot summaries for every movie. Only use query_media_library "
+        "when the user specifically needs filesystem details like file size, codec, "
+        "or bitrate.",
+        "",
+        "CRITICAL -- cross-verification rule: query_jellyfin is the AUTHORITY "
+        "on what movies exist in the library. If query_jellyfin(search_movies) "
+        "says a movie is NOT in the library, trust it. If you later find matching "
+        "filenames via query_media_library(find_files), you MUST call "
+        "query_media_library(file_info) on at least one result to verify it is "
+        "actually a playable video file before reporting it as a movie. "
+        "Non-video files (ROMs, images, subtitles, game assets) can have names "
+        "that look like movies but are not playable content -- the [OTHER] tag "
+        "on a find_files result means it is NOT a video file.",
+    ]
 
-    return textwrap.dedent(f"""\
-        You are {BOT_NAME}, a helpful assistant for a home Ubuntu Server machine.
-        {_llm_line}
-        Current server date/time: {now}.
-        {services_block}
-
-        Hardware: {HARDWARE_DESCRIPTION}.
-        Server timezone: {TZ_NAME}.
-        Timestamps in structured tool responses are already converted to server local time.
-        App Insights data is returned in UTC — convert to local time when reporting to the user.
-
-        Always call a tool to answer questions about server state — never guess
-        or infer from training knowledge. If a tool returns an error, relay the
-        exact error text rather than paraphrasing it as a configuration problem.
-
-        For any question about what movies are in the library — including genre
-        or mood recommendations (stoner, horror, 80s, feel-good, etc.) — call
-        query_jellyfin(search_movies). It returns Jellyfin metadata: genres,
-        ratings, and plot summaries for every movie. Only use query_media_library
-        when the user specifically needs filesystem details like file size, codec,
-        or bitrate.
-
-        CRITICAL — cross-verification rule: query_jellyfin is the AUTHORITY
-        on what movies exist in the library. If query_jellyfin(search_movies)
-        says a movie is NOT in the library, trust it. If you later find matching
-        filenames via query_media_library(find_files), you MUST call
-        query_media_library(file_info) on at least one result to verify it is
-        actually a playable video file before reporting it as a movie.
-        Non-video files (ROMs, images, subtitles, game assets) can have names
-        that look like movies but are not playable content — the [OTHER] tag
-        on a find_files result means it is NOT a video file.
-        {jenkins_instructions}
-        When the user asks for something at a future time, on a condition, or on a
-        recurring schedule, call manage_schedule(action='create') rather than
-        answering immediately. Decide at schedule time which tools to run and what
-        message to post — the task fires mechanically with no LLM unless you set
-        generative_prompt. Use static_message for pre-written content like jokes.
-
-        Be concise. When reporting log extracts, summarise rather than quoting
-        everything unless the user asks for raw output.
-        {_operator_block}
-    """)
+    return _identity.build_system_prompt(
+        llm_line=llm_line,
+        jenkins_instructions=jenkins_instructions,
+        extra_sections=pandabot_extras,
+    )
 
 DISCORD_MSG_LIMIT = 1900  # leave headroom below the 2000-char limit
 
@@ -327,37 +217,8 @@ if ENABLE_TTS or ENABLE_STT:
         logging.getLogger("panda-bot").warning("Could not load libopus: %s", _opus_err)
 
 
-def split_message(text: str) -> list[str]:
-    """Split a long response into ≤1900-char chunks on line boundaries."""
-    if len(text) <= DISCORD_MSG_LIMIT:
-        return [text]
-    chunks, current = [], []
-    current_len = 0
-    for line in text.splitlines(keepends=True):
-        if current_len + len(line) > DISCORD_MSG_LIMIT and current:
-            chunks.append("".join(current))
-            current, current_len = [], 0
-        current.append(line)
-        current_len += len(line)
-    if current:
-        chunks.append("".join(current))
-    return chunks
-
-
-async def send_with_retry(channel, content: str, retries: int = 3) -> None:
-    """Send a message, retrying on transient Discord 5xx or network errors."""
-    import aiohttp
-    delay = 1.0
-    for attempt in range(retries):
-        try:
-            await channel.send(content)
-            return
-        except (discord.errors.DiscordServerError, aiohttp.ClientConnectorError, OSError) as e:
-            if attempt == retries - 1:
-                raise
-            log.warning("Transient send error (%s), retrying in %.0fs (attempt %d/%d)", type(e).__name__, delay, attempt + 1, retries)
-            await asyncio.sleep(delay)
-            delay *= 2
+# split_message and send_with_retry are now from pandabot_core.discord_comms
+send_with_retry = _send_with_retry
 
 
 def _calc_rms(data: bytes) -> float:
@@ -1234,37 +1095,6 @@ async def speak_response(guild_id: int, text: str) -> None:
             break
 
 
-async def build_history(channel: discord.abc.Messageable, before: discord.Message, limit: int = 15) -> list[dict]:
-    """
-    Return up to `limit` messages before `before` as Claude-formatted turns.
-
-    Bot messages → assistant role.  All other messages → user role.
-    Consecutive same-role messages are merged so the list always alternates,
-    and any leading assistant turns are dropped (Claude requires user-first).
-    """
-    raw = []
-    async for msg in channel.history(limit=limit, before=before):
-        if not msg.content:
-            continue
-        role = "assistant" if msg.author.bot else "user"
-        raw.append((role, msg.content))
-    raw.reverse()  # oldest first
-
-    # Merge consecutive same-role messages
-    merged: list[dict] = []
-    for role, content in raw:
-        if merged and merged[-1]["role"] == role:
-            merged[-1]["content"] += "\n" + content
-        else:
-            merged.append({"role": role, "content": content})
-
-    # Claude requires the first message to be from the user
-    while merged and merged[0]["role"] == "assistant":
-        merged.pop(0)
-
-    return merged
-
-
 def _run_claude_loop(
     user_message: str,
     history: list[dict] | None = None,
@@ -1272,146 +1102,24 @@ def _run_claude_loop(
     conversation_id: str | None = None,
 ) -> str:
     """Synchronous LLM agentic loop (run in a thread executor)."""
-    import time as _time
-    conv_id = conversation_id or str(uuid.uuid4())
-    messages = (history or []) + [{"role": "user", "content": user_message}]
-    tools_called: list[str] = []
-    t0 = _time.monotonic()
+    def _on_confirm(ch_id: int, tool_name: str, confirmed_inputs: dict) -> None:
+        _confirmations.save(ch_id, tool_name, confirmed_inputs)
 
-    provider = get_provider()
-    provider_name = get_provider_name()
-    # Format tool definitions once; cache the result for the upgrade re-issue.
-    formatted_tools = provider.format_tool_definitions(TOOL_DEFINITIONS)
-    system_prompt = _build_system_prompt()
-
-    for _ in range(25):  # safety: max 25 tool-call rounds
-        response = provider.complete(
-            system_prompt=system_prompt,
-            messages=messages,
-            formatted_tools=formatted_tools,
-            model=provider.primary_model,
-            max_tokens=4096,
-        )
-        llm_usage.log_call(
-            conversation_id=conv_id,
-            model=response.model,
-            input_tokens=response.input_tokens,
-            output_tokens=response.output_tokens,
-            user_message=user_message,
-            context="main",
-            provider=provider_name,
-        )
-        log.info(
-            "LLM stop_reason=%s model=%s in=%d out=%d cost=$%.5f",
-            response.stop_reason,
-            response.model,
-            response.input_tokens,
-            response.output_tokens,
-            llm_usage.cost_usd(response.model, response.input_tokens, response.output_tokens),
-        )
-
-        if response.stop_reason == "end_turn":
-            for block in response.content:
-                if block.type == "text" and block.text:
-                    _ai_event(
-                        "BotQuery",
-                        message=user_message[:200],
-                        tools=",".join(tools_called) or "none",
-                        response_ms=str(int((_time.monotonic() - t0) * 1000)),
-                    )
-                    return block.text
-            return "(no text response)"
-
-        if response.stop_reason == "tool_use":
-            # manage_schedule has a complex schema — upgrade to a higher-capability model
-            # to fill parameters accurately when an upgrade model is configured.
-            # The primary already decided to call it; the upgrade re-issues with the same
-            # context and formatted_tools (already converted — no double-conversion).
-            if (
-                provider.upgrade_model
-                and any(b.type == "tool_use" and b.name == "manage_schedule" for b in response.content)
-            ):
-                log.info("manage_schedule detected — upgrading to %s for parameter accuracy", provider.upgrade_model)
-                response = provider.complete(
-                    system_prompt=system_prompt,
-                    messages=messages,
-                    formatted_tools=formatted_tools,
-                    model=provider.upgrade_model,
-                    max_tokens=4096,
-                )
-                llm_usage.log_call(
-                    conversation_id=conv_id,
-                    model=response.model,
-                    input_tokens=response.input_tokens,
-                    output_tokens=response.output_tokens,
-                    user_message=user_message,
-                    context="model_upgrade",
-                    provider=provider_name,
-                )
-                log.info(
-                    "Upgrade stop_reason=%s model=%s in=%d out=%d cost=$%.5f",
-                    response.stop_reason,
-                    response.model,
-                    response.input_tokens,
-                    response.output_tokens,
-                    llm_usage.cost_usd(response.model, response.input_tokens, response.output_tokens),
-                )
-
-            # Append assistant turn as canonical plain dicts (accepted by both providers).
-            canonical_content = []
-            for b in response.content:
-                if b.type == "text":
-                    canonical_content.append({"type": "text", "text": b.text})
-                elif b.type == "tool_use":
-                    canonical_content.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
-                elif b.type == "thinking":
-                    canonical_content.append({"type": "thinking", "thinking": b.thinking, "signature": b.signature})
-                elif b.type == "reasoning_content":
-                    canonical_content.append({"type": "reasoning_content", "text": b.text})
-            messages.append({"role": "assistant", "content": canonical_content})
-
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    log.info("Tool call: %s(%s)", block.name, block.input)
-                    tools_called.append(block.name)
-                    result = execute_tool(block.name, block.input)
-                    _write_tools = {"manage_files", "set_jenkins_schedule", "trigger_jenkins_job"}
-                    if block.name in _write_tools:
-                        log.info("Tool result (%s): %.400s", block.name, result)
-                    else:
-                        log.debug("Tool result (%s): %.200s", block.name, result)
-                    # Save pending confirmation when a destructive preview is shown.
-                    # The bot executes confirmed=True directly when the user says yes,
-                    # bypassing the LLM (which is unreliable at this step).
-                    _confirm_tools = {"manage_files", "set_jenkins_schedule"}
-                    if (
-                        channel_id is not None
-                        and block.name in _confirm_tools
-                        and not block.input.get("confirmed", False)
-                        and ("Reply **yes** to confirm" in result or "⚠️" in result)
-                    ):
-                        confirmed_inputs = {**block.input, "confirmed": True}
-                        _pending_confirmations[channel_id] = {
-                            "name": block.name,
-                            "inputs": confirmed_inputs,
-                        }
-                        log.info("Pending confirmation saved for channel %s: %s", channel_id, block.name)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result,
-                    })
-            messages.append({"role": "user", "content": tool_results})
-        else:
-            return f"(unexpected stop_reason: {response.stop_reason})"
-
-    return "Sorry, I hit the tool-call limit without finishing. Try a more specific question."
+    return _run_claude_loop_core(
+        user_message=user_message,
+        history=history,
+        tool_definitions=TOOL_DEFINITIONS,
+        execute_tool=execute_tool,
+        system_prompt=_build_system_prompt(),
+        channel_id=channel_id,
+        conversation_id=conversation_id,
+        on_confirm=_on_confirm,
+    )
 
 
 async def handle_claude_query(user_message: str, message: discord.Message) -> str:
     """Fetch channel history, then dispatch the synchronous Claude loop to a thread."""
-    history = await build_history(message.channel, before=message)
+    history = await _build_history(message.channel, before=message)
     log.info("Sending %d history messages as context", len(history))
     conv_id = str(uuid.uuid4())
     loop = asyncio.get_running_loop()
@@ -1690,8 +1398,8 @@ async def on_message(message: discord.Message):
     # If this looks like a "yes" reply to a destructive-action preview, execute
     # the tool directly instead of sending to Claude (which is unreliable here).
     channel_id = message.channel.id
-    if content.lower().strip() in _AFFIRMATIVES and channel_id in _pending_confirmations:
-        pending = _pending_confirmations.pop(channel_id)
+    pending = _confirmations.consume(channel_id, content)
+    if pending is not None:
         log.info("Executing pending confirmation: %s(%s)", pending["name"], pending["inputs"])
         loop = asyncio.get_running_loop()
         try:
@@ -1706,19 +1414,7 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    async def _keep_typing():
-        """Re-trigger the typing indicator every 8s so it stays visible for long queries."""
-        try:
-            while True:
-                try:
-                    await message.channel._state.http.send_typing(message.channel.id)
-                except Exception as exc:
-                    log.warning("Typing indicator failed (will retry): %s", exc)
-                await asyncio.sleep(8)
-        except asyncio.CancelledError:
-            pass
-
-    typing_task = asyncio.create_task(_keep_typing())
+    typing_task = keep_typing(message.channel)
     try:
         reply = await handle_claude_query(content, message)
     except Exception as e:
@@ -1923,7 +1619,6 @@ async def fire_scheduled_task(task: dict) -> None:
     """Execute a single due task. Uses no LLM except when generative_prompt is set."""
     import re
     import json as _json
-    import scheduler as sched
 
     task_id   = task["id"]
     task_type = task["task_type"]
@@ -1981,7 +1676,7 @@ async def fire_scheduled_task(task: dict) -> None:
                     message = text
                 else:
                     message = task["met_message"] or f"✅ Done: {task['description']}"
-                await loop.run_in_executor(None, sched.mark_done, task_id)
+                await loop.run_in_executor(None, scheduler.mark_done, task_id)
                 _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
                           description=task["description"][:100], outcome="condition_met",
                           attempt=str(new_attempt))
@@ -1993,7 +1688,7 @@ async def fire_scheduled_task(task: dict) -> None:
                     f"⏱️ **Gave up checking** after {max_att} attempts: "
                     f"_{task['description']}_"
                 )
-                await loop.run_in_executor(None, sched.mark_done, task_id)
+                await loop.run_in_executor(None, scheduler.mark_done, task_id)
                 _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
                           description=task["description"][:100], outcome="gave_up",
                           attempt=str(new_attempt))
@@ -2007,7 +1702,7 @@ async def fire_scheduled_task(task: dict) -> None:
                     datetime.datetime.now(datetime.timezone.utc)
                     + datetime.timedelta(minutes=interval)
                 ).isoformat()
-                await loop.run_in_executor(None, sched.reschedule, task_id, next_utc, new_attempt)
+                await loop.run_in_executor(None, scheduler.reschedule, task_id, next_utc, new_attempt)
                 _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
                           description=task["description"][:100], outcome="condition_pending",
                           attempt=str(new_attempt), next_check_min=str(interval))
@@ -2045,9 +1740,9 @@ async def fire_scheduled_task(task: dict) -> None:
 
         # --- Wrap up ---
         if task_type == "recurring" and task["recurrence_rule"]:
-            await loop.run_in_executor(None, sched.schedule_next_recurring, task)
+            await loop.run_in_executor(None, scheduler.schedule_next_recurring, task)
 
-        await loop.run_in_executor(None, sched.mark_done, task_id)
+        await loop.run_in_executor(None, scheduler.mark_done, task_id)
         _ai_event("ScheduledTaskFired", task_id=str(task_id), task_type=task_type,
                   description=task["description"][:100], outcome="success",
                   duration_ms=str(int((_time.monotonic() - t0) * 1000)))
@@ -2057,7 +1752,7 @@ async def fire_scheduled_task(task: dict) -> None:
         log.exception("fire_scheduled_task error for #%d", task_id)
         _ai_trace("Error", f"Scheduled task #{task_id} failed: {exc}",
                   task_id=str(task_id), description=task["description"][:100])
-        await loop.run_in_executor(None, sched.mark_done, task_id)
+        await loop.run_in_executor(None, scheduler.mark_done, task_id)
         await post_scheduled_notification(
             channel_id, f"⚠️ Scheduled task #{task_id} failed — check bot logs"
         )
@@ -2065,16 +1760,15 @@ async def fire_scheduled_task(task: dict) -> None:
 
 async def task_scheduler() -> None:
     """Poll SQLite every 60 s and fire any due tasks."""
-    import scheduler as sched
     await bot.wait_until_ready()
-    sched.init_db()
+    scheduler.init_db()
     llm_usage.init_db()
-    log.info("Scheduler started — polling every 60s (db: %s)", sched.DB_PATH)
+    log.info("Scheduler started — polling every 60s")
 
     while not bot.is_closed():
         try:
             loop = asyncio.get_running_loop()
-            due = await loop.run_in_executor(None, sched.get_due_tasks)
+            due = await loop.run_in_executor(None, scheduler.get_due_tasks)
             for task in due:
                 asyncio.create_task(fire_scheduled_task(dict(task)))
         except Exception:
@@ -2107,7 +1801,7 @@ async def task_voice_idle_check() -> None:
 async def task_announce_startup():
     """Post a one-time startup message with the current version and changelog."""
     await bot.wait_until_ready()
-    msg = f"{BOT_EMOJI} **{BOT_NAME} v{BOT_VERSION}** online"
+    msg = _identity.startup_message(BOT_VERSION)
     changelog = _read_changelog_entry(BOT_VERSION)
     if changelog:
         msg += f"\n{changelog}"
