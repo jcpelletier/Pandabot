@@ -1,5 +1,8 @@
 # Changelog
 
+## v148
+- Remove manual DAVE decryption code and all DAVE investigation diagnostics (packet file dumps, per-packet PCM stats, first-packet hex logs, CRC32 tracking, packet manifests); voice control now relies on DAVE being disabled in Discord server settings instead
+
 ## v147
 - Wait for MLS key exchange before attempting DAVE decrypt; drop packets silently until user key is in group
 

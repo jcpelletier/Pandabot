@@ -312,12 +312,6 @@ class STTSink(_AudioSinkBase):
         self._utt_stats: dict[int, dict] = {}
         # Packet filenames that contributed to each utterance — for correlating saved .bin
         # packets with the final debug WAV (simultaneous packet+WAV capture).
-        self._utt_packets: dict[int, list[str]] = {}
-        # CRC32 checksums of each Opus packet in the utterance — for unambiguous
-        # correlation between saved .bin files and the raw PCM debug WAV. Two files
-        # with the same CRC32 list in the same order are guaranteed to be the same
-        # utterance.
-        self._utt_crcs: dict[int, list[int]] = {}
         # SSRC tracking: maps SSRC → user_id for auditing which audio stream we're receiving.
         # Logged on first packet and at silence/flush for SSRC mapping audit.
         self._ssrc_map: dict[int, int] = {}  # ssrc → user_id
@@ -340,12 +334,10 @@ class STTSink(_AudioSinkBase):
         if bot.user and uid == bot.user.id and not self.loopback_mode:
             return
 
-        # data.opus may be pre-decryption bytes; data.packet.decrypted_data is the real Opus payload
         packet     = getattr(data, "packet", None)
         opus_bytes = getattr(packet, "decrypted_data", None) or getattr(data, "opus", None)
 
-        # --- Per-packet debug logging ---
-        # Determine packet type and extract metadata for diagnosing clicking-sound issue
+        # Determine packet type and SSRC for decode failure logging and SSRC tracking
         pkt_type = "UNKNOWN"
         seq = -1
         ts = -1
@@ -367,88 +359,8 @@ class STTSink(_AudioSinkBase):
             else:
                 pkt_type = pkt_cls
 
-        # Log first packet once for diagnosis
-        if not hasattr(self, "_logged_first"):
-            self._logged_first = True
-            raw_opus = getattr(data, "opus", None)
-            dec_data = getattr(packet, "decrypted_data", None) if packet else None
-            # Log extended bit from RTP header (bit 4 of first byte)
-            ext_bit = "?"
-            user_id_str = user.id if hasattr(user, "id") else str(user)
-            if hdr is not None and len(hdr) >= 1:
-                ext_bit = "1" if (hdr[0] & 0b00010000) else "0"
-            # Try to get encryption mode from the voice source
-            src = getattr(data, "source", None)
-            enc_mode = getattr(src, "mode", "n/a") if src is not None else "n/a"
-            log.info(
-                "STT first packet: user=%s type=%s ssrc=%d seq=%d ts=%d ext=%s mode=%s data.opus=%s decrypted_data=%s",
-                user_id_str, pkt_type, ssrc, seq, ts, ext_bit, enc_mode,
-                raw_opus[:16].hex() if raw_opus else None,
-                dec_data[:16].hex() if dec_data else None,
-            )
-
         if not opus_bytes:
             return
-
-        # --- DAVE E2E decryption ---
-        # After SRTP decryption, Discord applies a second DAVE (E2EE) layer.
-        # voice_recv only strips SRTP; we must strip DAVE before Opus decoding.
-        # Without this, we feed ciphertext to the Opus decoder and get noise PCM.
-        #
-        # The MLS key exchange takes a few seconds after joining. During that
-        # window the user's key isn't in the group yet, so decrypt() raises
-        # NoValidCryptorFound. We drop those packets silently rather than
-        # feeding ciphertext to the Opus decoder (which produces garbage PCM
-        # that Whisper would hallucinate over). Once MLS converges the decrypt
-        # succeeds and normal transcription resumes.
-        vc = _voice_clients.get(self.guild_id)
-        dave_session = getattr(getattr(vc, '_connection', None), 'dave_session', None)
-        if dave_session and dave_session.ready:
-            import davey as _davey
-            if dave_session.can_passthrough(uid):
-                pass  # unencrypted (e.g. CNG silence frames) — use raw bytes
-            else:
-                known_ids = dave_session.get_user_ids() or []
-                if uid not in known_ids:
-                    # MLS handshake not yet complete for this user — drop silently
-                    log.debug("STT: dropping packet for user %s — not in DAVE group yet (group=%s)", uid, known_ids)
-                    return
-                try:
-                    opus_bytes = dave_session.decrypt(uid, _davey.MediaType.audio, opus_bytes)
-                    log.debug("STT: DAVE decrypt OK for user %s (%d→? bytes)", uid, len(opus_bytes))
-                except Exception as _dave_err:
-                    log.warning("STT: DAVE decrypt failed for user %s: %s", uid, _dave_err)
-                    return
-
-        # --- Save raw packets for offline analysis ---
-        # Save ALL packets for diagnostic reconstruction
-        import os as _os
-        _pkt_dir = '/opt/discord-bot/stt_packets'
-        _os.makedirs(_pkt_dir, exist_ok=True)
-        _seq = seq
-        _ts = ts
-        _pkt_name = f'pkt_{uid}_{_seq}_{_ts}.bin'
-        with open(_os.path.join(_pkt_dir, _pkt_name), 'wb') as _f:
-            _f.write(opus_bytes)
-
-        # ALSO save data.opus separately (pre-decryption) for comparison
-        _raw_opus = getattr(data, "opus", None)
-        _dec_data = getattr(packet, "decrypted_data", None) if packet else None
-        if _raw_opus is not None:
-            with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_raw_opus.bin'), 'wb') as _f:
-                _f.write(_raw_opus)
-        if _dec_data is not None:
-            with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_decrypted.bin'), 'wb') as _f:
-                _f.write(_dec_data)
-
-        with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_info.txt'), 'w') as _f:
-            _f.write(f'uid={uid} seq={_seq} ts={_ts} ssrc={ssrc} pkt_type={pkt_type}\n')
-            _f.write(f'opus_len={len(opus_bytes)} (bytes actually decoded, post-DAVE)\n')
-            _f.write(f'toc_byte={opus_bytes[0]:02x} opus_bits={bin(opus_bytes[0])[2:].zfill(8)}\n')
-            _f.write(f'data.opus={"present" if _raw_opus is not None else "NONE"} len={len(_raw_opus) if _raw_opus is not None else 0} hex={_raw_opus[:32].hex() if _raw_opus is not None else ""}\n')
-            _f.write(f'packet.decrypted_data={"present" if _dec_data is not None else "NONE"} len={len(_dec_data) if _dec_data is not None else 0} hex={_dec_data[:32].hex() if _dec_data is not None else ""}\n')
-            if _raw_opus is not None and _dec_data is not None:
-                _f.write(f'SAME?={"YES" if _raw_opus == _dec_data else "DIFFERENT!"}\n')
 
         try:
             if uid not in self._decoders:
@@ -483,62 +395,14 @@ class STTSink(_AudioSinkBase):
 
         rms = _calc_rms(pcm)
 
-        # --- Per-packet PCM stats ---
-        # Log every Nth packet to avoid log spam; log first 50 packets of each type
-        _pkt_count = getattr(self, "_pkt_count", 0) + 1
-        self._pkt_count = _pkt_count
-        _log_this = _pkt_count <= 50 or (_pkt_count % 100 == 0)
-
         # Track SSRC-to-user mapping (only for RTP packets with valid SSRC)
         if pkt_type == "RTP" and ssrc > 0:
             existing_uid = self._ssrc_map.get(ssrc)
             if existing_uid is None:
                 self._ssrc_map[ssrc] = uid
-                log.info("STT SSRC map: ssrc=%d → user=%s (new mapping)", ssrc, uid)
             elif existing_uid != uid:
                 log.warning("STT SSRC CONFLICT: ssrc=%d mapped to user=%s but now seen from user=%s!",
                             ssrc, existing_uid, uid)
-
-        if _log_this:
-            # Compute PCM stats
-            pcm_len = len(pcm)
-            pcm_samples = pcm_len // 2  # 16-bit samples
-            # Count zeros and flat runs
-            zero_count = 0
-            max_flat_run = 0
-            cur_flat_run = 0
-            prev_val = None
-            min_val = 32767
-            max_val = -32768
-            for i in range(0, pcm_len, 2):
-                if i + 1 >= pcm_len:
-                    break
-                val = (pcm[i+1] << 8) | pcm[i]
-                # Sign-extend 16-bit
-                if val >= 32768:
-                    val -= 65536
-                if val == 0:
-                    zero_count += 1
-                if val < min_val:
-                    min_val = val
-                if val > max_val:
-                    max_val = val
-                if prev_val is not None and val == prev_val:
-                    cur_flat_run += 1
-                else:
-                    cur_flat_run = 0
-                if cur_flat_run > max_flat_run:
-                    max_flat_run = cur_flat_run
-                prev_val = val
-
-            log.info(
-                "STT pkt #%d: type=%s ssrc=%d seq=%d ts=%d opus=%dB pcm=%dB(%d samples) "
-                "rms=%.0f min=%d max=%d zeros=%d flat_run=%d",
-                _pkt_count, pkt_type, ssrc, seq, ts,
-                len(opus_bytes) if opus_bytes else 0,
-                pcm_len, pcm_samples,
-                rms, min_val, max_val, zero_count, max_flat_run,
-            )
 
         # --- Adaptive noise floor ---
         # Track the noise floor by observing RMS during non-speech frames.
@@ -560,18 +424,6 @@ class STTSink(_AudioSinkBase):
                 noise_floor = (1 - alpha) * noise_floor + alpha * rms
             self._noise_floor[uid] = noise_floor
             self._noise_samples[uid] = noise_count + 1
-
-        # Compute CRC32 of the Opus payload for correlating saved .bin packets
-        # with the debug WAV. This is the only reliable way to confirm whether
-        # a saved packet set came from the same utterance as a debug WAV.
-        import zlib as _zlib
-        _opus_crc = _zlib.crc32(opus_bytes) & 0xFFFFFFFF
-
-        # Build the packet filename for correlation (same name used for saved .bin above)
-        if _seq >= 0 and _ts >= 0:
-            _pkt_name = f'pkt_{uid}_{_seq}_{_ts}'
-        else:
-            _pkt_name = None
 
         with self._lock:
             in_utterance = uid in self._buffers
@@ -600,12 +452,6 @@ class STTSink(_AudioSinkBase):
                 if timer:
                     timer.cancel()
                 self._buffers.setdefault(uid, bytearray()).extend(pcm)
-                # Track CRC32 alongside packet name for correlation
-                self._utt_crcs.setdefault(uid, []).append(_opus_crc)
-
-                # Track the packet filename that contributed to this utterance
-                if _pkt_name is not None:
-                    self._utt_packets.setdefault(uid, []).append(_pkt_name)
 
                 # Track utterance stats
                 if uid not in self._utt_stats:
@@ -621,10 +467,6 @@ class STTSink(_AudioSinkBase):
             elif in_utterance:
                 # Silence frame mid-utterance: keep it so Whisper hears natural pauses
                 self._buffers[uid].extend(pcm)
-                if _pkt_name is not None:
-                    self._utt_packets.setdefault(uid, []).append(_pkt_name)
-                # Also track CRC32 for silence frames in the middle of speech
-                self._utt_crcs.setdefault(uid, []).append(_opus_crc)
             # silence before any speech → ignore
 
     def _on_silence(self, user_id: int) -> None:
@@ -633,17 +475,11 @@ class STTSink(_AudioSinkBase):
             buf = self._buffers.pop(user_id, None)
             self._timers.pop(user_id, None)
             stats = self._utt_stats.pop(user_id, None)
-            pkt_list = self._utt_packets.pop(user_id, [])
-            crc_list = self._utt_crcs.pop(user_id, [])
             # Log SSRC-to-user mapping at silence (mapping audit)
             ssrc_reverse = {v: k for k, v in self._ssrc_map.items()}
             user_ssrc = ssrc_reverse.get(user_id, -1)
-            self._ssrc_map_snapshot = dict(self._ssrc_map)
         if not buf:
             return
-        # Log SSRC mapping audit on each utterance
-        ssrc_map_str = ", ".join(f"ssrc={s}->user={u}" for s, u in (getattr(self, "_ssrc_map_snapshot", {}) or {}).items())
-        log.info("STT SSRC audit: user=%s ssrc=%s map={%s}", user_id, user_ssrc, ssrc_map_str or "empty")
         min_bytes = int(self.MIN_SECS * self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
         if len(buf) < min_bytes:
             return
@@ -652,51 +488,15 @@ class STTSink(_AudioSinkBase):
         if stats and stats["frames"] > 0:
             avg_rms = stats["total_rms"] / stats["frames"]
             log.info(
-                "STT: silence for user %s — %.2fs, %d bytes, %d frames, "
+                "STT: silence for user %s ssrc=%s — %.2fs, %d frames, "
                 "peak_rms=%.0f avg_rms=%.0f noise_floor=%.0f — transcribing",
-                user_id, duration, len(buf), stats["frames"],
+                user_id, user_ssrc, duration, stats["frames"],
                 stats["peak_rms"], avg_rms,
                 self._noise_floor.get(user_id, 0.0),
             )
         else:
-            log.info("STT: silence for user %s, %.2fs, %d bytes — transcribing",
-                     user_id, duration, len(buf))
-
-        # DEBUG: Save raw decoded PCM as WAV so we can hear what the Opus decoder actually produces
-        try:
-            import wave as _wave
-            import json as _json
-            raw_path = "/opt/discord-bot/stt_raw_pcm.wav"
-            with _wave.open(raw_path, "wb") as wf:
-                wf.setnchannels(2)
-                wf.setsampwidth(2)
-                wf.setframerate(48000)
-                wf.writeframes(bytes(buf))
-            log.info("STT: raw PCM WAV saved to %s (%.2fs, %d bytes)", raw_path, duration, len(buf))
-        except Exception as _raw_err:
-            log.debug("Raw PCM WAV save failed: %s", _raw_err)
-
-        # Save packet manifest for correlating saved .bin packets with this utterance
-        try:
-            import json as _json2
-            import os as _os2
-            if pkt_list:
-                manifest_path = "/opt/discord-bot/stt_utterance_packets.json"
-                manifest = {
-                    "user_id": user_id,
-                    "duration_secs": round(duration, 3),
-                    "pcm_bytes": len(buf),
-                    "packet_count": len(pkt_list),
-                    "packets": pkt_list,
-                    "packet_crc32_first5": crc_list[:5] if crc_list else [],
-                    "packet_crc32_count": len(crc_list),
-                }
-                with open(manifest_path, "w") as _mf:
-                    _json2.dump(manifest, _mf, indent=2)
-                log.info("STT: packet manifest saved to %s (%d packets, %d CRC32s)",
-                         manifest_path, len(pkt_list), len(crc_list))
-        except Exception as _manifest_err:
-            log.debug("STT: packet manifest save failed: %s", _manifest_err)
+            log.info("STT: silence for user %s ssrc=%s, %.2fs — transcribing",
+                     user_id, user_ssrc, duration)
 
         if self._suppress_transcribe:
             log.info("STT: loopback mode — suppressing transcript for user %s", user_id)
@@ -713,15 +513,12 @@ class STTSink(_AudioSinkBase):
         with self._lock:
             uids = list(self._buffers.keys())
             bufs = {uid: self._buffers.pop(uid) for uid in uids}
-            pkts = {}
-            crcs_map = {}
+            stats_map = {}
             for uid in uids:
                 timer = self._timers.pop(uid, None)
                 if timer:
                     timer.cancel()
-                stats = self._utt_stats.pop(uid, None)
-                pkts[uid] = self._utt_packets.pop(uid, [])
-                crcs_map[uid] = self._utt_crcs.pop(uid, [])
+                stats_map[uid] = self._utt_stats.pop(uid, None)
         for uid, buf in bufs.items():
             if not buf:
                 continue
@@ -730,42 +527,6 @@ class STTSink(_AudioSinkBase):
                 continue
             duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
             log.info("STT: flushing %d bytes (%.2fs) for user %s", len(buf), duration, uid)
-
-            # DEBUG: Save raw PCM WAV on flush too
-            try:
-                import wave as _wave
-                raw_path = "/opt/discord-bot/stt_raw_pcm.wav"
-                with _wave.open(raw_path, "wb") as wf:
-                    wf.setnchannels(2)
-                    wf.setsampwidth(2)
-                    wf.setframerate(48000)
-                    wf.writeframes(bytes(buf))
-                log.info("STT: raw PCM WAV saved to %s (%.2fs, %d bytes)", raw_path, duration, len(buf))
-            except Exception as _raw_err:
-                log.debug("Raw PCM WAV save failed: %s", _raw_err)
-
-            # Save packet manifest for correlation
-            pkt_list = pkts.get(uid, [])
-            crc_list = crcs_map.get(uid, [])
-            if pkt_list:
-                try:
-                    import json as _json2
-                    manifest_path = "/opt/discord-bot/stt_utterance_packets.json"
-                    manifest = {
-                        "user_id": uid,
-                        "duration_secs": round(duration, 3),
-                        "pcm_bytes": len(buf),
-                        "packet_count": len(pkt_list),
-                        "packets": pkt_list,
-                        "packet_crc32_first5": crc_list[:5] if crc_list else [],
-                        "packet_crc32_count": len(crc_list),
-                    }
-                    with open(manifest_path, "w") as _mf:
-                        _json2.dump(manifest, _mf, indent=2)
-                    log.info("STT: packet manifest saved to %s (%d packets, %d CRC32s)",
-                             manifest_path, len(pkt_list), len(crc_list))
-                except Exception as _manifest_err:
-                    log.debug("STT: packet manifest save failed: %s", _manifest_err)
 
             if self._suppress_transcribe:
                 log.info("STT: loopback mode — suppressing flush transcription for user %s", uid)
@@ -781,8 +542,6 @@ class STTSink(_AudioSinkBase):
                 timer.cancel()
             self._buffers.clear()
             self._timers.clear()
-            self._utt_packets.clear()
-            self._utt_crcs.clear()
         self._decoders.clear()
         self._noise_floor.clear()
         self._noise_samples.clear()
