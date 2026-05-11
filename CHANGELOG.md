@@ -1,5 +1,8 @@
 # Changelog
 
+## v142
+- Add CLAUDE.md documenting architecture, pandabot-core dependency, and dead code
+
 ## v141
 - Migrate bot.py and tools.py to pandabot_core shared infrastructure: scheduler, llm loop, discord_comms, identity, telemetry, llm usage/provider now all sourced from pandabot_core package instead of local copies
 
