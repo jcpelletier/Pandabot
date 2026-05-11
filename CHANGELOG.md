@@ -1,5 +1,8 @@
 # Changelog
 
+## v146
+- Strip DAVE E2E layer before Opus decode — was the root cause of garbage audio reaching Whisper
+
 ## v145
 - Enable guild_members privileged intent to fix voice SSRC→user mapping delay and auto-leave logic
 

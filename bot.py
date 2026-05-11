@@ -390,6 +390,21 @@ class STTSink(_AudioSinkBase):
         if not opus_bytes:
             return
 
+        # --- DAVE E2E decryption ---
+        # After SRTP decryption, Discord applies a second DAVE (E2EE) layer.
+        # voice_recv only strips SRTP; we must strip DAVE before Opus decoding.
+        # Without this, we feed ciphertext to the Opus decoder and get noise PCM.
+        vc = _voice_clients.get(self.guild_id)
+        dave_session = getattr(getattr(vc, '_connection', None), 'dave_session', None)
+        if dave_session and dave_session.ready:
+            try:
+                import davey as _davey
+                if not dave_session.can_passthrough(uid):
+                    opus_bytes = dave_session.decrypt(uid, _davey.MediaType.audio, opus_bytes)
+            except Exception as _dave_err:
+                log.warning("STT: DAVE decrypt failed for user %s: %s", uid, _dave_err)
+                return
+
         # --- Save raw packets for offline analysis ---
         # Save ALL packets for diagnostic reconstruction
         import os as _os
@@ -413,7 +428,7 @@ class STTSink(_AudioSinkBase):
 
         with open(_os.path.join(_pkt_dir, f'pkt_{uid}_{_seq}_{_ts}_info.txt'), 'w') as _f:
             _f.write(f'uid={uid} seq={_seq} ts={_ts} ssrc={ssrc} pkt_type={pkt_type}\n')
-            _f.write(f'opus_len={len(opus_bytes)} (bytes actually decoded)\n')
+            _f.write(f'opus_len={len(opus_bytes)} (bytes actually decoded, post-DAVE)\n')
             _f.write(f'toc_byte={opus_bytes[0]:02x} opus_bits={bin(opus_bytes[0])[2:].zfill(8)}\n')
             _f.write(f'data.opus={"present" if _raw_opus is not None else "NONE"} len={len(_raw_opus) if _raw_opus is not None else 0} hex={_raw_opus[:32].hex() if _raw_opus is not None else ""}\n')
             _f.write(f'packet.decrypted_data={"present" if _dec_data is not None else "NONE"} len={len(_dec_data) if _dec_data is not None else 0} hex={_dec_data[:32].hex() if _dec_data is not None else ""}\n')
