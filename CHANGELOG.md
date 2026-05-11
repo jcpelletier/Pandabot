@@ -1,5 +1,8 @@
 # Changelog
 
+## v149
+- Re-add DAVE decryption with corrected logic: drop packets when session not ready (instead of passing ciphertext to Opus decoder), handle can_passthrough for CNG/silence, drop on decrypt failure
+
 ## v148
 - Remove manual DAVE decryption code and all DAVE investigation diagnostics (packet file dumps, per-packet PCM stats, first-packet hex logs, CRC32 tracking, packet manifests); voice control now relies on DAVE being disabled in Discord server settings instead
 

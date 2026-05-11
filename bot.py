@@ -362,6 +362,25 @@ class STTSink(_AudioSinkBase):
         if not opus_bytes:
             return
 
+        # DAVE E2E decryption — mandatory since Discord made it non-optional.
+        # discord.py handles the MLS key exchange in the voice WebSocket; we just
+        # need to call decrypt() here once the session is ready.
+        # If dave_session exists, we must decrypt — passing ciphertext to the Opus
+        # decoder produces garbage PCM and causes Whisper hallucinations.
+        vc = _voice_clients.get(self.guild_id)
+        dave_session = getattr(getattr(vc, '_connection', None), 'dave_session', None)
+        if dave_session is not None:
+            if not dave_session.ready:
+                # MLS handshake not complete yet — drop rather than pass ciphertext
+                return
+            if not dave_session.can_passthrough(uid):
+                try:
+                    import davey as _davey
+                    opus_bytes = dave_session.decrypt(uid, _davey.MediaType.audio, opus_bytes)
+                except Exception as _dave_err:
+                    log.debug("STT: DAVE decrypt failed user=%s: %s — dropping", uid, _dave_err)
+                    return
+
         try:
             if uid not in self._decoders:
                 self._decoders[uid] = discord.opus.Decoder()
