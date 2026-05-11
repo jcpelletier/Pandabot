@@ -73,6 +73,21 @@ logging.basicConfig(
 )
 log = logging.getLogger("panda-bot")
 
+# Temporary: expose MLS/DAVE debug output from discord internals so we can
+# diagnose why the MLS key exchange isn't completing.
+class _DaveFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        return any(k in msg for k in ('MLS', 'DAVE', 'dave', 'binary frame', 'epoch', 'welcome', 'commit', 'proposal'))
+_dave_handler = logging.StreamHandler()
+_dave_handler.setLevel(logging.DEBUG)
+_dave_handler.addFilter(_DaveFilter())
+_dave_handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"))
+for _n in ('discord.gateway', 'discord.voice_state'):
+    _l = logging.getLogger(_n)
+    _l.setLevel(logging.DEBUG)
+    _l.addHandler(_dave_handler)
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------

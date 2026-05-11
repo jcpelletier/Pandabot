@@ -1,5 +1,8 @@
 # Changelog
 
+## v151
+- Temporary: expose MLS/DAVE debug log via filtered handler to diagnose key exchange failure (remove after diagnosis)
+
 ## v150
 - Stop TTS-speaking bot replies to text messages — voice replies are for STT-triggered responses only
 - Fix SSRC race: when voice_recv passes user=None (SSRC not yet mapped), fall back to _ssrc_to_id lookup so first-burst audio isn't silently dropped
