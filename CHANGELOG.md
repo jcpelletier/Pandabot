@@ -1,5 +1,8 @@
 # Changelog
 
+## v143
+- Migrate test fixtures to pandabot_core.testing: conftest.py now uses stub_discord() and tmp_db via pandabot_core; test_fire_task.py mock_claude fixture uses FakeProvider from core instead of local _MockProvider
+
 ## v142
 - Add CLAUDE.md documenting architecture, pandabot-core dependency, and dead code
 

@@ -7,15 +7,13 @@ reads env at import time too — this file runs first so the dummies are in
 place before either module is loaded.
 
 bot.py also imports discord, aiohttp, and anthropic — packages that aren't
-installed in a minimal dev/test environment.  We stub them in sys.modules so
-bot.py can be imported for pure-function tests (split_message, etc.) without
-needing the full runtime stack.
+installed in a minimal dev/test environment.  pandabot_core.testing.stub_discord
+handles the stubbing so we don't need to maintain the list here.
 """
 
 import os
 import sys
 import pytest
-from unittest.mock import MagicMock
 
 # discord-bot root on sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -33,15 +31,9 @@ os.environ.setdefault("DISCORD_TOKEN", "test-token")
 os.environ.setdefault("DISCORD_CHANNEL_ID", "123456789012345678")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
-# --- Stub heavy runtime deps so bot.py can be imported without the full stack ---
-_STUB_MODULES = [
-    "discord", "discord.ext", "discord.ext.commands", "discord.opus",
-    "aiohttp", "aiohttp.web",
-    "anthropic",
-]
-for _mod in _STUB_MODULES:
-    if _mod not in sys.modules:
-        sys.modules[_mod] = MagicMock()
+# --- Stub heavy runtime deps via pandabot_core.testing ---
+from pandabot_core.testing import stub_discord
+stub_discord()
 
 
 @pytest.fixture

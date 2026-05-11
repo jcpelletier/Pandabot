@@ -28,6 +28,7 @@ from unittest.mock import MagicMock, AsyncMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from pandabot_core import scheduler
+from pandabot_core.testing import FakeProvider, ScriptedResponse
 import tools
 import bot
 
@@ -95,24 +96,18 @@ def fake_execute(monkeypatch):
 @pytest.fixture
 def mock_claude(monkeypatch):
     """
-    Stub the LLM provider so generative_prompt tests don't hit the real API.
-    Returns the mock provider so tests can inspect calls and set return values.
+    Stub the LLM provider using pandabot_core.testing.FakeProvider so
+    generative_prompt tests don't hit the real API.
+
+    The fixture returns the FakeProvider instance so tests can:
+      - inspect fake.simple_calls to assert calls were made
+      - set fake.simple_response to control what text is returned
     """
     from pandabot_core.llm import provider as llm_provider
-
-    class _MockProvider:
-        primary_model = "mock-model"
-        upgrade_model = ""
-        _calls: list = []
-        _response_text: str = "LLM says hello"
-
-        def complete_simple(self, messages, model, max_tokens=800):
-            self._calls.append({"messages": messages, "model": model})
-            return (self._response_text, 10, 5)
-
-    mp = _MockProvider()
-    monkeypatch.setattr(llm_provider, "_provider", mp)
-    return mp
+    fake = FakeProvider()
+    fake.simple_response = "LLM says hello"
+    monkeypatch.setattr(llm_provider, "_provider", fake)
+    return fake
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +219,7 @@ async def test_generative_prompt_calls_llm(tmp_db, posted, fake_execute, mock_cl
         generative_prompt="Summarise this in one sentence: {results}",
     )
     await bot.fire_scheduled_task(task)
-    assert len(mock_claude._calls) > 0
+    assert len(mock_claude.simple_calls) > 0
 
 
 @pytest.mark.asyncio
@@ -234,14 +229,14 @@ async def test_generative_prompt_substitutes_results(tmp_db, posted, fake_execut
     task = _task(tool_calls=tc, generative_prompt="Report: {results}")
     await bot.fire_scheduled_task(task)
     all_content = " ".join(
-        msg.get("content", "") for call in mock_claude._calls for msg in call["messages"]
+        msg.get("content", "") for call in mock_claude.simple_calls for msg in call["messages"]
     )
     assert "TOOL_OUTPUT_MARKER" in all_content
 
 
 @pytest.mark.asyncio
 async def test_generative_prompt_output_posted(tmp_db, posted, fake_execute, mock_claude):
-    mock_claude._response_text = "Everything looks good!"
+    mock_claude.simple_response = "Everything looks good!"
     task = _task(generative_prompt="Say something about {results}")
     await bot.fire_scheduled_task(task)
     assert any("Everything looks good!" in m for m in posted)
@@ -394,7 +389,7 @@ async def test_condition_check_generative_prompt_not_called_when_not_met(
         max_attempts=5,
     )
     await bot.fire_scheduled_task(task)
-    assert mock_claude._calls == [], "LLM must not be called when condition is not yet met"
+    assert mock_claude.simple_calls == [], "LLM must not be called when condition is not yet met"
     assert not any("🎬 Disc finished ripping!" in m for m in posted)
 
 
@@ -405,7 +400,7 @@ async def test_condition_check_generative_prompt_called_when_met(
     """generative_prompt IS called when condition_check condition is satisfied."""
     fake_execute["get_log_tail"] = "Rip completed successfully for DS9S1D2"
     tc = json.dumps([{"tool": "get_log_tail", "args": {}}])
-    mock_claude._response_text = "🎬 Disc finished ripping! DS9S1D2 is done."
+    mock_claude.simple_response = "🎬 Disc finished ripping! DS9S1D2 is done."
     task = _task(
         task_type="condition_check",
         tool_calls=tc,
@@ -415,7 +410,7 @@ async def test_condition_check_generative_prompt_called_when_met(
         max_attempts=5,
     )
     await bot.fire_scheduled_task(task)
-    assert len(mock_claude._calls) == 1
+    assert len(mock_claude.simple_calls) == 1
     assert any("DS9S1D2 is done." in m for m in posted)
 
 

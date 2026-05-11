@@ -2,7 +2,7 @@
 
 <img width="1419" height="1562" alt="image" src="https://github.com/user-attachments/assets/0e748146-ba81-4926-83ef-c45dcc70a0e5" />
 
-A Discord bot for home servers backed by Claude (Haiku). Mention it in Discord to ask questions about your server, trigger CI jobs on demand, or schedule future checks. Also posts proactive alerts automatically.
+A Discord bot for home servers backed by configurable LLMs. Mention it in Discord to ask questions about your server, trigger CI jobs on demand, or schedule future checks. Also posts proactive alerts automatically.
 
 Every server-specific value lives in `.env` — feature flags let you disable entire subsystems (Jellyfin, Jenkins, disc ripping, SMART health) that aren't present on your machine. No code changes needed for most setups.
 
@@ -10,7 +10,7 @@ Every server-specific value lives in `.env` — feature flags let you disable en
 
 ## Features
 
-- **Natural language queries** — ask in plain English, Claude decides which tools to call
+- **Natural language queries** — ask in plain English, the LLM decides which tools to call
 - **Conversation context** — remembers the last 10 messages so follow-up questions work naturally
 - **Jenkins job triggering** — tell the bot to run a job; it triggers it and automatically schedules a follow-up notification when the build finishes
 - **Task scheduler** — schedule any bot action for a future time, on a recurring basis, or to fire once a condition is met; backed by SQLite, no LLM cost at fire time
@@ -42,7 +42,7 @@ Every server-specific value lives in `.env` — feature flags let you disable en
 | `manage_schedule` | Create, list, or cancel scheduled tasks (one-shot, condition-check, or recurring) |
 | `manage_files` | Move, rename, delete, bulk-rename (`rename_all`), or bulk-delete by glob (`delete_matching`) files under allowed roots; always previews first and requires confirmation |
 
-Tools are only exposed to Claude when their feature flag is enabled — disabled tools are invisible to Claude but still callable by the scheduler (safe for saved tasks).
+Tools are only exposed to the LLM when their feature flag is enabled — disabled tools are invisible to the LLM but still callable by the scheduler (safe for saved tasks).
 
 ---
 
@@ -188,7 +188,7 @@ See the [Scheduler](#scheduler) section for more on one-shot, recurring, and con
 
 The bot has a built-in task scheduler backed by SQLite. Tasks survive restarts. Just ask in plain English — Claude creates the task automatically.
 
-Most tasks run their pre-decided tool calls and post a static result at fire time — no LLM call, no API cost. Tasks that include a `generative_prompt` (asking Claude to synthesize the results into a narrative) do make a small Haiku call at fire time. The weekly digest example below uses one; a simple "check disk space at 8am" does not.
+Most tasks run their pre-decided tool calls and post a static result at fire time — no LLM call, no API cost. Tasks that include a `generative_prompt` (asking the LLM to synthesize the results into a narrative) do make a small call at fire time. The weekly digest example below uses one; a simple "check disk space at 8am" does not.
 
 **One-shot** — fire once at a specific time:
 ```
@@ -296,14 +296,14 @@ git push
 ssh yourserver "sudo git -C /opt/discord-bot pull origin main && sudo systemctl restart discord-bot"
 ```
 
-> **Windows + WSL note:** If your SSH key lives inside WSL (e.g. `/home/genesis/.ssh/id_ed25519`), use `wsl ssh` from PowerShell/cmd to avoid permission errors on the Windows-visible `\\wsl.localhost\` path:
+> **Windows + WSL note:** If your SSH key lives inside WSL (e.g. `/home/youruser/.ssh/id_ed25519`), use `wsl ssh` from PowerShell/cmd to avoid permission errors on the Windows-visible `\\wsl.localhost\` path:
 > ```powershell
-> wsl ssh -i /home/genesis/.ssh/id_ed25519 user@host <command>
+> wsl ssh -i /home/youruser/.ssh/id_ed25519 user@host <command>
 > ```
 > To copy files to a root-owned path, scp to `/tmp` first, then `sudo cp` on the remote:
 > ```powershell
-> wsl scp -i /home/genesis/.ssh/id_ed25519 ./local-file user@host:/tmp/
-> wsl ssh -i /home/genesis/.ssh/id_ed25519 user@host "sudo cp /tmp/local-file /opt/discord-bot/ && sudo chown discord-bot:discord-bot /opt/discord-bot/local-file"
+> wsl scp -i /home/youruser/.ssh/id_ed25519 ./local-file user@host:/tmp/
+> wsl ssh -i /home/youruser/.ssh/id_ed25519 user@host "sudo cp /tmp/local-file /opt/discord-bot/ && sudo chown discord-bot:discord-bot /opt/discord-bot/local-file"
 > ```
 
 ---
@@ -322,7 +322,7 @@ ssh yourserver "sudo git -C /opt/discord-bot pull origin main && sudo systemctl 
 
 **Credentials:**
 - Discord bot token with **Message Content Intent** enabled
-- Anthropic API key
+- LLM API key (tested with Deepseek r4 flash and Claude Haiku 4.5)
 - Jenkins API token (when `ENABLE_JENKINS=true`) — see SETUP.md §3
 - Jellyfin API key (when `ENABLE_JELLYFIN=true`)
 - Azure App Registration with Monitoring Reader on your App Insights resource — for `query_ripping: recent_rips` and telemetry (optional; see SETUP.md §2)
