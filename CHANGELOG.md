@@ -1,5 +1,9 @@
 # Changelog
 
+## v159
+- Add promote-to-prod.sh script for promoting staging commit to production
+- Update CLAUDE.md deploy docs to document two-stage push → staging → promote workflow
+
 ## v158
 - Fix process_proposals dedup: use repr(optype).encode() instead of bytes(optype) — optype is a Rust enum; bytes() raises TypeError, crashing every process_proposals call and leaving DAVE session stuck in pending state
 
