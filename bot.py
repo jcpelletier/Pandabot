@@ -328,8 +328,19 @@ class STTSink(_AudioSinkBase):
         return True
 
     def write(self, user, data) -> None:
+        # user is None when voice_recv hasn't mapped the SSRC to a member yet
+        # (race: audio arrives before the SPEAKING gateway event). Fall back to
+        # SSRC lookup so we don't silently drop the first burst of speech.
         if user is None:
-            return
+            pkt0 = getattr(data, "packet", None)
+            raw_ssrc = getattr(pkt0, "ssrc", None)
+            if raw_ssrc is not None:
+                vc0 = _voice_clients.get(self.guild_id)
+                uid0 = getattr(vc0, "_ssrc_to_id", {}).get(raw_ssrc) if vc0 else None
+                if uid0 is not None:
+                    user = (vc0.guild.get_member(uid0) or vc0.client.get_user(uid0)) if vc0 else None
+            if user is None:
+                return
         uid = user.id if hasattr(user, "id") else int(user)
         if bot.user and uid == bot.user.id and not self.loopback_mode:
             return
@@ -372,13 +383,14 @@ class STTSink(_AudioSinkBase):
         if dave_session is not None:
             if not dave_session.ready:
                 # MLS handshake not complete yet — drop rather than pass ciphertext
+                log.debug("STT: DAVE not ready — dropping pkt user=%s", uid)
                 return
             if not dave_session.can_passthrough(uid):
                 try:
                     import davey as _davey
                     opus_bytes = dave_session.decrypt(uid, _davey.MediaType.audio, opus_bytes)
                 except Exception as _dave_err:
-                    log.debug("STT: DAVE decrypt failed user=%s: %s — dropping", uid, _dave_err)
+                    log.warning("STT: DAVE decrypt failed user=%s: %s — dropping", uid, _dave_err)
                     return
 
         try:
@@ -1239,9 +1251,6 @@ async def on_message(message: discord.Message):
     for chunk in split_message(reply):
         if chunk.strip():
             await send_with_retry(message.channel, chunk)
-
-    if ENABLE_TTS and message.guild is not None:
-        asyncio.create_task(speak_response(message.guild.id, reply))
 
     await bot.process_commands(message)
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## v150
+- Stop TTS-speaking bot replies to text messages — voice replies are for STT-triggered responses only
+- Fix SSRC race: when voice_recv passes user=None (SSRC not yet mapped), fall back to _ssrc_to_id lookup so first-burst audio isn't silently dropped
+- Upgrade DAVE decrypt failure log from debug to warning so failures are visible
+
 ## v149
 - Re-add DAVE decryption with corrected logic: drop packets when session not ready (instead of passing ciphertext to Opus decoder), handle can_passthrough for CNG/silence, drop on decrypt failure
 
