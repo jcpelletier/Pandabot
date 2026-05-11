@@ -1,5 +1,8 @@
 # Changelog
 
+## v144
+- Remove dead code: scheduler.py, llm_usage.py, llm_provider.py, tests/test_scheduler.py (all superseded by pandabot_core equivalents since v141)
+
 ## v143
 - Migrate test fixtures to pandabot_core.testing: conftest.py now uses stub_discord() and tmp_db via pandabot_core; test_fire_task.py mock_claude fixture uses FakeProvider from core instead of local _MockProvider
 

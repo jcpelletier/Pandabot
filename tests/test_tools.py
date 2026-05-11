@@ -389,7 +389,7 @@ class TestManageSchedule:
         assert "weekly:1" in result
 
     def test_list_does_not_show_done_tasks(self, tmp_db):
-        import scheduler as sched
+        from pandabot_core import scheduler as sched
         tools.manage_schedule("create", fire_at=self._future(), description="done soon")
         tasks = sched.list_pending()
         sched.mark_done(tasks[0]["id"])
@@ -454,14 +454,14 @@ class TestManageSchedule:
     # --- cancel ---
 
     def test_cancel_valid_task(self, tmp_db):
-        import scheduler as sched
+        from pandabot_core import scheduler as sched
         tools.manage_schedule("create", fire_at=self._future(), description="bye")
         task_id = sched.list_pending()[0]["id"]
         result = tools.manage_schedule("cancel", id=task_id)
         assert "cancelled" in result.lower()
 
     def test_cancel_removes_from_pending(self, tmp_db):
-        import scheduler as sched
+        from pandabot_core import scheduler as sched
         tools.manage_schedule("create", fire_at=self._future(), description="bye")
         task_id = sched.list_pending()[0]["id"]
         tools.manage_schedule("cancel", id=task_id)
