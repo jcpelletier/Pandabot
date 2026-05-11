@@ -149,6 +149,7 @@ TTS_URL                  = os.environ.get("TTS_URL", "http://localhost:8880")
 TTS_VOICE                = os.environ.get("TTS_VOICE", "af_heart")
 TTS_IDLE_TIMEOUT         = int(os.environ.get("TTS_IDLE_TIMEOUT_SECS", "300"))
 TTS_AUTO_JOIN_CHANNEL_ID = int(os.environ["TTS_AUTO_JOIN_CHANNEL_ID"]) if os.environ.get("TTS_AUTO_JOIN_CHANNEL_ID") else None
+TTS_TRIGGER_BOT_IDS      = {int(x) for x in os.environ.get("TTS_TRIGGER_BOT_IDS", "").split(",") if x.strip()}
 
 ENABLE_STT          = os.environ.get("ENABLE_STT", "false").lower() == "true"
 STT_URL             = os.environ.get("STT_URL", "http://localhost:8001")
@@ -1232,7 +1233,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     """Auto-join TTS_AUTO_JOIN_CHANNEL_ID when a user enters; auto-leave when all users leave."""
     if not ENABLE_TTS or TTS_AUTO_JOIN_CHANNEL_ID is None:
         return
-    if member.bot:
+    if member.bot and member.id not in TTS_TRIGGER_BOT_IDS:
         return
 
     guild = member.guild

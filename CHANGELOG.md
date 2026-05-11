@@ -1,5 +1,8 @@
 # Changelog
 
+## v154
+- Add TTS_TRIGGER_BOT_IDS env var: comma-separated bot user IDs that are allowed to trigger auto-join/leave, same as human users (enables PandaBot-QA voice tests to drive Pandabot into the channel)
+
 ## v153
 - DAVE diagnostics: log get_user_ids() on decrypt failure; monkey-patch reinit_dave_session to count/log each call; add 30s periodic session monitor after voice join to track when user_ids is populated
 
