@@ -161,7 +161,9 @@ try:
     _orig_process_welcome = _davey.DaveSession.process_welcome
 
     def _deduped_process_proposals(self, optype, payload: bytes):
-        if _mls_is_duplicate(id(self), "process_proposals", bytes(optype) + payload):
+        # optype is a Rust enum; encode via repr to avoid TypeError from bytes()
+        key = repr(optype).encode() + b"|" + payload
+        if _mls_is_duplicate(id(self), "process_proposals", key):
             return None
         return _orig_process_proposals(self, optype, payload)
 

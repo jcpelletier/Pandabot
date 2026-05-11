@@ -1,5 +1,8 @@
 # Changelog
 
+## v158
+- Fix process_proposals dedup: use repr(optype).encode() instead of bytes(optype) — optype is a Rust enum; bytes() raises TypeError, crashing every process_proposals call and leaving DAVE session stuck in pending state
+
 ## v157
 - Fix DAVE decryption: deduplicate process_proposals() and process_commit() on DaveSession in addition to process_welcome() — dual WS connections both call process_commit() on the same session; the second call fails, triggering _recover_from_invalid_commit → reinit_dave_session which resets the entire DAVE session and discards all established cryptors (NoValidCryptorFound manager_count=1); skipping duplicate payloads within 1s prevents the recovery loop
 
