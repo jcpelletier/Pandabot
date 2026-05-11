@@ -394,16 +394,31 @@ class STTSink(_AudioSinkBase):
         # After SRTP decryption, Discord applies a second DAVE (E2EE) layer.
         # voice_recv only strips SRTP; we must strip DAVE before Opus decoding.
         # Without this, we feed ciphertext to the Opus decoder and get noise PCM.
+        #
+        # The MLS key exchange takes a few seconds after joining. During that
+        # window the user's key isn't in the group yet, so decrypt() raises
+        # NoValidCryptorFound. We drop those packets silently rather than
+        # feeding ciphertext to the Opus decoder (which produces garbage PCM
+        # that Whisper would hallucinate over). Once MLS converges the decrypt
+        # succeeds and normal transcription resumes.
         vc = _voice_clients.get(self.guild_id)
         dave_session = getattr(getattr(vc, '_connection', None), 'dave_session', None)
         if dave_session and dave_session.ready:
-            try:
-                import davey as _davey
-                if not dave_session.can_passthrough(uid):
+            import davey as _davey
+            if dave_session.can_passthrough(uid):
+                pass  # unencrypted (e.g. CNG silence frames) — use raw bytes
+            else:
+                known_ids = dave_session.get_user_ids() or []
+                if uid not in known_ids:
+                    # MLS handshake not yet complete for this user — drop silently
+                    log.debug("STT: dropping packet for user %s — not in DAVE group yet (group=%s)", uid, known_ids)
+                    return
+                try:
                     opus_bytes = dave_session.decrypt(uid, _davey.MediaType.audio, opus_bytes)
-            except Exception as _dave_err:
-                log.warning("STT: DAVE decrypt failed for user %s: %s", uid, _dave_err)
-                return
+                    log.debug("STT: DAVE decrypt OK for user %s (%d→? bytes)", uid, len(opus_bytes))
+                except Exception as _dave_err:
+                    log.warning("STT: DAVE decrypt failed for user %s: %s", uid, _dave_err)
+                    return
 
         # --- Save raw packets for offline analysis ---
         # Save ALL packets for diagnostic reconstruction

@@ -1,5 +1,8 @@
 # Changelog
 
+## v147
+- Wait for MLS key exchange before attempting DAVE decrypt; drop packets silently until user key is in group
+
 ## v146
 - Strip DAVE E2E layer before Opus decode — was the root cause of garbage audio reaching Whisper
 
