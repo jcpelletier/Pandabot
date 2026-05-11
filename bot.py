@@ -89,6 +89,47 @@ for _n in ('discord.gateway', 'discord.voice_state'):
     _l.addHandler(_dave_handler)
 
 # ---------------------------------------------------------------------------
+# DAVE reinit debounce — applied at class level before any voice connects.
+#
+# Root cause: two concurrent WebSocket connections share the same
+# VoiceConnectionState. When Discord sends SESSION_DESCRIPTION (voice op 4),
+# both connections call reinit_dave_session within the same millisecond.
+# Each sends a key package; Discord replies with two MLS welcomes; the second
+# overwrites the MLS group state from the first. Result: the remote user
+# appears in user_ids but has no sender cryptor → NoValidCryptorFound.
+#
+# Fix: drop any reinit call that arrives within 1 s of the previous one on
+# the same VoiceConnectionState object. Legitimate reinits (user joins/leaves)
+# come seconds later and are unaffected.
+# ---------------------------------------------------------------------------
+import time as _time_module
+
+try:
+    import discord.voice_state as _dvs
+
+    _orig_reinit_dave_session = _dvs.VoiceConnectionState.reinit_dave_session
+    _reinit_last_call: dict[int, float] = {}
+    _REINIT_DEBOUNCE_SECS = 1.0
+
+    async def _debounced_reinit_dave_session(self) -> None:
+        now = _time_module.monotonic()
+        obj_id = id(self)
+        elapsed = now - _reinit_last_call.get(obj_id, 0.0)
+        if elapsed < _REINIT_DEBOUNCE_SECS:
+            log.info(
+                "DAVE: debounced duplicate reinit_dave_session (%.0f ms since last — skipping)",
+                elapsed * 1000,
+            )
+            return
+        _reinit_last_call[obj_id] = now
+        log.info("DAVE: reinit_dave_session proceeding (%.0f ms since last)", elapsed * 1000)
+        await _orig_reinit_dave_session(self)
+
+    _dvs.VoiceConnectionState.reinit_dave_session = _debounced_reinit_dave_session
+except Exception:
+    pass  # discord.voice_state unavailable in test environment
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 

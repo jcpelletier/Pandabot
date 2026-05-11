@@ -1,5 +1,8 @@
 # Changelog
 
+## v155
+- Fix DAVE decryption: debounce reinit_dave_session at the VoiceConnectionState class level with a 1s window; two concurrent WebSocket connections were calling reinit within the same millisecond, sending two MLS key packages, causing the second welcome to overwrite the first and leave the remote user with no sender cryptor (NoValidCryptorFound manager_count=1)
+
 ## v154
 - Add TTS_TRIGGER_BOT_IDS env var: comma-separated bot user IDs that are allowed to trigger auto-join/leave, same as human users (enables PandaBot-QA voice tests to drive Pandabot into the channel)
 
