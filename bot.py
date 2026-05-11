@@ -405,7 +405,14 @@ class STTSink(_AudioSinkBase):
                     import davey as _davey
                     opus_bytes = dave_session.decrypt(uid, _davey.MediaType.audio, opus_bytes)
                 except Exception as _dave_err:
-                    log.warning("STT: DAVE decrypt failed user=%s: %s — dropping", uid, _dave_err)
+                    try:
+                        _known_uids = dave_session.get_user_ids()
+                    except Exception as _ue:
+                        _known_uids = f"error:{_ue}"
+                    log.warning(
+                        "STT: DAVE decrypt failed user=%s session=%d user_ids=%s: %s — dropping",
+                        uid, id(dave_session), _known_uids, _dave_err,
+                    )
                     return
 
         try:
@@ -614,6 +621,7 @@ def _start_listening(vc: discord.VoiceClient, guild_id: int, **sink_kwargs) -> N
         log.info("STT listening started in guild %s (sink_kwargs=%s)", guild_id, sink_kwargs)
     except Exception as exc:
         log.warning("Could not start STT: %s", exc, exc_info=True)
+    _start_dave_diagnostics(vc, guild_id)
 
 
 def _stop_listening(vc: discord.VoiceClient) -> None:
@@ -624,6 +632,49 @@ def _stop_listening(vc: discord.VoiceClient) -> None:
         vc.stop_listening()
     except Exception as exc:
         log.warning("Could not stop STT: %s", exc)
+
+
+def _start_dave_diagnostics(vc: discord.VoiceClient, guild_id: int) -> None:
+    """Monkey-patch reinit_dave_session to log each call, and start a periodic
+    DAVE session state monitor so we can see when user_ids gets populated."""
+    conn = getattr(vc, '_connection', None)
+    if conn is None:
+        return
+
+    _reinit_count = [0]
+    _orig_reinit = getattr(conn, 'reinit_dave_session', None)
+    if _orig_reinit is not None:
+        async def _logged_reinit(_orig=_orig_reinit, _conn=conn):
+            _reinit_count[0] += 1
+            ds = _conn.dave_session
+            log.info("DAVE: reinit_dave_session #%d ENTER ds=%d ready=%s",
+                     _reinit_count[0], id(ds) if ds else -1,
+                     ds.ready if ds else None)
+            await _orig()
+            ds = _conn.dave_session
+            try:
+                uids = ds.get_user_ids() if ds else []
+            except Exception:
+                uids = "error"
+            log.info("DAVE: reinit_dave_session #%d DONE ds=%d ready=%s user_ids=%s",
+                     _reinit_count[0], id(ds) if ds else -1,
+                     ds.ready if ds else None, uids)
+        conn.reinit_dave_session = _logged_reinit
+
+    async def _monitor():
+        for tick in range(1, 16):
+            await asyncio.sleep(2)
+            ds = getattr(conn, 'dave_session', None)
+            if ds is None:
+                log.info("DAVE monitor [%ds] guild=%s: no dave_session", tick * 2, guild_id)
+                continue
+            try:
+                uids = ds.get_user_ids()
+            except Exception as _e:
+                uids = f"error:{_e}"
+            log.info("DAVE monitor [%ds] guild=%s ds=%d ready=%s status=%s user_ids=%s",
+                     tick * 2, guild_id, id(ds), ds.ready, ds.status, uids)
+    asyncio.create_task(_monitor())
 
 
 _whisper_model = None

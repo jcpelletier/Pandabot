@@ -1,5 +1,8 @@
 # Changelog
 
+## v153
+- DAVE diagnostics: log get_user_ids() on decrypt failure; monkey-patch reinit_dave_session to count/log each call; add 30s periodic session monitor after voice join to track when user_ids is populated
+
 ## v151
 - Temporary: expose MLS/DAVE debug log via filtered handler to diagnose key exchange failure (remove after diagnosis)
 
