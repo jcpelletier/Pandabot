@@ -89,19 +89,26 @@ for _n in ('discord.gateway', 'discord.voice_state'):
     _l.addHandler(_dave_handler)
 
 # ---------------------------------------------------------------------------
-# DAVE reinit debounce — applied at class level before any voice connects.
+# DAVE MLS deduplication — applied at class level before any voice connects.
 #
 # Root cause: two concurrent WebSocket connections share the same
-# VoiceConnectionState. When Discord sends SESSION_DESCRIPTION (voice op 4),
-# both connections call reinit_dave_session within the same millisecond.
-# Each sends a key package; Discord replies with two MLS welcomes; the second
-# overwrites the MLS group state from the first. Result: the remote user
-# appears in user_ids but has no sender cryptor → NoValidCryptorFound.
+# VoiceConnectionState and the same DaveSession. When Discord delivers an
+# MLS welcome, both WebSocket receive loops call process_welcome() with the
+# same payload bytes within the same millisecond. The second call corrupts
+# the MLS group state — the remote user ends up in user_ids but with no
+# sender cryptor (NoValidCryptorFound manager_count=1).
 #
-# Fix: drop any reinit call that arrives within 1 s of the previous one on
-# the same VoiceConnectionState object. Legitimate reinits (user joins/leaves)
-# come seconds later and are unaffected.
+# Same race applies to reinit_dave_session: both connections fire it from
+# SESSION_DESCRIPTION, each sending a key package. We debounce both:
+#
+#   • reinit_dave_session — drop if called within 1 s on the same state obj
+#   • DaveSession.process_welcome — drop if called with the same payload
+#     bytes within 1 s on the same session obj
+#
+# Legitimate later reinits (user joins/leaves, seconds after connect) and
+# genuinely different welcomes pass through unaffected.
 # ---------------------------------------------------------------------------
+import hashlib as _hashlib
 import time as _time_module
 
 try:
@@ -128,6 +135,34 @@ try:
     _dvs.VoiceConnectionState.reinit_dave_session = _debounced_reinit_dave_session
 except Exception:
     pass  # discord.voice_state unavailable in test environment
+
+try:
+    import davey as _davey
+
+    _orig_process_welcome = _davey.DaveSession.process_welcome
+    _welcome_last: dict[int, tuple[bytes, float]] = {}  # id(session) -> (hash, time)
+    _WELCOME_DEBOUNCE_SECS = 1.0
+
+    def _deduped_process_welcome(self, welcome: bytes) -> None:
+        now = _time_module.monotonic()
+        obj_id = id(self)
+        h = _hashlib.sha256(welcome).digest()
+        last = _welcome_last.get(obj_id)
+        if last is not None:
+            last_h, last_t = last
+            if h == last_h and now - last_t < _WELCOME_DEBOUNCE_SECS:
+                log.info(
+                    "DAVE: skipping duplicate process_welcome (same payload, %.0f ms since last)",
+                    (now - last_t) * 1000,
+                )
+                return
+        _welcome_last[obj_id] = (h, now)
+        log.info("DAVE: process_welcome proceeding")
+        _orig_process_welcome(self, welcome)
+
+    _davey.DaveSession.process_welcome = _deduped_process_welcome
+except Exception:
+    pass  # davey unavailable in test environment
 
 # ---------------------------------------------------------------------------
 # Config

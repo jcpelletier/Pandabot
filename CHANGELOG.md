@@ -1,5 +1,8 @@
 # Changelog
 
+## v156
+- Fix DAVE decryption root cause: deduplicate process_welcome() calls on DaveSession — two concurrent WebSocket connections both receive and process the same MLS welcome payload, with the second call corrupting the group state; now skipped when same payload arrives within 1s on the same session instance
+
 ## v155
 - Fix DAVE decryption: debounce reinit_dave_session at the VoiceConnectionState class level with a 1s window; two concurrent WebSocket connections were calling reinit within the same millisecond, sending two MLS key packages, causing the second welcome to overwrite the first and leave the remote user with no sender cryptor (NoValidCryptorFound manager_count=1)
 
