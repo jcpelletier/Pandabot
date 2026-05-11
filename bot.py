@@ -207,6 +207,7 @@ DISCORD_MSG_LIMIT = 1900  # leave headroom below the 2000-char limit
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 if ENABLE_TTS or ENABLE_STT:
