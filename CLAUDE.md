@@ -59,11 +59,16 @@ The pre-commit hook runs tests automatically. `tests/conftest.py` adds pandabot-
 
 ## Deploying
 
-Two-stage workflow: push to `main` deploys to **staging**; promotion to production is a
-manual step after QA passes.
+**Staging-first rule: every change goes to staging and passes PandaQA before production.**
+Never deploy directly to production. The `main` branch is the staging branch — production
+runs a separately promoted commit.
+
+Workflow:
+1. Push to `main` → deploy to `discord-bot-staging` → QA validates in `#pandabot-staging`
+2. After QA passes → run `promote-to-prod.sh` to cut a production deploy
 
 ```bash
-# 1. Push — staging auto-deploys (or deploy manually)
+# 1. Push to main (staging branch)
 cd "C:\Users\genes\Downloads\PandaMigration\discord-bot"
 git push
 
@@ -73,7 +78,10 @@ wsl ssh -i ~/.ssh/id_ed25519 genesis@192.168.1.100 \
    sudo chown discord-bot:discord-bot /opt/discord-bot-staging/scheduler.db && \
    sudo systemctl restart discord-bot-staging"
 
-# 3. After QA passes — promote staging commit to production
+# 3. Run QA against staging (in #pandabot-qa)
+#    "run smoke tests in staging"
+
+# 4. After QA passes — promote staging commit to production
 ./promote-to-prod.sh           # dry-run first: ./promote-to-prod.sh --dry-run
 ```
 

@@ -1,5 +1,8 @@
 # Changelog
 
+## v160
+- Strengthen CLAUDE.md staging-first rule: explicitly state main is the staging branch, never deploy directly to production, and include QA step in the deploy workflow
+
 ## v159
 - Add promote-to-prod.sh script for promoting staging commit to production
 - Update CLAUDE.md deploy docs to document two-stage push → staging → promote workflow
