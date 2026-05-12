@@ -1,5 +1,10 @@
 # Changelog
 
+## v166
+- Kokoro idle manager: auto-switches TTS to GPU when users join voice, back to CPU on idle/leave
+- Speaks "Voice ready." in voice channel after GPU warmup completes
+- Controlled by ENABLE_KOKORO_IDLE env var (default false)
+
 ## v165
 - Startup announcement now shows active model (e.g. "— powered by haiku")
 

@@ -246,6 +246,10 @@ TTS_VOICE                = os.environ.get("TTS_VOICE", "af_heart")
 TTS_IDLE_TIMEOUT         = int(os.environ.get("TTS_IDLE_TIMEOUT_SECS", "300"))
 TTS_AUTO_JOIN_CHANNEL_ID = int(os.environ["TTS_AUTO_JOIN_CHANNEL_ID"]) if os.environ.get("TTS_AUTO_JOIN_CHANNEL_ID") else None
 TTS_TRIGGER_BOT_IDS      = {int(x) for x in os.environ.get("TTS_TRIGGER_BOT_IDS", "").split(",") if x.strip()}
+ENABLE_KOKORO_IDLE       = os.environ.get("ENABLE_KOKORO_IDLE", "false").lower() == "true"
+
+if ENABLE_KOKORO_IDLE:
+    import kokoro_manager
 
 ENABLE_STT          = os.environ.get("ENABLE_STT", "false").lower() == "true"
 STT_URL             = os.environ.get("STT_URL", "http://localhost:8001")
@@ -1169,6 +1173,8 @@ async def cmd_leave(ctx: commands.Context):
         await vc.disconnect()
         await ctx.send("Disconnected from voice.")
         log.info("Left voice channel in guild %s", guild_id)
+        if ENABLE_KOKORO_IDLE:
+            asyncio.create_task(kokoro_manager.ensure_cpu_mode())
     else:
         await ctx.send("I'm not in a voice channel.")
 
@@ -1361,6 +1367,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             _voice_last_play[guild_id] = _time.monotonic()
             _start_listening(vc, guild_id)
             log.info("Auto-joined voice channel %s in guild %s", watch_channel.name, guild_id)
+            if ENABLE_KOKORO_IDLE:
+                asyncio.create_task(_kokoro_warmup(guild_id))
         return
 
     # A user left the watched channel — disconnect if no humans remain
@@ -1374,6 +1382,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 _voice_clients.pop(guild_id, None)
                 _voice_last_play.pop(guild_id, None)
                 log.info("Auto-left voice channel %s in guild %s (no humans remain)", before.channel.name, guild_id)
+                if ENABLE_KOKORO_IDLE:
+                    asyncio.create_task(kokoro_manager.ensure_cpu_mode())
 
 
 @bot.event
@@ -1774,6 +1784,19 @@ async def task_scheduler() -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+async def _kokoro_warmup(guild_id: int) -> None:
+    """Switch Kokoro to GPU mode and speak a readiness phrase in voice."""
+    log.info("Kokoro warmup started for guild %s", guild_id)
+    ready = await kokoro_manager.ensure_gpu_mode()
+    if ready:
+        vc = _voice_clients.get(guild_id)
+        if vc and vc.is_connected():
+            await speak_response(guild_id, "Voice ready.")
+            log.info("Kokoro GPU ready — announced in voice (guild %s)", guild_id)
+    else:
+        log.warning("Kokoro GPU warmup failed for guild %s", guild_id)
+
+
 async def task_voice_idle_check() -> None:
     """Disconnect from voice channels idle longer than TTS_IDLE_TIMEOUT seconds."""
     import time as _time
@@ -1789,6 +1812,8 @@ async def task_voice_idle_check() -> None:
                     _voice_clients.pop(guild_id, None)
                     _voice_last_play.pop(guild_id, None)
                     log.info("Auto-disconnected from voice in guild %s (idle %.0fs)", guild_id, idle_secs)
+                    if ENABLE_KOKORO_IDLE:
+                        asyncio.create_task(kokoro_manager.ensure_cpu_mode())
         await asyncio.sleep(60)
 
 
