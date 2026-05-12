@@ -1795,7 +1795,11 @@ async def task_voice_idle_check() -> None:
 async def task_announce_startup():
     """Post a one-time startup message with the current version and changelog."""
     await bot.wait_until_ready()
+    from pandabot_core.llm.provider import get_active_model_label
     msg = _identity.startup_message(BOT_VERSION)
+    label = get_active_model_label()
+    if label:
+        msg += f" — powered by {label}"
     changelog = _read_changelog_entry(BOT_VERSION)
     if changelog:
         msg += f"\n{changelog}"

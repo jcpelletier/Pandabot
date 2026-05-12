@@ -1,5 +1,8 @@
 # Changelog
 
+## v165
+- Startup announcement now shows active model (e.g. "— powered by haiku")
+
 ## v164
 - Add local LLM support: Gemma via llama.cpp with GPU idle management
 - switch_model tool: say "switch to gemma/deepseek/haiku" to change models at runtime
