@@ -1,5 +1,8 @@
 # Changelog
 
+## v163
+- Add AGENTS.md for Jules AI coding agent guidance
+
 ## v162
 - Add GitHub Actions deploy workflow: push to staging branch auto-deploys to discord-bot-staging, push to main auto-deploys to production; requires TAILSCALE_AUTHKEY and PANDA_SSH_KEY secrets
 
