@@ -1,5 +1,8 @@
 # Changelog
 
+## v162
+- Add GitHub Actions deploy workflow: push to staging branch auto-deploys to discord-bot-staging, push to main auto-deploys to production; requires TAILSCALE_AUTHKEY and PANDA_SSH_KEY secrets
+
 ## v161
 - Switch branch convention: staging branch deploys to discord-bot-staging, main is production-only (promoted via promote-to-prod.sh)
 - Rewrite promote-to-prod.sh: merges staging → main via --ff-only, pushes main, deploys to /opt/discord-bot
