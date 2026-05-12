@@ -106,7 +106,10 @@ def mock_claude(monkeypatch):
     from pandabot_core.llm import provider as llm_provider
     fake = FakeProvider()
     fake.simple_response = "LLM says hello"
-    monkeypatch.setattr(llm_provider, "_provider", fake)
+    # _provider was replaced by a per-profile dict; inject the fake under the
+    # active profile name (or "default" when no profiles are configured in tests).
+    profile_name = llm_provider.get_active_profile_name()
+    monkeypatch.setitem(llm_provider._providers, profile_name, fake)
     return fake
 
 

@@ -30,6 +30,7 @@ ENABLE_WRITE_ACTIONS     = os.environ.get("ENABLE_WRITE_ACTIONS",     "true").lo
 ENABLE_GAMING            = os.environ.get("ENABLE_GAMING",            "true").lower()  == "true"
 ENABLE_CRAWL_ANALYTICS   = os.environ.get("ENABLE_CRAWL_ANALYTICS",   "false").lower() == "true"
 ENABLE_OPENPROJECT       = os.environ.get("ENABLE_OPENPROJECT",       "false").lower() == "true"
+ENABLE_LOCAL_LLM         = os.environ.get("ENABLE_LOCAL_LLM",         "false").lower() == "true"
 STEAM_LIBRARY_PATH   = os.path.expanduser(
     os.environ.get("STEAM_LIBRARY_PATH", "~/.steam/steam/steamapps")
 )
@@ -2558,6 +2559,39 @@ def remove_op_project_member(membership_id: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Model switching (local LLM support)
+# ---------------------------------------------------------------------------
+
+# Maps the friendly names a user might say to profile names defined in .env.
+# Profile names come from PANDABOT_PROFILE_<NAME>_TYPE env var keys (lowercased).
+_MODEL_ALIASES: dict[str, str] = {
+    "gemma":    os.environ.get("LOCAL_LLM_PROFILE_NAME", "gemma"),
+    "local":    os.environ.get("LOCAL_LLM_PROFILE_NAME", "gemma"),
+    "deepseek": os.environ.get("DEEPSEEK_PROFILE_NAME",  "deepseek"),
+    "haiku":    os.environ.get("HAIKU_PROFILE_NAME",      "haiku"),
+    "claude":   os.environ.get("HAIKU_PROFILE_NAME",      "haiku"),
+    "fast":     os.environ.get("HAIKU_PROFILE_NAME",      "haiku"),
+}
+
+
+def switch_model(model_name: str) -> str:
+    """Switch the active LLM model profile."""
+    from pandabot_core.llm.provider import (
+        get_available_profiles, set_active_profile, get_active_profile_name,
+    )
+    target = _MODEL_ALIASES.get(model_name.lower().strip(), model_name.lower().strip())
+    available = get_available_profiles()
+    if target not in available:
+        return (
+            f"Unknown model '{model_name}'. "
+            f"Available profiles: {', '.join(available)}. "
+            f"Try 'gemma', 'deepseek', or 'haiku'."
+        )
+    set_active_profile(target)
+    return f"Switched to **{target}**. Subsequent messages will use this model."
+
+
+# ---------------------------------------------------------------------------
 # Tool schema definitions for Claude — built dynamically from feature flags
 # ---------------------------------------------------------------------------
 
@@ -3423,6 +3457,31 @@ def _build_tool_definitions() -> list[dict]:
             },
         ]
 
+    if ENABLE_LOCAL_LLM:
+        tools += [
+            {
+                "name": "switch_model",
+                "description": (
+                    "Switch the active LLM model. Use when the user asks to change models or says "
+                    "'switch to Gemma', 'use DeepSeek', 'switch to Haiku', etc. "
+                    "Valid names: 'gemma' (local Gemma via llama.cpp — fast, private, no API cost), "
+                    "'deepseek' (DeepSeek API — strong reasoning and tool use), "
+                    "'haiku' (Claude Haiku — best all-round tool use and instruction following). "
+                    "After switching, tell the user which model is now active."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "model_name": {
+                            "type": "string",
+                            "description": "Model to switch to: 'gemma', 'deepseek', or 'haiku'.",
+                        },
+                    },
+                    "required": ["model_name"],
+                },
+            },
+        ]
+
     return tools
 
 
@@ -3597,4 +3656,9 @@ def execute_tool(name: str, inputs: dict) -> str:
         return add_op_project_member(inputs["project"], inputs["user"], inputs["role"])
     if name == "remove_op_project_member":
         return remove_op_project_member(inputs["membership_id"])
+    if name == "switch_model":
+        model_name = inputs.get("model_name", "")
+        if not model_name:
+            return "Error: switch_model requires a non-empty 'model_name' parameter."
+        return switch_model(model_name)
     return f"Unknown tool: {name}"

@@ -48,7 +48,8 @@ from pandabot_core.discord_comms import (
 from pandabot_core import identity as _identity
 from pandabot_core import scheduler  # used in fire_scheduled_task and task_scheduler
 
-from tools import TOOL_DEFINITIONS, execute_tool  # noqa: E402 (used in fire_scheduled_task too)
+from tools import TOOL_DEFINITIONS, execute_tool, ENABLE_LOCAL_LLM  # noqa: E402
+import llama_manager
 
 # ---------------------------------------------------------------------------
 # Pending-confirmation state
@@ -251,6 +252,9 @@ STT_URL             = os.environ.get("STT_URL", "http://localhost:8001")
 STT_MODEL           = os.environ.get("STT_MODEL", "medium")
 STT_SILENCE_TIMEOUT = float(os.environ.get("STT_SILENCE_TIMEOUT_SECS", "1.5"))
 STT_RMS_THRESHOLD   = int(os.environ.get("STT_RMS_THRESHOLD", "500"))
+
+# Local LLM (llama.cpp) — active profile name that routes to llama-server
+LLAMA_PROFILE_NAME  = os.environ.get("LOCAL_LLM_PROFILE_NAME", "gemma")
 
 def _build_system_prompt() -> str:
     """Delegate to pandabot_core.identity, injecting Pandabot-specific sections."""
@@ -1105,6 +1109,16 @@ async def handle_claude_query(user_message: str, message: discord.Message) -> st
     history = await _build_history(message.channel, before=message)
     log.info("Sending %d history messages as context", len(history))
     conv_id = str(uuid.uuid4())
+
+    # If the active profile is Gemma (local llama.cpp), ensure the server is in
+    # GPU mode before handing off to the LLM loop.  The typing indicator is already
+    # running, so the ~2-4 s warm-up is invisible to the user.
+    if ENABLE_LOCAL_LLM and llm_provider.get_active_profile_name() == LLAMA_PROFILE_NAME:
+        llama_manager.touch_last_used()
+        if llama_manager.current_mode() != "gpu":
+            log.info("Pre-warming llama GPU mode for incoming query")
+            await llama_manager.ensure_gpu_mode()
+
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, _run_claude_loop, user_message, history, message.channel.id, conv_id
@@ -1789,6 +1803,24 @@ async def task_announce_startup():
     log.info("Startup announced: v%d", BOT_VERSION)
 
 
+async def task_llama_idle_check() -> None:
+    """Switch llama-server to CPU mode after LLAMA_IDLE_TIMEOUT_SECS of inactivity."""
+    await bot.wait_until_ready()
+    llama_manager.init()
+    log.info(
+        "Llama idle-check task started (profile=%s, timeout=%ds)",
+        LLAMA_PROFILE_NAME, llama_manager.LLAMA_IDLE_TIMEOUT_SECS,
+    )
+    while not bot.is_closed():
+        try:
+            if llama_manager.current_mode() == "gpu" and llama_manager.is_idle():
+                log.info("llama-server idle — switching to CPU mode to free VRAM")
+                await llama_manager.ensure_cpu_mode()
+        except Exception:
+            log.exception("task_llama_idle_check error")
+        await asyncio.sleep(60)
+
+
 async def main():
     await start_webhook_server()
     asyncio.create_task(task_disk_alert())
@@ -1797,6 +1829,8 @@ async def main():
     asyncio.create_task(task_announce_startup())
     if ENABLE_TTS:
         asyncio.create_task(task_voice_idle_check())
+    if ENABLE_LOCAL_LLM:
+        asyncio.create_task(task_llama_idle_check())
     await bot.start(DISCORD_TOKEN)
 
 

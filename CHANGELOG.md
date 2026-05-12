@@ -1,5 +1,11 @@
 # Changelog
 
+## v164
+- Add local LLM support: Gemma via llama.cpp with GPU idle management
+- switch_model tool: say "switch to gemma/deepseek/haiku" to change models at runtime
+- llama_manager.py: auto-switches llama-server to GPU on Gemma requests, returns to CPU after idle timeout
+- Multi-profile provider system in pandabot-core: PANDABOT_PROFILE_* env vars, active profile persisted to active_model.txt
+
 ## v163
 - Add AGENTS.md for Jules AI coding agent guidance
 
