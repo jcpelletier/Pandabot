@@ -48,6 +48,7 @@ from pandabot_core.discord_comms import (
 from pandabot_core import identity as _identity
 from pandabot_core import scheduler  # used in fire_scheduled_task and task_scheduler
 
+from pandabot.family import init_family_module
 from tools import TOOL_DEFINITIONS, execute_tool  # noqa: E402 (used in fire_scheduled_task too)
 
 # ---------------------------------------------------------------------------
@@ -1263,6 +1264,20 @@ async def cmd_test_audio(ctx: commands.Context):
     log.info("Loopback test complete for guild %s", guild_id)
 
 
+@bot.command(name="family")
+async def cmd_family(ctx: commands.Context, *, question: str):
+    """Ask a question about family information."""
+    from pandabot.family import query_family_info
+    typing_task = keep_typing(ctx.channel)
+    try:
+        loop = asyncio.get_running_loop()
+        # run_in_executor doesn't support keyword arguments directly
+        reply = await loop.run_in_executor(None, lambda: query_family_info(ctx, question=question))
+        await send_with_retry(ctx.channel, reply)
+    finally:
+        typing_task.cancel()
+
+
 @bot.command(name="hear")
 async def cmd_hear(ctx: commands.Context):
     """Play back the last captured raw audio so you can hear what the bot recorded.
@@ -1790,6 +1805,7 @@ async def task_announce_startup():
 
 
 async def main():
+    init_family_module()
     await start_webhook_server()
     asyncio.create_task(task_disk_alert())
     asyncio.create_task(task_service_watchdog())

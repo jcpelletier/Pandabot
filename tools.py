@@ -30,6 +30,7 @@ ENABLE_WRITE_ACTIONS     = os.environ.get("ENABLE_WRITE_ACTIONS",     "true").lo
 ENABLE_GAMING            = os.environ.get("ENABLE_GAMING",            "true").lower()  == "true"
 ENABLE_CRAWL_ANALYTICS   = os.environ.get("ENABLE_CRAWL_ANALYTICS",   "false").lower() == "true"
 ENABLE_OPENPROJECT       = os.environ.get("ENABLE_OPENPROJECT",       "false").lower() == "true"
+ENABLE_FAMILY            = os.environ.get("ENABLE_FAMILY",            "true").lower()  == "true"
 STEAM_LIBRARY_PATH   = os.path.expanduser(
     os.environ.get("STEAM_LIBRARY_PATH", "~/.steam/steam/steamapps")
 )
@@ -3123,6 +3124,28 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
 
+    if ENABLE_FAMILY:
+        tools.append({
+            "name": "query_family_info",
+            "description": (
+                "Query private family information from the family Google Sheet. "
+                "Answers natural language questions about names, phone numbers, "
+                "emails, birthdays, addresses, and relationships. "
+                "Examples: 'What is Mom's phone number?', 'When is Alice's birthday?', "
+                "'Where does Bob live?'."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The natural language question to ask.",
+                    },
+                },
+                "required": ["question"],
+            },
+        })
+
     if ENABLE_GAMING:
         tools.append({
             "name": "query_steam",
@@ -3434,6 +3457,9 @@ TOOL_DEFINITIONS = _build_tool_definitions()
 # ---------------------------------------------------------------------------
 
 def execute_tool(name: str, inputs: dict) -> str:
+    if name == "query_family_info":
+        from pandabot.family import query_family_info
+        return query_family_info(question=inputs.get("question", ""))
     if name == "get_disk_usage":            # backward compat for any saved scheduled tasks
         return get_disk_usage()
     if name == "get_log_tail":
