@@ -1115,12 +1115,11 @@ async def handle_claude_query(user_message: str, message: discord.Message) -> st
     conv_id = str(uuid.uuid4())
 
     # If the active profile is Gemma (local llama.cpp), ensure the server is in
-    # GPU mode before handing off to the LLM loop.  The typing indicator is already
-    # running, so the ~2-4 s warm-up is invisible to the user.
+    # gpu-full mode before handing off to the LLM loop.  The typing indicator is
+    # already running, so the warm-up is invisible to the user.
     if ENABLE_LOCAL_LLM and llm_provider.get_active_profile_name() == LLAMA_PROFILE_NAME:
-        llama_manager.touch_last_used()
-        if llama_manager.current_mode() != "gpu":
-            log.info("Pre-warming llama GPU mode for incoming query")
+        if llama_manager.current_mode() != "gpu-full":
+            log.info("Pre-warming llama gpu-full mode for incoming query")
             await llama_manager.ensure_gpu_mode()
 
     loop = asyncio.get_running_loop()
@@ -1832,22 +1831,12 @@ async def task_announce_startup():
     log.info("Startup announced: v%d", BOT_VERSION)
 
 
-async def task_llama_idle_check() -> None:
-    """Switch llama-server to CPU mode after LLAMA_IDLE_TIMEOUT_SECS of inactivity."""
+async def task_llama_startup() -> None:
+    """Ensure llama-server is in gpu-full mode at startup."""
     await bot.wait_until_ready()
     llama_manager.init()
-    log.info(
-        "Llama idle-check task started (profile=%s, timeout=%ds)",
-        LLAMA_PROFILE_NAME, llama_manager.LLAMA_IDLE_TIMEOUT_SECS,
-    )
-    while not bot.is_closed():
-        try:
-            if llama_manager.current_mode() == "gpu" and llama_manager.is_idle():
-                log.info("llama-server idle — switching to CPU mode to free VRAM")
-                await llama_manager.ensure_cpu_mode()
-        except Exception:
-            log.exception("task_llama_idle_check error")
-        await asyncio.sleep(60)
+    log.info("Ensuring llama-server in gpu-full mode at startup (profile=%s)", LLAMA_PROFILE_NAME)
+    await llama_manager.ensure_gpu_mode()
 
 
 async def main():
@@ -1859,7 +1848,7 @@ async def main():
     if ENABLE_TTS:
         asyncio.create_task(task_voice_idle_check())
     if ENABLE_LOCAL_LLM:
-        asyncio.create_task(task_llama_idle_check())
+        asyncio.create_task(task_llama_startup())
     await bot.start(DISCORD_TOKEN)
 
 

@@ -1,14 +1,13 @@
 """
-Llama server mode manager — CPU vs GPU for local model inference.
+Llama server mode manager — always-GPU strategy for local model inference.
 
-The llama-server systemd service runs in CPU mode by default (no VRAM used).
-When a request arrives for a local model (Gemma), ensure_gpu_mode() switches the
-server to GPU mode for fast inference. The idle-check task in bot.py calls
-ensure_cpu_mode() after LLAMA_IDLE_TIMEOUT_SECS of inactivity, freeing VRAM.
+Gemma on CPU is unusably slow (timeouts on even simple queries). The server stays
+in gpu-full mode at all times — all layers on GPU, ~2480 MiB VRAM. There is no
+idle-to-CPU fallback.
 
 How the switch works
 --------------------
-Mode switching calls: sudo /opt/llama/set-mode.sh gpu|cpu
+Mode switching calls: sudo /opt/llama/set-mode.sh gpu-full
 That script writes the new LLAMA_GPU_LAYERS value to /etc/llama-server-mode.env
 and restarts the systemd service, then polls /health until the server is ready.
 
@@ -24,7 +23,6 @@ Env vars
 --------
   LLAMA_PORT              Port the server listens on (default 8081)
   LLAMA_HOST              Host the server listens on (default 127.0.0.1)
-  LLAMA_IDLE_TIMEOUT_SECS Seconds of inactivity before GPU→CPU switch (default 600)
   LLAMA_SET_MODE_CMD      Path to the mode-switch script (default /opt/llama/set-mode.sh)
   PANDABOT_DATA_DIR       Used to persist the current mode across bot restarts
 """
@@ -33,7 +31,6 @@ import asyncio
 import logging
 import os
 import subprocess
-import time
 import urllib.error
 import urllib.request
 
@@ -41,7 +38,6 @@ log = logging.getLogger("panda-bot.llama")
 
 LLAMA_PORT = int(os.environ.get("LLAMA_PORT", "8081"))
 LLAMA_HOST = os.environ.get("LLAMA_HOST", "127.0.0.1")
-LLAMA_IDLE_TIMEOUT_SECS = int(os.environ.get("LLAMA_IDLE_TIMEOUT_SECS", "600"))
 LLAMA_SET_MODE_CMD = os.environ.get("LLAMA_SET_MODE_CMD", "/opt/llama/set-mode.sh")
 
 _HEALTH_URL = f"http://{LLAMA_HOST}:{LLAMA_PORT}/health"
@@ -51,7 +47,6 @@ _MODE_FILE = os.path.join(
 )
 
 _current_mode: str = "unknown"
-_last_used: float = 0.0
 _switch_lock: asyncio.Lock | None = None  # created lazily (needs running event loop)
 
 
@@ -109,66 +104,33 @@ def _do_mode_switch(mode: str) -> bool:
 
 async def ensure_gpu_mode() -> bool:
     """
-    Ensure llama-server is in GPU mode. Idempotent — returns immediately if already GPU.
+    Ensure llama-server is in gpu-full mode (all layers on GPU). Idempotent.
     Returns True when the server is ready, False if the switch failed.
     """
-    global _current_mode, _last_used
-    _last_used = time.monotonic()
+    global _current_mode
 
-    if _current_mode == "gpu" and _check_health():
+    if _current_mode == "gpu-full" and _check_health():
         return True
 
     async with _get_lock():
-        # Re-check inside lock — another coroutine may have switched while we waited
-        if _current_mode == "gpu" and _check_health():
+        if _current_mode == "gpu-full" and _check_health():
             return True
 
-        log.info("llama_manager: switching to GPU mode")
+        log.info("llama_manager: switching to gpu-full mode")
         loop = asyncio.get_running_loop()
-        success = await loop.run_in_executor(None, _do_mode_switch, "gpu")
+        success = await loop.run_in_executor(None, _do_mode_switch, "gpu-full")
         if success:
-            _current_mode = "gpu"
-            _write_mode_file("gpu")
-            log.info("llama_manager: GPU mode ready")
+            _current_mode = "gpu-full"
+            _write_mode_file("gpu-full")
+            log.info("llama_manager: gpu-full mode ready")
         else:
-            log.error("llama_manager: GPU mode switch failed — requests will use CPU")
+            log.error("llama_manager: gpu-full mode switch failed")
         return success
 
 
-async def ensure_cpu_mode() -> None:
-    """Switch llama-server to CPU mode (idle/standby). Idempotent."""
-    global _current_mode
-
-    if _current_mode == "cpu":
-        return
-
-    async with _get_lock():
-        if _current_mode == "cpu":
-            return
-
-        log.info("llama_manager: switching to CPU mode (idle)")
-        loop = asyncio.get_running_loop()
-        success = await loop.run_in_executor(None, _do_mode_switch, "cpu")
-        if success:
-            _current_mode = "cpu"
-            _write_mode_file("cpu")
-            log.info("llama_manager: CPU mode active, VRAM freed")
-
-
 def current_mode() -> str:
-    """Return the last known mode: 'cpu', 'gpu', or 'unknown'."""
+    """Return the last known mode: 'gpu-full' or 'unknown'."""
     return _current_mode
-
-
-def touch_last_used() -> None:
-    """Record a request timestamp — resets the idle timer."""
-    global _last_used
-    _last_used = time.monotonic()
-
-
-def is_idle() -> bool:
-    """Return True if no Gemma requests have arrived within LLAMA_IDLE_TIMEOUT_SECS."""
-    return time.monotonic() - _last_used > LLAMA_IDLE_TIMEOUT_SECS
 
 
 def init() -> None:

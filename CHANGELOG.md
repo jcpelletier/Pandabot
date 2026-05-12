@@ -1,5 +1,9 @@
 # Changelog
 
+## v167
+- Gemma always runs in gpu-full mode; removed idle-to-CPU fallback (CPU inference unusably slow)
+- Bot ensures gpu-full at startup instead of lazily on first query
+
 ## v166
 - Kokoro idle manager: auto-switches TTS to GPU when users join voice, back to CPU on idle/leave
 - Speaks "Voice ready." in voice channel after GPU warmup completes
