@@ -26,6 +26,7 @@ ENABLE_JELLYFIN      = os.environ.get("ENABLE_JELLYFIN",      "true").lower() ==
 ENABLE_JENKINS       = os.environ.get("ENABLE_JENKINS",       "true").lower() == "true"
 ENABLE_RIPPING       = os.environ.get("ENABLE_RIPPING",       "true").lower() == "true"
 ENABLE_SMART         = os.environ.get("ENABLE_SMART",         "true").lower() == "true"
+ENABLE_FAMILY        = os.environ.get("ENABLE_FAMILY",        "true").lower() == "true"
 ENABLE_WRITE_ACTIONS     = os.environ.get("ENABLE_WRITE_ACTIONS",     "true").lower()  == "true"
 ENABLE_GAMING            = os.environ.get("ENABLE_GAMING",            "true").lower()  == "true"
 ENABLE_CRAWL_ANALYTICS   = os.environ.get("ENABLE_CRAWL_ANALYTICS",   "false").lower() == "true"
@@ -2246,6 +2247,28 @@ def query_llm_usage(action: str = "recent", days: int = 30, limit: int = 20) -> 
     return _llm.query_usage(action=action, days=days, limit=limit)
 
 
+def query_family_info(query: str = "", name: str = "") -> str:
+    """Query the family information sheet."""
+    from pandabot.family import family_cache
+
+    if family_cache is None:
+        return "Error: Family information tool is not configured (missing FAMILY_SHEET_ID)."
+
+    if name:
+        member = family_cache.find_member(name)
+        if not member:
+            return f"No family member found matching '{name}'."
+        return json.dumps(member, indent=2)
+
+    if query:
+        results = family_cache.search(query)
+        if not results:
+            return f"No family members found matching '{query}'."
+        return json.dumps(results, indent=2)
+
+    return "Error: Specify either 'query' or 'name'."
+
+
 # ---------------------------------------------------------------------------
 # OpenProject
 # ---------------------------------------------------------------------------
@@ -3100,6 +3123,30 @@ def _build_tool_definitions() -> list[dict]:
         })
 
     # --- Ripping tools (gated) ---
+    if ENABLE_FAMILY:
+        tools.append({
+            "name": "query_family_info",
+            "description": (
+                "Search for family member information (address, phone, email, DOB, etc.) "
+                "stored in the family Google Sheet. Use 'name' for fuzzy matching a specific "
+                "person, or 'query' for a keyword search across all fields."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search keyword(s) to match across any field.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name or Discord name to fuzzy match.",
+                    },
+                },
+                "required": [],
+            },
+        })
+
     if ENABLE_RIPPING:
         tools.append({
             "name": "query_ripping",
@@ -3515,6 +3562,11 @@ def execute_tool(name: str, inputs: dict) -> str:
         return query_network(inputs.get("query_type", "tailscale"))
     if name == "query_jellyfin":
         return query_jellyfin(inputs.get("query_type", "stats"))
+    if name == "query_family_info":
+        return query_family_info(
+            query=inputs.get("query", ""),
+            name=inputs.get("name", ""),
+        )
     if name == "query_ripping":
         return query_ripping(inputs.get("query_type", "staging"))
     if name == "get_performance_history":

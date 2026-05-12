@@ -74,8 +74,13 @@ class TestToolPresence:
         defs = tools._build_tool_definitions()
         assert "query_ripping" not in _names(defs)
 
+    def test_family_disabled_removes_family_tool(self, monkeypatch):
+        monkeypatch.setattr(tools, "ENABLE_FAMILY", False)
+        defs = tools._build_tool_definitions()
+        assert "query_family_info" not in _names(defs)
+
     def test_all_flags_off_still_has_core_tools(self, monkeypatch):
-        for flag in ("ENABLE_JENKINS", "ENABLE_JELLYFIN", "ENABLE_RIPPING", "ENABLE_SMART"):
+        for flag in ("ENABLE_JENKINS", "ENABLE_JELLYFIN", "ENABLE_RIPPING", "ENABLE_SMART", "ENABLE_FAMILY"):
             monkeypatch.setattr(tools, flag, False)
         defs = tools._build_tool_definitions()
         names = _names(defs)

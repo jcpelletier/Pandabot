@@ -1791,6 +1791,13 @@ async def task_announce_startup():
 
 async def main():
     await start_webhook_server()
+    # Load family commands cog
+    try:
+        from pandabot.tools.query_family_info import setup as setup_family
+        await setup_family(bot)
+        log.info("Family commands loaded")
+    except Exception as e:
+        log.error(f"Failed to load family commands: {e}")
     asyncio.create_task(task_disk_alert())
     asyncio.create_task(task_service_watchdog())
     asyncio.create_task(task_scheduler())
