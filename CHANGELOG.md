@@ -1,5 +1,10 @@
 # Changelog
 
+## v161
+- Switch branch convention: staging branch deploys to discord-bot-staging, main is production-only (promoted via promote-to-prod.sh)
+- Rewrite promote-to-prod.sh: merges staging → main via --ff-only, pushes main, deploys to /opt/discord-bot
+- Update CLAUDE.md to document new branch workflow
+
 ## v160
 - Strengthen CLAUDE.md staging-first rule: explicitly state main is the staging branch, never deploy directly to production, and include QA step in the deploy workflow
 
