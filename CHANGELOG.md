@@ -1,5 +1,10 @@
 # Changelog
 
+## v168
+- Switch local LLM backend from llama-server (Vulkan) to Ollama (CUDA)
+- llama_manager.py simplified to health check only — Ollama manages GPU automatically
+- Model served at localhost:11434 as gemma-local
+
 ## v167
 - Gemma always runs in gpu-full mode; removed idle-to-CPU fallback (CPU inference unusably slow)
 - Bot ensures gpu-full at startup instead of lazily on first query
