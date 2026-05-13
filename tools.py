@@ -2593,6 +2593,18 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
+def query_model_status() -> str:
+    """Return the currently active LLM profile and available options."""
+    from pandabot_core.llm.provider import get_active_profile_name, get_available_profiles, get_provider
+    name = get_active_profile_name()
+    provider = get_provider()
+    available = get_available_profiles()
+    return (
+        f"Active profile: {name} (model: {provider.primary_model})\n"
+        f"Available profiles: {', '.join(available)}"
+    )
+
+
 def switch_model(model_name: str) -> str:
     """Switch the active LLM model profile."""
     from pandabot_core.llm.provider import (
@@ -3519,6 +3531,15 @@ def _build_tool_definitions() -> list[dict]:
         _avail_str = ", ".join(f"'{p}'" for p in _avail)
         tools += [
             {
+                "name": "query_model_status",
+                "description": (
+                    "Return the currently active LLM model and all available profiles. "
+                    "Use when the user asks which model is active, what models are available, "
+                    "or wants to confirm a switch worked."
+                ),
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
                 "name": "switch_model",
                 "description": (
                     "Switch the active LLM model. Use when the user asks to change models. "
@@ -3855,6 +3876,8 @@ def execute_tool(name: str, inputs: dict) -> str:
             person=inputs.get("person", ""),
             relationship=inputs.get("relationship", ""),
         )
+    if name == "query_model_status":
+        return query_model_status()
     if name == "switch_model":
         model_name = inputs.get("model_name", "")
         if not model_name:

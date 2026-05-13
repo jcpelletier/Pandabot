@@ -1,5 +1,8 @@
 # Changelog
 
+## v179
+- Add query_model_status tool: returns active profile name, model, and all available profiles
+
 ## v178
 - Fix switch_model tool description to dynamically list actual configured profiles instead of hardcoded 'gemma/deepseek/haiku', so Claude knows 'qwen' is valid when that profile is configured
 
