@@ -1,5 +1,9 @@
 # Changelog
 
+## v171
+- Switch local LLM to Qwen2.5-1.5B-Instruct (Q4_K_M) — faster, smaller VRAM footprint
+- Increase llama-server ctx-size 16384 → 32768 (KV on CPU, no VRAM cost) to fit tool definitions
+
 ## v170
 - Switch local LLM from Gemma 4 E2B to Qwen2.5-3B-Instruct (Q4_K_M)
 - Rename local LLM profile from "gemma" to "qwen" in bot.py default and staging .env
