@@ -31,6 +31,7 @@ ENABLE_GAMING            = os.environ.get("ENABLE_GAMING",            "true").lo
 ENABLE_CRAWL_ANALYTICS   = os.environ.get("ENABLE_CRAWL_ANALYTICS",   "false").lower() == "true"
 ENABLE_OPENPROJECT       = os.environ.get("ENABLE_OPENPROJECT",       "false").lower() == "true"
 ENABLE_LOCAL_LLM         = os.environ.get("ENABLE_LOCAL_LLM",         "false").lower() == "true"
+ENABLE_FAMILY            = os.environ.get("ENABLE_FAMILY",            "false").lower() == "true"
 STEAM_LIBRARY_PATH   = os.path.expanduser(
     os.environ.get("STEAM_LIBRARY_PATH", "~/.steam/steam/steamapps")
 )
@@ -77,6 +78,11 @@ OP_API_KEY = os.environ.get("OPENPROJECT_API_KEY", "")
 
 STAGING_PATH = os.environ.get("STAGING_PATH", "/mnt/media/Video")
 MEDIA_PATH   = os.environ.get("MEDIA_PATH",   "/mnt/media/Media")
+
+# Family feature (optional, gated by ENABLE_FAMILY env var)
+FAMILY_SPREADSHEET_ID = os.environ.get("FAMILY_SPREADSHEET_ID", "")
+FAMILY_SHEET_NAME = os.environ.get("FAMILY_SHEET_NAME", "Sheet1")
+FAMILY_CREDENTIALS_PATH = os.environ.get("FAMILY_CREDENTIALS_PATH", "")
 
 # ---------------------------------------------------------------------------
 # Configurable whitelists and lists
@@ -3457,6 +3463,32 @@ def _build_tool_definitions() -> list[dict]:
             },
         ]
 
+    # --- Family (gated — opt-in via ENABLE_FAMILY env var) ---
+    if ENABLE_FAMILY and FAMILY_SPREADSHEET_ID:
+        tools.append({
+            "name": "query_family_info",
+            "description": (
+                "Look up family/relationship information from the family Google Sheet. "
+                "Use this when the user asks about family members, relationships, "
+                "or wants to know who is related to whom. Always ask for the person's "
+                "name if not provided."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "person": {
+                        "type": "string",
+                        "description": "Name of the family member to look up.",
+                    },
+                    "relationship": {
+                        "type": "string",
+                        "description": "Optional relationship type to filter by (e.g., 'parent', 'sibling').",
+                    },
+                },
+                "required": ["person"],
+            },
+        })
+
     if ENABLE_LOCAL_LLM:
         tools += [
             {
@@ -3483,6 +3515,54 @@ def _build_tool_definitions() -> list[dict]:
         ]
 
     return tools
+
+
+# ---------------------------------------------------------------------------
+# Family lookup (optional, gated by ENABLE_FAMILY)
+# ---------------------------------------------------------------------------
+
+_family_reader: SheetReader | None = None
+_family_cache: Cache | None = None
+
+
+def _get_family_reader() -> SheetReader:
+    global _family_reader
+    if _family_reader is None:
+        _family_reader = SheetReader(
+            FAMILY_SPREADSHEET_ID,
+            FAMILY_SHEET_NAME,
+            FAMILY_CREDENTIALS_PATH if FAMILY_CREDENTIALS_PATH else None,
+        )
+    return _family_reader
+
+
+def _get_family_cache() -> Cache:
+    global _family_cache
+    if _family_cache is None:
+        _family_cache = Cache()
+    return _family_cache
+
+
+def _query_family_info(person: str, relationship: str = "") -> str:
+    """Look up family info for *person*, optionally filtered by *relationship*."""
+    reader = _get_family_reader()
+    cache = _get_family_cache()
+    cache_key = f"{person}:{relationship}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    if relationship:
+        results = reader.query(relationship, person)
+    else:
+        all_rows = reader.read_all()
+        results = [r for r in all_rows if person.lower() in " ".join(r.values()).lower()]
+    if not results:
+        result = f"No family info found for '{person}'."
+    else:
+        lines = [json.dumps(r, ensure_ascii=False) for r in results]
+        result = f"Family info for '{person}':\n" + "\n".join(lines)
+    cache.set(cache_key, result)
+    return result
 
 
 TOOL_DEFINITIONS = _build_tool_definitions()
@@ -3656,6 +3736,16 @@ def execute_tool(name: str, inputs: dict) -> str:
         return add_op_project_member(inputs["project"], inputs["user"], inputs["role"])
     if name == "remove_op_project_member":
         return remove_op_project_member(inputs["membership_id"])
+    # ── Family ───────────────────────────────────────────────────────────────
+    if name == "query_family_info":
+        if not ENABLE_FAMILY:
+            return "Family feature is not enabled (set ENABLE_FAMILY=true)."
+        if not FAMILY_SPREADSHEET_ID:
+            return "Family feature is not configured (set FAMILY_SPREADSHEET_ID)."
+        return _query_family_info(
+            person=inputs.get("person", ""),
+            relationship=inputs.get("relationship", ""),
+        )
     if name == "switch_model":
         model_name = inputs.get("model_name", "")
         if not model_name:
