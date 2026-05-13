@@ -1,5 +1,9 @@
 # Changelog
 
+## v177
+- Add partial Name matching fallback in `_query_family_info` (e.g. "Diane" matches "Diane Pelletier") before falling through to full fuzzy search
+- Improve name-based lookup UX: no longer shows "No exact match" when a partial Name match is found
+
 ## v176
 - Rewrite _query_family_info logic based on actual sheet schema (each row is a person, "Relationship to Joel" column, centered on Joel)
 - When person="Joel" + relationship: searches "Relationship to Joel" column for matching value

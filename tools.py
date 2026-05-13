@@ -3600,9 +3600,13 @@ def _query_family_info(person: str, relationship: str = "") -> str:
 
     # ── Without relationship: find the person by Name ──
     if not relationship:
-        exact = [row for row in all_rows if row.get("Name", "").lower() == person_lower]
-        if exact:
-            lines = [json.dumps(r, ensure_ascii=False) for r in exact]
+        # Try exact Name match first
+        matches = [row for row in all_rows if row.get("Name", "").lower() == person_lower]
+        if not matches:
+            # Try partial Name match (e.g. "Diane" matches "Diane Pelletier")
+            matches = [row for row in all_rows if person_lower in row.get("Name", "").lower()]
+        if matches:
+            lines = [json.dumps(r, ensure_ascii=False) for r in matches]
             result = f"Family info for '{person}':\n" + "\n".join(lines)
         else:
             # Fallback: search all columns for the name
