@@ -1,5 +1,9 @@
 # Changelog
 
+## v169
+- Fix llama_manager.py port default: 11434 (Ollama) → 8081 (llama-server CUDA build)
+- Update module docstring to reflect llama-server backend
+
 ## v168
 - Switch local LLM backend from llama-server (Vulkan) to Ollama (CUDA)
 - llama_manager.py simplified to health check only — Ollama manages GPU automatically

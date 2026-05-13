@@ -1,14 +1,14 @@
 """
-Llama / Ollama health check for local model inference.
+llama-server health check for local model inference.
 
-Ollama manages GPU automatically — no mode switching needed. This module
-provides a startup health check and a no-op ensure_gpu_mode() so bot.py
-can call it unconditionally regardless of which backend is in use.
+llama-server with CUDA backend manages GPU via LLAMA_DEVICE_FLAG set by
+set-mode.sh. This module provides a startup health check and ensure_gpu_mode()
+so bot.py can verify the server is up before handling LLM queries.
 
 Env vars
 --------
-  LLAMA_PORT   Port Ollama listens on (default 11434)
-  LLAMA_HOST   Host Ollama listens on (default 127.0.0.1)
+  LLAMA_PORT   Port llama-server listens on (default 8081)
+  LLAMA_HOST   Host llama-server listens on (default 127.0.0.1)
 """
 
 import logging
@@ -17,7 +17,7 @@ import urllib.request
 
 log = logging.getLogger("panda-bot.llama")
 
-LLAMA_PORT = int(os.environ.get("LLAMA_PORT", "11434"))
+LLAMA_PORT = int(os.environ.get("LLAMA_PORT", "8081"))
 LLAMA_HOST = os.environ.get("LLAMA_HOST", "127.0.0.1")
 
 _HEALTH_URL = f"http://{LLAMA_HOST}:{LLAMA_PORT}/"
