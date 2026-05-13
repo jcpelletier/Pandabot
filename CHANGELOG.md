@@ -1,5 +1,14 @@
 # Changelog
 
+## v174
+- Fix staging crash on boot: add missing `SheetReader`/`Cache` imports and quoted forward-ref type annotations to prevent `NameError` at import time
+
+## v172
+- Add family lookup feature (query_family_info tool) — Google Sheets-backed family relationship queries with TTL cache
+
+## v172
+- Add family lookup feature (query_family_info tool) — Google Sheets-backed family relationship queries with TTL cache
+
 ## v171
 - Switch local LLM to Qwen2.5-1.5B-Instruct (Q4_K_M) — faster, smaller VRAM footprint
 - Increase llama-server ctx-size 16384 → 32768 (KV on CPU, no VRAM cost) to fit tool definitions

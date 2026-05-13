@@ -16,6 +16,20 @@ import datetime
 import logging
 import requests
 
+# Family feature imports (optional, gated by ENABLE_FAMILY)
+# Family feature imports (optional, gated by ENABLE_FAMILY)
+try:
+    from family.sheet_reader import SheetReader
+    from family.cache import Cache
+except ImportError:
+    # When tools.py is imported directly (e.g., by tests), fall back to sys.path hack
+    import sys, os
+    _pkg_root = os.path.dirname(os.path.abspath(__file__))
+    if _pkg_root not in sys.path:
+        sys.path.insert(0, _pkg_root)
+    from family.sheet_reader import SheetReader  # noqa: F811
+    from family.cache import Cache  # noqa: F811
+
 logger = logging.getLogger("panda-bot")
 
 # ---------------------------------------------------------------------------
@@ -3521,8 +3535,8 @@ def _build_tool_definitions() -> list[dict]:
 # Family lookup (optional, gated by ENABLE_FAMILY)
 # ---------------------------------------------------------------------------
 
-_family_reader: SheetReader | None = None
-_family_cache: Cache | None = None
+_family_reader: "SheetReader | None" = None
+_family_cache: "Cache | None" = None
 
 
 def _get_family_reader() -> SheetReader:
