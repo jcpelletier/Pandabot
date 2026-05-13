@@ -17,14 +17,13 @@ import logging
 import requests
 
 # Family feature imports (optional, gated by ENABLE_FAMILY)
-# Family feature imports (optional, gated by ENABLE_FAMILY)
 try:
     from family.sheet_reader import SheetReader
     from family.cache import Cache
 except ImportError:
     # When tools.py is imported directly (e.g., by tests), fall back to sys.path hack
-    import sys, os
-    _pkg_root = os.path.dirname(os.path.abspath(__file__))
+    import sys, os as _os
+    _pkg_root = _os.path.dirname(_os.path.abspath(__file__))
     if _pkg_root not in sys.path:
         sys.path.insert(0, _pkg_root)
     from family.sheet_reader import SheetReader  # noqa: F811
@@ -3558,23 +3557,68 @@ def _get_family_cache() -> Cache:
 
 
 def _query_family_info(person: str, relationship: str = "") -> str:
-    """Look up family info for *person*, optionally filtered by *relationship*."""
+    """Look up family info for *person*, optionally filtered by *relationship*.
+
+    The sheet is expected to have a header row with column names like
+    'Name', 'Parent', 'Sibling', 'Spouse', 'Child', etc.
+
+    - If only *person* is given, returns all columns for matching rows.
+    - If *relationship* is also given (e.g. 'sibling'), finds the row(s)
+      where *person* appears and returns the value in the *relationship* column.
+    """
     reader = _get_family_reader()
     cache = _get_family_cache()
     cache_key = f"{person}:{relationship}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
-    if relationship:
-        results = reader.query(relationship, person)
-    else:
-        all_rows = reader.read_all()
-        results = [r for r in all_rows if person.lower() in " ".join(r.values()).lower()]
-    if not results:
+
+    all_rows = reader.read_all()
+    if not all_rows:
+        result = "No data available in the family sheet."
+        cache.set(cache_key, result)
+        return result
+
+    # Find rows where the person's name appears in any column
+    person_lower = person.lower()
+    matching_rows = [
+        row for row in all_rows
+        if person_lower in " ".join(row.values()).lower()
+    ]
+
+    if not matching_rows:
         result = f"No family info found for '{person}'."
+        cache.set(cache_key, result)
+        return result
+
+    if relationship:
+        # Return the relationship value from matching rows
+        rel_lower = relationship.lower()
+        # Find the column whose name best matches the requested relationship
+        rel_col: str | None = None
+        for col in matching_rows[0].keys():
+            if col.lower() == rel_lower:
+                rel_col = col
+                break
+        if rel_col is None:
+            # Try partial match
+            for col in matching_rows[0].keys():
+                if rel_lower in col.lower():
+                    rel_col = col
+                    break
+        if rel_col is None:
+            available = ", ".join(matching_rows[0].keys())
+            result = f"Column '{relationship}' not found. Available columns: {available}"
+        else:
+            values = [row.get(rel_col, "") for row in matching_rows if row.get(rel_col, "")]
+            if not values:
+                result = f"'{person}' has no {relationship} listed."
+            else:
+                result = f"{relationship.capitalize()} of '{person}': {', '.join(values)}"
     else:
-        lines = [json.dumps(r, ensure_ascii=False) for r in results]
+        lines = [json.dumps(r, ensure_ascii=False) for r in matching_rows]
         result = f"Family info for '{person}':\n" + "\n".join(lines)
+
     cache.set(cache_key, result)
     return result
 

@@ -1,10 +1,11 @@
 # Changelog
 
+## v175
+- Fix family lookup query logic: search by person name, then optionally filter results by relationship column (was backwards — was searching column named after relationship for the person's name)
+- Remove duplicate comment line in imports block
+
 ## v174
 - Fix staging crash on boot: add missing `SheetReader`/`Cache` imports and quoted forward-ref type annotations to prevent `NameError` at import time
-
-## v172
-- Add family lookup feature (query_family_info tool) — Google Sheets-backed family relationship queries with TTL cache
 
 ## v172
 - Add family lookup feature (query_family_info tool) — Google Sheets-backed family relationship queries with TTL cache
