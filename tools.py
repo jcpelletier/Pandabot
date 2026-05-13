@@ -3482,6 +3482,9 @@ def _build_tool_definitions() -> list[dict]:
             "name": "query_family_info",
             "description": (
                 "Look up family/relationship information from the family Google Sheet. "
+                "The sheet is a directory with one row per person and columns like "
+                "'Name', 'Relationship to Joel', 'Birthdate', 'Phone', 'Email', "
+                "'Address', 'Child of'. "
                 "Use this when the user asks about family members, relationships, "
                 "or wants to know who is related to whom. Always ask for the person's "
                 "name if not provided."
@@ -3491,11 +3494,19 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "person": {
                         "type": "string",
-                        "description": "Name of the family member to look up.",
+                        "description": "Name of the family member to look up or ask about.",
                     },
                     "relationship": {
                         "type": "string",
-                        "description": "Optional relationship type to filter by (e.g., 'parent', 'sibling').",
+                        "description": (
+                            "Optional relationship type to filter by. "
+                            "e.g. 'son', 'daughter', 'brother', 'sister', 'mother', "
+                            "'father', 'wife', 'husband', 'god daughter'. "
+                            "The sheet is centered on Joel, so when person='Joel' this "
+                            "finds people by their relationship to Joel. "
+                            "When person is someone else, finds relatives matching that "
+                            "description who are also connected to that person."
+                        ),
                     },
                 },
                 "required": ["person"],
@@ -3557,14 +3568,20 @@ def _get_family_cache() -> Cache:
 
 
 def _query_family_info(person: str, relationship: str = "") -> str:
-    """Look up family info for *person*, optionally filtered by *relationship*.
+    """Look up family info from the family Google Sheet.
 
-    The sheet is expected to have a header row with column names like
-    'Name', 'Parent', 'Sibling', 'Spouse', 'Child', etc.
+    The sheet has one row per person with columns such as:
+      Name, Relationship to Joel, Birthdate, Phone, Email, Address, Child of, etc.
 
-    - If only *person* is given, returns all columns for matching rows.
-    - If *relationship* is also given (e.g. 'sibling'), finds the row(s)
-      where *person* appears and returns the value in the *relationship* column.
+    Query patterns:
+      ─ Only *person* given  → find the row whose Name matches *person*
+                                and return all known info about them.
+      ─ *person* = "Joel" and *relationship* given
+                              → find rows whose "Relationship to Joel" column
+                                matches *relationship* (e.g. "son", "brother").
+      ─ *person* ≠ "Joel" and *relationship* given
+                              → find rows that mention *person* (e.g. in "Child of")
+                                AND also match the *relationship* description.
     """
     reader = _get_family_reader()
     cache = _get_family_cache()
@@ -3579,46 +3596,75 @@ def _query_family_info(person: str, relationship: str = "") -> str:
         cache.set(cache_key, result)
         return result
 
-    # Find rows where the person's name appears in any column
     person_lower = person.lower()
-    matching_rows = [
-        row for row in all_rows
-        if person_lower in " ".join(row.values()).lower()
-    ]
 
-    if not matching_rows:
-        result = f"No family info found for '{person}'."
+    # ── Without relationship: find the person by Name ──
+    if not relationship:
+        exact = [row for row in all_rows if row.get("Name", "").lower() == person_lower]
+        if exact:
+            lines = [json.dumps(r, ensure_ascii=False) for r in exact]
+            result = f"Family info for '{person}':\n" + "\n".join(lines)
+        else:
+            # Fallback: search all columns for the name
+            fuzzy = [
+                row for row in all_rows
+                if person_lower in " ".join(row.values()).lower()
+            ]
+            if fuzzy:
+                lines = [json.dumps(r, ensure_ascii=False) for r in fuzzy]
+                result = f"No exact match for '{person}'. Found related rows:\n" + "\n".join(lines)
+            else:
+                result = f"No family info found for '{person}'."
         cache.set(cache_key, result)
         return result
 
-    if relationship:
-        # Return the relationship value from matching rows
-        rel_lower = relationship.lower()
-        # Find the column whose name best matches the requested relationship
-        rel_col: str | None = None
-        for col in matching_rows[0].keys():
-            if col.lower() == rel_lower:
-                rel_col = col
-                break
-        if rel_col is None:
-            # Try partial match
-            for col in matching_rows[0].keys():
-                if rel_lower in col.lower():
-                    rel_col = col
-                    break
-        if rel_col is None:
-            available = ", ".join(matching_rows[0].keys())
-            result = f"Column '{relationship}' not found. Available columns: {available}"
-        else:
-            values = [row.get(rel_col, "") for row in matching_rows if row.get(rel_col, "")]
-            if not values:
-                result = f"'{person}' has no {relationship} listed."
-            else:
-                result = f"{relationship.capitalize()} of '{person}': {', '.join(values)}"
-    else:
-        lines = [json.dumps(r, ensure_ascii=False) for r in matching_rows]
-        result = f"Family info for '{person}':\n" + "\n".join(lines)
+    # ── With relationship ──
+    rel_lower = relationship.lower()
 
+    # Strategy: search the "Relationship to Joel" column for the relationship value
+    rel_col = "Relationship to Joel"
+    by_relationship = [
+        row for row in all_rows
+        if str(row.get(rel_col, "")).lower() == rel_lower
+    ]
+
+    # Also try partial match on relationship column values
+    if not by_relationship:
+        by_relationship = [
+            row for row in all_rows
+            if rel_lower in str(row.get(rel_col, "")).lower()
+        ]
+
+    if not by_relationship:
+        result = f"No family members found with relationship '{relationship}'."
+        cache.set(cache_key, result)
+        return result
+
+    # Filter by person if provided (e.g. "Diane's son" → rows mentioning Diane in Child of)
+    if person_lower != "joel":
+        filtered = [
+            row for row in by_relationship
+            if person_lower in " ".join(row.values()).lower()
+        ]
+        if filtered:
+            by_relationship = filtered
+        # If filtering clears the list, fall back to the unfiltered list
+        # (the person might not be mentioned in the matching rows)
+
+    # Build human-friendly output
+    parts: list[str] = []
+    for row in by_relationship:
+        name = row.get("Name", "?")
+        rel_val = row.get("Relationship to Joel", "")
+        child_of = row.get("Child of", "")
+        line_parts = [f"**{name}**"]
+        if rel_val:
+            line_parts.append(rel_val)
+        if child_of:
+            line_parts.append(f"(child of {child_of})")
+        parts.append(" — ".join(line_parts))
+
+    result = f"Family members related as '{relationship}':\n" + "\n".join(parts)
     cache.set(cache_key, result)
     return result
 

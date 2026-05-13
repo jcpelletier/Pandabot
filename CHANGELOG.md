@@ -1,5 +1,12 @@
 # Changelog
 
+## v176
+- Rewrite _query_family_info logic based on actual sheet schema (each row is a person, "Relationship to Joel" column, centered on Joel)
+- When person="Joel" + relationship: searches "Relationship to Joel" column for matching value
+- When person is someone else + relationship: also filters by person mention
+- When just person: finds exact Name match, falls back to fuzzy search
+- Update tool description to match actual sheet column names
+
 ## v175
 - Fix family lookup query logic: search by person name, then optionally filter results by relationship column (was backwards — was searching column named after relationship for the person's name)
 - Remove duplicate comment line in imports block
