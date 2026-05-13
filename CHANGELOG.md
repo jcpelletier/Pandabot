@@ -1,5 +1,9 @@
 # Changelog
 
+## v170
+- Switch local LLM from Gemma 4 E2B to Qwen2.5-3B-Instruct (Q4_K_M)
+- Rename local LLM profile from "gemma" to "qwen" in bot.py default and staging .env
+
 ## v169
 - Fix llama_manager.py port default: 11434 (Ollama) → 8081 (llama-server CUDA build)
 - Update module docstring to reflect llama-server backend

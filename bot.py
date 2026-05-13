@@ -258,7 +258,7 @@ STT_SILENCE_TIMEOUT = float(os.environ.get("STT_SILENCE_TIMEOUT_SECS", "1.5"))
 STT_RMS_THRESHOLD   = int(os.environ.get("STT_RMS_THRESHOLD", "500"))
 
 # Local LLM (llama.cpp) — active profile name that routes to llama-server
-LLAMA_PROFILE_NAME  = os.environ.get("LOCAL_LLM_PROFILE_NAME", "gemma")
+LLAMA_PROFILE_NAME  = os.environ.get("LOCAL_LLM_PROFILE_NAME", "qwen")
 
 def _build_system_prompt() -> str:
     """Delegate to pandabot_core.identity, injecting Pandabot-specific sections."""
@@ -1114,7 +1114,7 @@ async def handle_claude_query(user_message: str, message: discord.Message) -> st
     log.info("Sending %d history messages as context", len(history))
     conv_id = str(uuid.uuid4())
 
-    # If the active profile is Gemma (local llama.cpp), ensure the server is in
+    # If the active profile is the local llama.cpp model, ensure the server is in
     # gpu-full mode before handing off to the LLM loop.  The typing indicator is
     # already running, so the warm-up is invisible to the user.
     if ENABLE_LOCAL_LLM and llm_provider.get_active_profile_name() == LLAMA_PROFILE_NAME:
