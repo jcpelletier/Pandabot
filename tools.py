@@ -2603,8 +2603,7 @@ def switch_model(model_name: str) -> str:
     if target not in available:
         return (
             f"Unknown model '{model_name}'. "
-            f"Available profiles: {', '.join(available)}. "
-            f"Try 'gemma', 'deepseek', or 'haiku'."
+            f"Available profiles: {', '.join(available)}."
         )
     set_active_profile(target)
     return f"Switched to **{target}**. Subsequent messages will use this model."
@@ -3514,15 +3513,17 @@ def _build_tool_definitions() -> list[dict]:
         })
 
     if ENABLE_LOCAL_LLM:
+        from pandabot_core.llm.provider import get_available_profiles as _get_profiles
+        _local_profile = os.environ.get("LOCAL_LLM_PROFILE_NAME", "gemma")
+        _avail = _get_profiles()
+        _avail_str = ", ".join(f"'{p}'" for p in _avail)
         tools += [
             {
                 "name": "switch_model",
                 "description": (
-                    "Switch the active LLM model. Use when the user asks to change models or says "
-                    "'switch to Gemma', 'use DeepSeek', 'switch to Haiku', etc. "
-                    "Valid names: 'gemma' (local Gemma via llama.cpp — fast, private, no API cost), "
-                    "'deepseek' (DeepSeek API — strong reasoning and tool use), "
-                    "'haiku' (Claude Haiku — best all-round tool use and instruction following). "
+                    "Switch the active LLM model. Use when the user asks to change models. "
+                    f"Available profiles: {_avail_str}. "
+                    f"'{_local_profile}' is local via llama.cpp (fast, private, no API cost). "
                     "After switching, tell the user which model is now active."
                 ),
                 "input_schema": {
@@ -3530,7 +3531,7 @@ def _build_tool_definitions() -> list[dict]:
                     "properties": {
                         "model_name": {
                             "type": "string",
-                            "description": "Model to switch to: 'gemma', 'deepseek', or 'haiku'.",
+                            "description": f"Model to switch to. Available: {_avail_str}.",
                         },
                     },
                     "required": ["model_name"],

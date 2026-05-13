@@ -1,5 +1,8 @@
 # Changelog
 
+## v178
+- Fix switch_model tool description to dynamically list actual configured profiles instead of hardcoded 'gemma/deepseek/haiku', so Claude knows 'qwen' is valid when that profile is configured
+
 ## v177
 - Add partial Name matching fallback in `_query_family_info` (e.g. "Diane" matches "Diane Pelletier") before falling through to full fuzzy search
 - Improve name-based lookup UX: no longer shows "No exact match" when a partial Name match is found
