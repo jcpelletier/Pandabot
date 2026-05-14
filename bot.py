@@ -310,6 +310,13 @@ def _build_system_prompt() -> str:
         "Non-video files (ROMs, images, subtitles, game assets) can have names "
         "that look like movies but are not playable content -- the [OTHER] tag "
         "on a find_files result means it is NOT a video file.",
+        "",
+        "CRITICAL -- family information rule: when the user asks anything about "
+        "a specific person (their relationship, birthday, contact info, parents, "
+        "children, or any personal detail), you MUST call query_family_info first. "
+        "Never answer questions about people from training data or memory -- you "
+        "are a tool-use assistant, not a trivia bot, and guessing personal details "
+        "is always wrong. If query_family_info returns no result, say so.",
     ]
 
     return _identity.build_system_prompt(

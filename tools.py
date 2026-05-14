@@ -3492,13 +3492,15 @@ def _build_tool_definitions() -> list[dict]:
         tools.append({
             "name": "query_family_info",
             "description": (
-                "Look up family/relationship information from the family Google Sheet. "
+                "AUTHORITATIVE SOURCE for all family and relationship information. "
                 "The sheet is a directory with one row per person and columns like "
                 "'Name', 'Relationship to Joel', 'Birthdate', 'Phone', 'Email', "
                 "'Address', 'Child of'. "
-                "Use this when the user asks about family members, relationships, "
-                "or wants to know who is related to whom. Always ask for the person's "
-                "name if not provided."
+                "ALWAYS call this tool when the user asks anything about a specific "
+                "person — their name, relationship, birthday, contact info, or who "
+                "their parents/children are. Do NOT answer from memory or training "
+                "data; the sheet is the only valid source. "
+                "Always ask for the person's name if not provided."
             ),
             "input_schema": {
                 "type": "object",

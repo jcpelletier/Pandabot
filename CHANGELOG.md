@@ -1,5 +1,8 @@
 # Changelog
 
+## v180
+- Force query_family_info tool call for questions about specific people: tool description now marks itself as authoritative source (no guessing from training data); system prompt adds CRITICAL rule requiring the tool before answering any personal detail question
+
 ## v179
 - Add query_model_status tool: returns active profile name, model, and all available profiles
 
