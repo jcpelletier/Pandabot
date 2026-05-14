@@ -1,5 +1,8 @@
 # Changelog
 
+## v184
+- Add !deepseek, !haiku, !gemma commands that switch LLM profiles without going through the LLM loop; add !model for status; route all !-prefixed messages in the main channel directly to process_commands so switches work reliably regardless of active model
+
 ## v183
 - Add workflow_dispatch trigger to deploy workflow so promote_to_production can explicitly trigger Actions after branch advance
 

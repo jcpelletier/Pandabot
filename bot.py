@@ -1404,6 +1404,55 @@ async def cmd_hear(ctx: commands.Context):
     )
 
 
+def _model_switch_banner(profile: str, model: str) -> str:
+    now = datetime.datetime.now().strftime("%H:%M:%S")
+    return f"```\n[MODEL SWITCH]\nprofile : {profile}\nmodel   : {model}\ntime    : {now}\n```"
+
+
+async def _cmd_switch_model(ctx: commands.Context, alias: str) -> None:
+    from pandabot_core.llm.provider import (
+        get_available_profiles, set_active_profile, get_provider,
+    )
+    from tools import _MODEL_ALIASES
+    target = _MODEL_ALIASES.get(alias, alias)
+    if target not in get_available_profiles():
+        await ctx.send(f"Unknown profile `{alias}`. Available: {', '.join(get_available_profiles())}")
+        return
+    set_active_profile(target)
+    provider = get_provider()
+    await ctx.send(_model_switch_banner(target, provider.primary_model))
+
+
+@bot.command(name="deepseek", aliases=["ds"])
+async def cmd_switch_deepseek(ctx: commands.Context):
+    """Switch the LLM to DeepSeek."""
+    await _cmd_switch_model(ctx, "deepseek")
+
+
+@bot.command(name="haiku", aliases=["claude"])
+async def cmd_switch_haiku(ctx: commands.Context):
+    """Switch the LLM to Claude Haiku."""
+    await _cmd_switch_model(ctx, "haiku")
+
+
+@bot.command(name="gemma", aliases=["local"])
+async def cmd_switch_gemma(ctx: commands.Context):
+    """Switch the LLM to local Gemma."""
+    await _cmd_switch_model(ctx, "gemma")
+
+
+@bot.command(name="model")
+async def cmd_model_status(ctx: commands.Context):
+    """Show the currently active LLM profile and available options."""
+    from pandabot_core.llm.provider import get_active_profile_name, get_available_profiles, get_provider
+    name = get_active_profile_name()
+    provider = get_provider()
+    available = get_available_profiles()
+    await ctx.send(
+        f"```\n[MODEL STATUS]\nprofile : {name}\nmodel   : {provider.primary_model}\navailable: {', '.join(available)}\n```"
+    )
+
+
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     """Auto-join TTS_AUTO_JOIN_CHANNEL_ID when a user enters; auto-leave when all users leave."""
@@ -1460,6 +1509,12 @@ async def on_message(message: discord.Message):
     content = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
     if not content:
         await send_with_retry(message.channel, "Hey! Ask me anything about the server status.")
+        return
+
+    # Route !commands directly — bypasses the LLM entirely so switches are reliable
+    # regardless of which model is currently active.
+    if content.startswith("!"):
+        await bot.process_commands(message)
         return
 
     # --- Pending-confirmation shortcut ---
