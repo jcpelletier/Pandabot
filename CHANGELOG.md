@@ -1,5 +1,8 @@
 # Changelog
 
+## v183
+- Add workflow_dispatch trigger to deploy workflow so promote_to_production can explicitly trigger Actions after branch advance
+
 ## v182
 - Pre-fetch family info for person names detected in incoming messages and inject as context before calling the LLM; fixes family queries with local models (gemma) that are unreliable at function calling
 
