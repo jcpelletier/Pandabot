@@ -1480,9 +1480,29 @@ async def on_message(message: discord.Message):
     # Route !commands directly — bypasses the LLM entirely so switches are reliable
     # regardless of which model is currently active.
     if content.startswith("!"):
-        await bot.process_commands(message)
-        # Fallback: handle !<profile> for profiles without a dedicated cog command
         cmd_name = content[1:].strip().split()[0].lower()
+
+        # For local model switches, await model load BEFORE showing the banner so
+        # the banner is a guarantee that the model is running, not just scheduled.
+        # "local" is the cog alias for LLAMA_PROFILE_NAME; all other local profile
+        # names (e.g. "gemma", "qwen") resolve to themselves.
+        _local_cmd_aliases = {"local": LLAMA_PROFILE_NAME}
+        resolved = _local_cmd_aliases.get(cmd_name, cmd_name)
+        if ENABLE_LOCAL_LLM and llama_manager.is_local_profile(resolved):
+            available = llm_provider.get_available_profiles()
+            if resolved in available:
+                llm_provider.set_active_profile(resolved)
+                ready = await llama_manager.ensure_model(resolved)
+                provider = llm_provider.get_provider()
+                if ready:
+                    await _send_with_retry(message.channel, model_switch_banner(resolved, provider.primary_model))
+                else:
+                    await _send_with_retry(message.channel, f"⚠️ Failed to load `{resolved}` — llama-server did not become ready.")
+            return
+
+        # All other ! commands: remote model switches, !model?, !commands/!help, etc.
+        await bot.process_commands(message)
+        # Fallback: handle !<profile> for remote profiles without a dedicated cog command
         registered = {c.name for c in bot.commands} | {a for c in bot.commands for a in c.aliases}
         if cmd_name not in registered:
             available = llm_provider.get_available_profiles()
@@ -1490,10 +1510,6 @@ async def on_message(message: discord.Message):
                 llm_provider.set_active_profile(cmd_name)
                 provider = llm_provider.get_provider()
                 await _send_with_retry(message.channel, model_switch_banner(cmd_name, provider.primary_model))
-        if ENABLE_LOCAL_LLM:
-            active = llm_provider.get_active_profile_name()
-            if llama_manager.is_local_profile(active):
-                asyncio.create_task(llama_manager.ensure_model(active))
         return
 
     # --- Pending-confirmation shortcut ---

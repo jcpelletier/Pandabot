@@ -1,5 +1,8 @@
 # Changelog
 
+## v192
+- Guarantee model switch banner = model running: await ensure_model before sending banner for local profiles (!gemma, !qwen); if load fails, send error instead of banner
+
 ## v191
 - Fix !qwen silently doing nothing: add PANDABOT_PROFILE_QWEN_* to server .env so qwen appears in get_available_profiles(); document in .env.example alongside all other named profiles
 
