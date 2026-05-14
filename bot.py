@@ -48,7 +48,7 @@ from pandabot_core.discord_comms import (
 from pandabot_core import identity as _identity
 from pandabot_core import scheduler  # used in fire_scheduled_task and task_scheduler
 
-from tools import TOOL_DEFINITIONS, execute_tool, ENABLE_LOCAL_LLM  # noqa: E402
+from tools import TOOL_DEFINITIONS, execute_tool, ENABLE_LOCAL_LLM, ENABLE_FAMILY, FAMILY_SPREADSHEET_ID  # noqa: E402
 import llama_manager
 
 # ---------------------------------------------------------------------------
@@ -1115,11 +1115,66 @@ def _run_claude_loop(
     )
 
 
+_FAMILY_PREFETCH_SKIP = frozenset({
+    "a", "an", "the", "in", "on", "at", "to", "for", "of", "and", "or",
+    "but", "is", "are", "was", "were", "be", "been", "being", "have",
+    "has", "had", "do", "does", "did", "will", "would", "shall", "should",
+    "may", "might", "must", "can", "could", "i", "you", "he", "she", "we",
+    "they", "it", "me", "him", "her", "us", "them", "my", "your", "his",
+    "their", "its", "our", "who", "what", "when", "where", "why", "how",
+    "ok", "okay", "yes", "no", "not", "please", "thanks", "thank",
+    "discord", "jenkins", "jellyfin", "panda", "pandabot", "claude",
+    "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+})
+
+def _prefetch_family_context(text: str) -> str | None:
+    """
+    Extract Title Case names from text, call query_family_info for each, and
+    return any hits as a formatted context block. This lets weak local models
+    answer family questions without needing to decide to call the tool themselves.
+    """
+    import re
+    # Match 1- or 2-word Title Case sequences
+    raw = re.findall(r'\b([A-Z][a-z]{1,}(?:\s+[A-Z][a-z]{1,})?)\b', text)
+    seen: set[str] = set()
+    results: list[str] = []
+    for candidate in raw:
+        key = candidate.lower()
+        if key in _FAMILY_PREFETCH_SKIP or key in seen:
+            continue
+        seen.add(key)
+        try:
+            result = execute_tool("query_family_info", {"person": candidate})
+        except Exception:
+            continue
+        if result and "No family info found" not in result and "not enabled" not in result and "not configured" not in result:
+            results.append(result)
+    return "\n\n".join(results) if results else None
+
+
 async def handle_claude_query(user_message: str, message: discord.Message) -> str:
     """Fetch channel history, then dispatch the synchronous Claude loop to a thread."""
     history = await _build_history(message.channel, before=message)
     log.info("Sending %d history messages as context", len(history))
     conv_id = str(uuid.uuid4())
+
+    # Pre-fetch family info for any person names detected in the message and inject
+    # as context. This makes family queries reliable even with local models that are
+    # weak at function calling — the model gets the data directly instead of needing
+    # to decide to invoke the tool.
+    if ENABLE_FAMILY and FAMILY_SPREADSHEET_ID:
+        loop = asyncio.get_running_loop()
+        family_ctx = await loop.run_in_executor(None, _prefetch_family_context, user_message)
+        if family_ctx:
+            log.info("Injecting pre-fetched family context (%d chars)", len(family_ctx))
+            user_message = (
+                f"{user_message}\n\n"
+                f"[Family info retrieved for names mentioned above — use this data to answer, "
+                f"do not call query_family_info again unless you need additional details:]\n"
+                f"{family_ctx}"
+            )
 
     # If the active profile is the local llama.cpp model, ensure the server is in
     # gpu-full mode before handing off to the LLM loop.  The typing indicator is

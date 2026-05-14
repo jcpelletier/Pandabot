@@ -1,5 +1,8 @@
 # Changelog
 
+## v182
+- Pre-fetch family info for person names detected in incoming messages and inject as context before calling the LLM; fixes family queries with local models (gemma) that are unreliable at function calling
+
 ## v181
 - docs: update deploy instructions — GitHub Actions auto-deploys on push to staging/main; remove stale manual SSH deploy steps from CLAUDE.md
 
