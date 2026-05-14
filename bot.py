@@ -41,6 +41,7 @@ from pandabot_core.llm import provider as llm_provider
 from pandabot_core.llm.provider import get_provider, get_provider_name
 from pandabot_core.llm.loop import run_claude_loop as _run_claude_loop_core
 from pandabot_core.telemetry import ai_event as _ai_event, ai_trace as _ai_trace
+from pandabot_core.discord_comms import make_model_switch_cog as _make_model_switch_cog
 from pandabot_core.discord_comms import (
     keep_typing, split_message, send_with_retry as _send_with_retry,
     build_history as _build_history, ConfirmationManager,
@@ -1404,55 +1405,6 @@ async def cmd_hear(ctx: commands.Context):
     )
 
 
-def _model_switch_banner(profile: str, model: str) -> str:
-    now = datetime.datetime.now().strftime("%H:%M:%S")
-    return f"```\n[MODEL SWITCH]\nprofile : {profile}\nmodel   : {model}\ntime    : {now}\n```"
-
-
-async def _cmd_switch_model(ctx: commands.Context, alias: str) -> None:
-    from pandabot_core.llm.provider import (
-        get_available_profiles, set_active_profile, get_provider,
-    )
-    from tools import _MODEL_ALIASES
-    target = _MODEL_ALIASES.get(alias, alias)
-    if target not in get_available_profiles():
-        await ctx.send(f"Unknown profile `{alias}`. Available: {', '.join(get_available_profiles())}")
-        return
-    set_active_profile(target)
-    provider = get_provider()
-    await ctx.send(_model_switch_banner(target, provider.primary_model))
-
-
-@bot.command(name="deepseek", aliases=["ds"])
-async def cmd_switch_deepseek(ctx: commands.Context):
-    """Switch the LLM to DeepSeek."""
-    await _cmd_switch_model(ctx, "deepseek")
-
-
-@bot.command(name="haiku", aliases=["claude"])
-async def cmd_switch_haiku(ctx: commands.Context):
-    """Switch the LLM to Claude Haiku."""
-    await _cmd_switch_model(ctx, "haiku")
-
-
-@bot.command(name="gemma", aliases=["local"])
-async def cmd_switch_gemma(ctx: commands.Context):
-    """Switch the LLM to local Gemma."""
-    await _cmd_switch_model(ctx, "gemma")
-
-
-@bot.command(name="model")
-async def cmd_model_status(ctx: commands.Context):
-    """Show the currently active LLM profile and available options."""
-    from pandabot_core.llm.provider import get_active_profile_name, get_available_profiles, get_provider
-    name = get_active_profile_name()
-    provider = get_provider()
-    available = get_available_profiles()
-    await ctx.send(
-        f"```\n[MODEL STATUS]\nprofile : {name}\nmodel   : {provider.primary_model}\navailable: {', '.join(available)}\n```"
-    )
-
-
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     """Auto-join TTS_AUTO_JOIN_CHANNEL_ID when a user enters; auto-leave when all users leave."""
@@ -1957,6 +1909,8 @@ async def task_llama_startup() -> None:
 
 
 async def main():
+    from tools import _MODEL_ALIASES
+    await bot.add_cog(_make_model_switch_cog(_MODEL_ALIASES))
     await start_webhook_server()
     asyncio.create_task(task_disk_alert())
     asyncio.create_task(task_service_watchdog())

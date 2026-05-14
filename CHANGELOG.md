@@ -1,5 +1,8 @@
 # Changelog
 
+## v185
+- Move model switch commands (!deepseek/!haiku/!gemma/!model) to pandabot-core as a discord.ext.commands.Cog registered in main()
+
 ## v184
 - Add !deepseek, !haiku, !gemma commands that switch LLM profiles without going through the LLM loop; add !model for status; route all !-prefixed messages in the main channel directly to process_commands so switches work reliably regardless of active model
 
