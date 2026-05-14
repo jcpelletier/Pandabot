@@ -1100,16 +1100,30 @@ def _run_claude_loop(
     history: list[dict] | None = None,
     channel_id: int | None = None,
     conversation_id: str | None = None,
+    event_loop=None,
 ) -> str:
     """Synchronous LLM agentic loop (run in a thread executor)."""
     def _on_confirm(ch_id: int, tool_name: str, confirmed_inputs: dict) -> None:
         _confirmations.save(ch_id, tool_name, confirmed_inputs)
 
+    def _execute_tool_with_banner(name: str, inputs: dict) -> str:
+        result = execute_tool(name, inputs)
+        if name == "switch_model" and event_loop and channel_id and not result.startswith("Unknown"):
+            from pandabot_core.llm.provider import get_active_profile_name, get_provider
+            from pandabot_core.discord_comms import model_switch_banner
+            channel = bot.get_channel(channel_id)
+            if channel:
+                banner = model_switch_banner(get_active_profile_name(), get_provider().primary_model)
+                asyncio.run_coroutine_threadsafe(
+                    _send_with_retry(channel, banner), event_loop
+                )
+        return result
+
     return _run_claude_loop_core(
         user_message=user_message,
         history=history,
         tool_definitions=TOOL_DEFINITIONS,
-        execute_tool=execute_tool,
+        execute_tool=_execute_tool_with_banner,
         system_prompt=_build_system_prompt(),
         channel_id=channel_id,
         conversation_id=conversation_id,
@@ -1188,7 +1202,7 @@ async def handle_claude_query(user_message: str, message: discord.Message) -> st
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
-        None, _run_claude_loop, user_message, history, message.channel.id, conv_id
+        None, _run_claude_loop, user_message, history, message.channel.id, conv_id, loop
     )
 
 

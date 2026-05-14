@@ -1,5 +1,8 @@
 # Changelog
 
+## v187
+- Send model_switch_banner directly to Discord when the LLM calls switch_model via plain language, matching the visual confirmation shown by !commands
+
 ## v186
 - Add !commands (alias !help) that lists all registered !commands with descriptions and aliases
 
