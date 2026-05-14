@@ -66,29 +66,31 @@ Branch convention:
 - `staging` — work-in-progress; deploys to `discord-bot-staging` / `#pandabot-staging`
 - `main` — production; only updated by `promote-to-prod.sh`
 
+Deployment is automatic via GitHub Actions (`.github/workflows/deploy.yml`):
+- Push to `staging` → Actions deploys to `discord-bot-staging` automatically
+- Push to `main` → Actions deploys to production automatically (only via `promote-to-prod.sh`)
+
+**Do NOT run the SSH deploy command manually** — pushing to GitHub is the only deploy step needed.
+
 Workflow:
 1. Make changes on the `staging` branch
-2. Push `staging` → deploy to `discord-bot-staging` → QA validates in `#pandabot-staging`
-3. After QA passes → run `promote-to-prod.sh` (merges `staging → main`, pushes, deploys)
+2. Push — GitHub Actions deploys to staging automatically; QA validates in `#pandabot-staging`
+3. After QA passes → run `promote-to-prod.sh` (merges `staging → main`, pushes, triggers Actions deploy)
 
 ```bash
 # 1. Work on staging branch
 git checkout staging
 # ... make changes, commit ...
 git push origin staging
+# GitHub Actions deploys automatically — no SSH step needed
 
-# 2. Deploy to staging
-wsl ssh -i ~/.ssh/id_ed25519 genesis@192.168.1.100 \
-  "sudo git -C /opt/discord-bot-staging pull origin staging && \
-   sudo chown discord-bot:discord-bot /opt/discord-bot-staging/scheduler.db && \
-   sudo systemctl restart discord-bot-staging"
-
-# 3. Run QA against staging (in #pandabot-qa)
+# 2. Run QA against staging (in #pandabot-qa)
 #    "run smoke tests in staging"
 
-# 4. After QA passes — promote to production
+# 3. After QA passes — promote to production
 cd "C:\Users\genes\Downloads\PandaMigration\discord-bot"
 ./promote-to-prod.sh           # dry-run first: ./promote-to-prod.sh --dry-run
+# GitHub Actions deploys production automatically on push to main
 ```
 
 If you also changed pandabot-core, deploy that first (see pandabot-core CLAUDE.md).

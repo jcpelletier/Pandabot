@@ -1,5 +1,8 @@
 # Changelog
 
+## v181
+- docs: update deploy instructions — GitHub Actions auto-deploys on push to staging/main; remove stale manual SSH deploy steps from CLAUDE.md
+
 ## v180
 - Force query_family_info tool call for questions about specific people: tool description now marks itself as authoritative source (no guessing from training data); system prompt adds CRITICAL rule requiring the tool before answering any personal detail question
 
