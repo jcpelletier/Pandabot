@@ -1482,6 +1482,10 @@ async def on_message(message: discord.Message):
     # regardless of which model is currently active.
     if content.startswith("!"):
         await bot.process_commands(message)
+        if ENABLE_LOCAL_LLM:
+            active = llm_provider.get_active_profile_name()
+            if llama_manager.is_local_profile(active):
+                asyncio.create_task(llama_manager.ensure_model(active))
         return
 
     # --- Pending-confirmation shortcut ---

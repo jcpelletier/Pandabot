@@ -1,5 +1,8 @@
 # Changelog
 
+## v189
+- Trigger local model swap immediately after !qwen/!gemma instead of waiting for the next query
+
 ## v188
 - Gemma and qwen local models now share port 8081 — only one loads at a time; switching calls switch-model.sh to stop the current service and start the requested one before the next query
 
