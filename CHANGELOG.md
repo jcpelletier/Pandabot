@@ -1,5 +1,8 @@
 # Changelog
 
+## v186
+- Add !commands (alias !help) that lists all registered !commands with descriptions and aliases
+
 ## v185
 - Move model switch commands (!deepseek/!haiku/!gemma/!model) to pandabot-core as a discord.ext.commands.Cog registered in main()
 

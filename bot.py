@@ -42,6 +42,7 @@ from pandabot_core.llm.provider import get_provider, get_provider_name
 from pandabot_core.llm.loop import run_claude_loop as _run_claude_loop_core
 from pandabot_core.telemetry import ai_event as _ai_event, ai_trace as _ai_trace
 from pandabot_core.discord_comms import make_model_switch_cog as _make_model_switch_cog
+from pandabot_core.discord_comms import make_help_cog as _make_help_cog
 from pandabot_core.discord_comms import (
     keep_typing, split_message, send_with_retry as _send_with_retry,
     build_history as _build_history, ConfirmationManager,
@@ -1911,6 +1912,7 @@ async def task_llama_startup() -> None:
 async def main():
     from tools import _MODEL_ALIASES
     await bot.add_cog(_make_model_switch_cog(_MODEL_ALIASES))
+    await bot.add_cog(_make_help_cog())
     await start_webhook_server()
     asyncio.create_task(task_disk_alert())
     asyncio.create_task(task_service_watchdog())
