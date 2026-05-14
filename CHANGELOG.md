@@ -1,5 +1,8 @@
 # Changelog
 
+## v194
+- Show Confirm/Cancel buttons after destructive-action previews instead of requiring the user to type "yes"; clicking Confirm executes the action, Cancel dismisses it; text "yes" still works as a fallback
+
 ## v193
 - Fix !qwen (and !gemma) failing inside systemd service: replace sudo+sudoers with polkit rule so discord-bot can start/stop llama-server units directly via systemctl; fixes "unable to change to root gid" error
 - Fix double model switch banners: production bot was on v187 (predates channel guard) — double posts stop once production is promoted

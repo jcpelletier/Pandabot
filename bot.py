@@ -46,6 +46,7 @@ from pandabot_core.discord_comms import make_help_cog as _make_help_cog
 from pandabot_core.discord_comms import (
     keep_typing, split_message, send_with_retry as _send_with_retry,
     build_history as _build_history, ConfirmationManager, model_switch_banner,
+    make_confirmation_view,
 )
 from pandabot_core import identity as _identity
 from pandabot_core import scheduler  # used in fire_scheduled_task and task_scheduler
@@ -1547,7 +1548,32 @@ async def on_message(message: discord.Message):
 
     for chunk in split_message(reply):
         if chunk.strip():
-            await send_with_retry(message.channel, chunk)
+            await _send_with_retry(message.channel, chunk)
+
+    # If the LLM queued a confirmation, send interactive buttons so the user
+    # can confirm with a click instead of (or in addition to) typing "yes".
+    if _confirmations.peek(message.channel.id):
+        ch_id = message.channel.id
+        event_loop = asyncio.get_running_loop()
+
+        async def _do_confirm() -> str:
+            action = _confirmations.force_consume(ch_id)
+            if not action:
+                return "No pending action found (may have already been confirmed or cancelled)."
+            try:
+                return await event_loop.run_in_executor(
+                    None, execute_tool, action["name"], action["inputs"]
+                )
+            except Exception as exc:
+                log.exception("Button-confirmed action failed")
+                return f"❌ Error: {exc}"
+
+        def _do_cancel() -> None:
+            _confirmations.clear(ch_id)
+
+        view = make_confirmation_view(execute=_do_confirm, on_cancel=_do_cancel)
+        msg = await message.channel.send(view=view)
+        view.message = msg
 
     await bot.process_commands(message)
 
