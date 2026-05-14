@@ -1,5 +1,8 @@
 # Changelog
 
+## v191
+- Fix !qwen silently doing nothing: add PANDABOT_PROFILE_QWEN_* to server .env so qwen appears in get_available_profiles(); document in .env.example alongside all other named profiles
+
 ## v190
 - Fix duplicate !command responses: bots no longer process commands in channels other than their own DISCORD_CHANNEL_ID
 - Add fallback !<profile> handler so any available profile (e.g. !qwen) works even without a dedicated cog command
