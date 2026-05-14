@@ -52,7 +52,7 @@ def current_mode() -> str:
 def _switch_model_blocking(profile_name: str) -> bool:
     """Call switch-model.sh synchronously. Intended to run in a thread executor."""
     result = subprocess.run(
-        ["sudo", "/opt/llama/switch-model.sh", profile_name],
+        ["/opt/llama/switch-model.sh", profile_name],
         capture_output=True, text=True, timeout=60,
     )
     if result.returncode != 0:

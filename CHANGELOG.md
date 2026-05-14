@@ -1,5 +1,9 @@
 # Changelog
 
+## v193
+- Fix !qwen (and !gemma) failing inside systemd service: replace sudo+sudoers with polkit rule so discord-bot can start/stop llama-server units directly via systemctl; fixes "unable to change to root gid" error
+- Fix double model switch banners: production bot was on v187 (predates channel guard) — double posts stop once production is promoted
+
 ## v192
 - Guarantee model switch banner = model running: await ensure_model before sending banner for local profiles (!gemma, !qwen); if load fails, send error instead of banner
 
