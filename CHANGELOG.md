@@ -1,5 +1,8 @@
 # Changelog
 
+## v188
+- Gemma and qwen local models now share port 8081 — only one loads at a time; switching calls switch-model.sh to stop the current service and start the requested one before the next query
+
 ## v187
 - Send model_switch_banner directly to Discord when the LLM calls switch_model via plain language, matching the visual confirmation shown by !commands
 

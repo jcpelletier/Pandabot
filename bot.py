@@ -1192,13 +1192,13 @@ async def handle_claude_query(user_message: str, message: discord.Message) -> st
                 f"{family_ctx}"
             )
 
-    # If the active profile is the local llama.cpp model, ensure the server is in
-    # gpu-full mode before handing off to the LLM loop.  The typing indicator is
-    # already running, so the warm-up is invisible to the user.
-    if ENABLE_LOCAL_LLM and llm_provider.get_active_profile_name() == LLAMA_PROFILE_NAME:
-        if llama_manager.current_mode() != "gpu-full":
-            log.info("Pre-warming llama gpu-full mode for incoming query")
-            await llama_manager.ensure_gpu_mode()
+    # If the active profile is a local llama.cpp model, ensure the right model
+    # is loaded before handing off to the LLM loop. The typing indicator is
+    # already running, so the switch delay is invisible to the user.
+    if ENABLE_LOCAL_LLM:
+        active = llm_provider.get_active_profile_name()
+        if llama_manager.is_local_profile(active):
+            await llama_manager.ensure_model(active)
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
@@ -1916,11 +1916,13 @@ async def task_announce_startup():
 
 
 async def task_llama_startup() -> None:
-    """Ensure llama-server is in gpu-full mode at startup."""
+    """Ensure the correct local model is loaded at startup."""
     await bot.wait_until_ready()
     llama_manager.init()
-    log.info("Ensuring llama-server in gpu-full mode at startup (profile=%s)", LLAMA_PROFILE_NAME)
-    await llama_manager.ensure_gpu_mode()
+    active = llm_provider.get_active_profile_name()
+    if llama_manager.is_local_profile(active):
+        log.info("Ensuring local model at startup (profile=%s)", active)
+        await llama_manager.ensure_model(active)
 
 
 async def main():
