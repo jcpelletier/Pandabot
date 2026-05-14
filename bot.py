@@ -45,7 +45,7 @@ from pandabot_core.discord_comms import make_model_switch_cog as _make_model_swi
 from pandabot_core.discord_comms import make_help_cog as _make_help_cog
 from pandabot_core.discord_comms import (
     keep_typing, split_message, send_with_retry as _send_with_retry,
-    build_history as _build_history, ConfirmationManager,
+    build_history as _build_history, ConfirmationManager, model_switch_banner,
 )
 from pandabot_core import identity as _identity
 from pandabot_core import scheduler  # used in fire_scheduled_task and task_scheduler
@@ -1469,7 +1469,6 @@ async def on_message(message: discord.Message):
         return
 
     if message.channel.id != DISCORD_CHANNEL_ID:
-        await bot.process_commands(message)
         return
 
     # Strip the mention text if present, then respond to all messages
@@ -1482,6 +1481,15 @@ async def on_message(message: discord.Message):
     # regardless of which model is currently active.
     if content.startswith("!"):
         await bot.process_commands(message)
+        # Fallback: handle !<profile> for profiles without a dedicated cog command
+        cmd_name = content[1:].strip().split()[0].lower()
+        registered = {c.name for c in bot.commands} | {a for c in bot.commands for a in c.aliases}
+        if cmd_name not in registered:
+            available = llm_provider.get_available_profiles()
+            if cmd_name in available:
+                llm_provider.set_active_profile(cmd_name)
+                provider = llm_provider.get_provider()
+                await _send_with_retry(message.channel, model_switch_banner(cmd_name, provider.primary_model))
         if ENABLE_LOCAL_LLM:
             active = llm_provider.get_active_profile_name()
             if llama_manager.is_local_profile(active):

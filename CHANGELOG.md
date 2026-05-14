@@ -1,5 +1,9 @@
 # Changelog
 
+## v190
+- Fix duplicate !command responses: bots no longer process commands in channels other than their own DISCORD_CHANNEL_ID
+- Add fallback !<profile> handler so any available profile (e.g. !qwen) works even without a dedicated cog command
+
 ## v189
 - Trigger local model swap immediately after !qwen/!gemma instead of waiting for the next query
 
