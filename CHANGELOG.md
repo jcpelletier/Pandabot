@@ -1,5 +1,10 @@
 # Changelog
 
+## v201
+
+- Voice gateway STT: switch from Docker HTTP API to local faster_whisper library (reuses pre-downloaded medium model; HTTP API was timing out on model download)
+- Voice gateway: reject audio < 1000 bytes before calling STT (prevents hang on empty recordings)
+
 ## v200
 
 - Merge sync: align local main with remote promotion commits from Pandabot-Dev
