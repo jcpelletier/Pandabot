@@ -1,0 +1,16 @@
+[Unit]
+Description=Pandabot Voice Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=discord-bot
+WorkingDirectory=/opt/discord-bot
+Environment=PYTHONPATH=/opt/discord-bot:/opt/pandabot-core
+EnvironmentFile=/opt/discord-bot/.env
+ExecStart=/opt/discord-bot/venv/bin/python3 -m voice_gateway.main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

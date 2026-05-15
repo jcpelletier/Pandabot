@@ -1,5 +1,11 @@
 # Changelog
 
+## v197
+- Add voice_gateway/ FastAPI service: voice terminal bridge (Whisper STT → Claude loop → Kokoro TTS)
+- WebSocket /ws streams state events (thinking/speaking/idle) to Flutter app
+- Discord mirror posts all voice conversation turns to configured channel
+- Add pandabot-voice.service systemd unit for deployment to panda
+
 ## v196
 - Add trigger_dev_agent tool (gated by ENABLE_DEV_AGENT=true) to hand off dev tasks to Pandabot-Dev
 - POSTs to Pandabot-Dev webhook at DEV_AGENT_URL (default http://localhost:8766/dev-task)
