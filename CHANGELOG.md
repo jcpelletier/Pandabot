@@ -1,5 +1,10 @@
 # Changelog
 
+## v203
+
+- Voice gateway: stricter voice preamble (no emojis, no category-label-colon structure, prefer one short sentence, summarise lists in prose)
+- Voice gateway TTS: strip emojis before synthesis so they aren't read aloud as descriptive words
+
 ## v202
 
 - Voice gateway: prepend voice-mode system prompt (1-3 sentence limit, no markdown, no follow-up questions)

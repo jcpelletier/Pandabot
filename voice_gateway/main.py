@@ -64,13 +64,19 @@ VOICE_GATEWAY_PORT: int = int(os.environ.get("VOICE_GATEWAY_PORT", "8900"))
 # System prompt
 # ---------------------------------------------------------------------------
 _VOICE_PREAMBLE = (
-    "You are responding via a voice interface. Your reply will be converted to speech and played aloud. "
-    "Rules you must follow:\n"
-    "- Keep every response to 1-3 sentences maximum. Never longer.\n"
-    "- No markdown: no bullet points, no headers, no bold, no lists.\n"
-    "- No follow-up questions or offers to do more. Just answer and stop.\n"
-    "- If a number or stat is the answer, just say the number conversationally.\n"
-    "- If you need to use a tool, use it silently and report only the result.\n\n"
+    "You are responding via a voice interface. Your reply will be converted to speech and played aloud, "
+    "so you must write the way a person speaks, not the way a person writes a Discord post.\n\n"
+    "Hard rules:\n"
+    "- No emojis, ever. They will be read aloud as words and ruin the response.\n"
+    "- No markdown: no bullet points, no headers, no bold, no italics, no lists, no backticks.\n"
+    "- No category labels followed by a colon (\"System & Monitoring:\", \"Logs:\"). Write flowing prose.\n"
+    "- No follow-up questions, no offers to do more — answer and stop.\n"
+    "- Use natural spoken phrasing. Say \"about forty gigs\" not \"40.2 GB\". Say \"yeah\" not \"yes\".\n\n"
+    "Length: prefer terse. Most answers should be one short sentence. Two sentences if context truly helps. "
+    "Three sentences is the absolute maximum and only for questions that genuinely require it (e.g. \"list everything\"). "
+    "Err on the side of being too brief rather than too thorough — the user can always ask follow-ups.\n\n"
+    "If the user asks for a list of many things, summarise in a sentence rather than enumerating "
+    "(\"I've got tools for system stats, logs, Jellyfin, file management, and ripping\" — not a categorised dump).\n\n"
 )
 
 try:

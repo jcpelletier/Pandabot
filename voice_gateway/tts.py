@@ -34,14 +34,27 @@ def get_session() -> aiohttp.ClientSession:
     return _http_session
 
 
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"  # symbols & pictographs, emoticons, transport, supplemental
+    "\U00002600-\U000027BF"  # misc symbols & dingbats
+    "\U0001F1E6-\U0001F1FF"  # regional indicators (flags)
+    "\U0000FE0F"             # variation selector-16
+    "\U0000200D"             # zero-width joiner
+    "]+",
+    flags=re.UNICODE,
+)
+
+
 def _strip_markdown(text: str) -> str:
-    """Remove markdown formatting so Kokoro doesn't read symbols aloud."""
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)   # **bold**
-    text = re.sub(r'\*(.+?)\*', r'\1', text)         # *italic*
-    text = re.sub(r'#{1,6}\s*', '', text)             # ## headers
-    text = re.sub(r'`{1,3}[^`]*`{1,3}', '', text)    # `code`
-    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)  # [links](url)
-    text = re.sub(r'^\s*[-*]\s+', '', text, flags=re.MULTILINE)  # bullet points
+    """Strip markdown + emojis so Kokoro speaks clean prose."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'#{1,6}\s*', '', text)
+    text = re.sub(r'`{1,3}[^`]*`{1,3}', '', text)
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    text = re.sub(r'^\s*[-*]\s+', '', text, flags=re.MULTILINE)
+    text = _EMOJI_RE.sub('', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
