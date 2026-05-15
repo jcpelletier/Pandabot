@@ -1,5 +1,9 @@
 # Changelog
 
+## v201
+
+- Voice gateway TTS: add 30s timeout; strip markdown before synthesis so Kokoro doesn't read symbols aloud
+
 ## v200
 
 - Voice gateway: warm Whisper model in background on WebSocket client connect

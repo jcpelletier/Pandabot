@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 import aiohttp
 
@@ -33,6 +34,18 @@ def get_session() -> aiohttp.ClientSession:
     return _http_session
 
 
+def _strip_markdown(text: str) -> str:
+    """Remove markdown formatting so Kokoro doesn't read symbols aloud."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)   # **bold**
+    text = re.sub(r'\*(.+?)\*', r'\1', text)         # *italic*
+    text = re.sub(r'#{1,6}\s*', '', text)             # ## headers
+    text = re.sub(r'`{1,3}[^`]*`{1,3}', '', text)    # `code`
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)  # [links](url)
+    text = re.sub(r'^\s*[-*]\s+', '', text, flags=re.MULTILINE)  # bullet points
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
 async def synthesize(text: str, client_session: aiohttp.ClientSession | None = None) -> bytes | None:
     """
     Synthesize speech from text using the Kokoro TTS service.
@@ -46,16 +59,18 @@ async def synthesize(text: str, client_session: aiohttp.ClientSession | None = N
     """
     session = client_session or get_session()
     url = f"{TTS_URL}/v1/audio/speech"
+    clean_text = _strip_markdown(text)
 
     payload = {
         "model": "kokoro",
-        "input": text,
+        "input": clean_text,
         "voice": TTS_VOICE,
         "response_format": "mp3",
     }
 
     try:
-        async with session.post(url, json=payload) as resp:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with session.post(url, json=payload, timeout=timeout) as resp:
             if resp.status != 200:
                 logger.error("TTS returned HTTP %d", resp.status)
                 return None
