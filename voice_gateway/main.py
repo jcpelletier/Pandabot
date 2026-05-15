@@ -257,6 +257,10 @@ async def transcribe(
 
         logger.info("Received audio (%d bytes) from device %s", len(content), device_id)
 
+        if len(content) < 1000:
+            logger.info("Audio too small (%d bytes) — ignoring", len(content))
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
         # Notify clients we are thinking
         await _broadcast({"state": "thinking", "device_id": device_id}, device_id)
 

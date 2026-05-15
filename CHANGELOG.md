@@ -1,5 +1,9 @@
 # Changelog
 
+## v198
+
+- Voice gateway: reject audio < 1000 bytes before calling Whisper (prevents hang on empty recordings)
+
 ## v197
 - Add voice_gateway/ FastAPI service: voice terminal bridge (Whisper STT → Claude loop → Kokoro TTS)
 - WebSocket /ws streams state events (thinking/speaking/idle) to Flutter app
