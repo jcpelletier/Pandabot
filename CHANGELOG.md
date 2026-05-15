@@ -1,5 +1,9 @@
 # Changelog
 
+## v202
+
+- Voice gateway: prepend voice-mode system prompt (1-3 sentence limit, no markdown, no follow-up questions)
+
 ## v201
 
 - Voice gateway TTS: add 30s timeout; strip markdown before synthesis so Kokoro doesn't read symbols aloud

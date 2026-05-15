@@ -63,15 +63,25 @@ VOICE_GATEWAY_PORT: int = int(os.environ.get("VOICE_GATEWAY_PORT", "8900"))
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
+_VOICE_PREAMBLE = (
+    "You are responding via a voice interface. Your reply will be converted to speech and played aloud. "
+    "Rules you must follow:\n"
+    "- Keep every response to 1-3 sentences maximum. Never longer.\n"
+    "- No markdown: no bullet points, no headers, no bold, no lists.\n"
+    "- No follow-up questions or offers to do more. Just answer and stop.\n"
+    "- If a number or stat is the answer, just say the number conversationally.\n"
+    "- If you need to use a tool, use it silently and report only the result.\n\n"
+)
+
 try:
     from pandabot_core.identity import build_system_prompt
 
-    system_prompt: str = build_system_prompt()
+    system_prompt: str = _VOICE_PREAMBLE + build_system_prompt()
     logger.info("Loaded system prompt from pandabot_core.identity")
 except ImportError:
     system_prompt = (
-        "You are Pandabot, a helpful home server assistant. "
-        "Respond conversationally and concisely — your response will be spoken aloud."
+        _VOICE_PREAMBLE +
+        "You are Pandabot, a helpful home server assistant."
     )
     logger.info("pandabot_core not available; using fallback system prompt")
 
