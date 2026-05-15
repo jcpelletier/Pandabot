@@ -1,5 +1,28 @@
 # Changelog
 
+## v194
+- Show Confirm/Cancel buttons after destructive-action previews instead of requiring the user to type "yes"; clicking Confirm executes the action, Cancel dismisses it; text "yes" still works as a fallback
+
+## v193
+- Fix !qwen (and !gemma) failing inside systemd service: replace sudo+sudoers with polkit rule so discord-bot can start/stop llama-server units directly via systemctl; fixes "unable to change to root gid" error
+- Fix double model switch banners: production bot was on v187 (predates channel guard) — double posts stop once production is promoted
+
+## v192
+- Guarantee model switch banner = model running: await ensure_model before sending banner for local profiles (!gemma, !qwen); if load fails, send error instead of banner
+
+## v191
+- Fix !qwen silently doing nothing: add PANDABOT_PROFILE_QWEN_* to server .env so qwen appears in get_available_profiles(); document in .env.example alongside all other named profiles
+
+## v190
+- Fix duplicate !command responses: bots no longer process commands in channels other than their own DISCORD_CHANNEL_ID
+- Add fallback !<profile> handler so any available profile (e.g. !qwen) works even without a dedicated cog command
+
+## v189
+- Trigger local model swap immediately after !qwen/!gemma instead of waiting for the next query
+
+## v188
+- Gemma and qwen local models now share port 8081 — only one loads at a time; switching calls switch-model.sh to stop the current service and start the requested one before the next query
+
 ## v187
 - Send model_switch_banner directly to Discord when the LLM calls switch_model via plain language, matching the visual confirmation shown by !commands
 

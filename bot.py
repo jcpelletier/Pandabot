@@ -45,7 +45,8 @@ from pandabot_core.discord_comms import make_model_switch_cog as _make_model_swi
 from pandabot_core.discord_comms import make_help_cog as _make_help_cog
 from pandabot_core.discord_comms import (
     keep_typing, split_message, send_with_retry as _send_with_retry,
-    build_history as _build_history, ConfirmationManager,
+    build_history as _build_history, ConfirmationManager, model_switch_banner,
+    make_confirmation_view,
 )
 from pandabot_core import identity as _identity
 from pandabot_core import scheduler  # used in fire_scheduled_task and task_scheduler
@@ -1192,13 +1193,13 @@ async def handle_claude_query(user_message: str, message: discord.Message) -> st
                 f"{family_ctx}"
             )
 
-    # If the active profile is the local llama.cpp model, ensure the server is in
-    # gpu-full mode before handing off to the LLM loop.  The typing indicator is
-    # already running, so the warm-up is invisible to the user.
-    if ENABLE_LOCAL_LLM and llm_provider.get_active_profile_name() == LLAMA_PROFILE_NAME:
-        if llama_manager.current_mode() != "gpu-full":
-            log.info("Pre-warming llama gpu-full mode for incoming query")
-            await llama_manager.ensure_gpu_mode()
+    # If the active profile is a local llama.cpp model, ensure the right model
+    # is loaded before handing off to the LLM loop. The typing indicator is
+    # already running, so the switch delay is invisible to the user.
+    if ENABLE_LOCAL_LLM:
+        active = llm_provider.get_active_profile_name()
+        if llama_manager.is_local_profile(active):
+            await llama_manager.ensure_model(active)
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
@@ -1469,7 +1470,6 @@ async def on_message(message: discord.Message):
         return
 
     if message.channel.id != DISCORD_CHANNEL_ID:
-        await bot.process_commands(message)
         return
 
     # Strip the mention text if present, then respond to all messages
@@ -1481,7 +1481,36 @@ async def on_message(message: discord.Message):
     # Route !commands directly — bypasses the LLM entirely so switches are reliable
     # regardless of which model is currently active.
     if content.startswith("!"):
+        cmd_name = content[1:].strip().split()[0].lower()
+
+        # For local model switches, await model load BEFORE showing the banner so
+        # the banner is a guarantee that the model is running, not just scheduled.
+        # "local" is the cog alias for LLAMA_PROFILE_NAME; all other local profile
+        # names (e.g. "gemma", "qwen") resolve to themselves.
+        _local_cmd_aliases = {"local": LLAMA_PROFILE_NAME}
+        resolved = _local_cmd_aliases.get(cmd_name, cmd_name)
+        if ENABLE_LOCAL_LLM and llama_manager.is_local_profile(resolved):
+            available = llm_provider.get_available_profiles()
+            if resolved in available:
+                llm_provider.set_active_profile(resolved)
+                ready = await llama_manager.ensure_model(resolved)
+                provider = llm_provider.get_provider()
+                if ready:
+                    await _send_with_retry(message.channel, model_switch_banner(resolved, provider.primary_model))
+                else:
+                    await _send_with_retry(message.channel, f"⚠️ Failed to load `{resolved}` — llama-server did not become ready.")
+            return
+
+        # All other ! commands: remote model switches, !model?, !commands/!help, etc.
         await bot.process_commands(message)
+        # Fallback: handle !<profile> for remote profiles without a dedicated cog command
+        registered = {c.name for c in bot.commands} | {a for c in bot.commands for a in c.aliases}
+        if cmd_name not in registered:
+            available = llm_provider.get_available_profiles()
+            if cmd_name in available:
+                llm_provider.set_active_profile(cmd_name)
+                provider = llm_provider.get_provider()
+                await _send_with_retry(message.channel, model_switch_banner(cmd_name, provider.primary_model))
         return
 
     # --- Pending-confirmation shortcut ---
@@ -1519,7 +1548,32 @@ async def on_message(message: discord.Message):
 
     for chunk in split_message(reply):
         if chunk.strip():
-            await send_with_retry(message.channel, chunk)
+            await _send_with_retry(message.channel, chunk)
+
+    # If the LLM queued a confirmation, send interactive buttons so the user
+    # can confirm with a click instead of (or in addition to) typing "yes".
+    if _confirmations.peek(message.channel.id):
+        ch_id = message.channel.id
+        event_loop = asyncio.get_running_loop()
+
+        async def _do_confirm() -> str:
+            action = _confirmations.force_consume(ch_id)
+            if not action:
+                return "No pending action found (may have already been confirmed or cancelled)."
+            try:
+                return await event_loop.run_in_executor(
+                    None, execute_tool, action["name"], action["inputs"]
+                )
+            except Exception as exc:
+                log.exception("Button-confirmed action failed")
+                return f"❌ Error: {exc}"
+
+        def _do_cancel() -> None:
+            _confirmations.clear(ch_id)
+
+        view = make_confirmation_view(execute=_do_confirm, on_cancel=_do_cancel)
+        msg = await message.channel.send(view=view)
+        view.message = msg
 
     await bot.process_commands(message)
 
@@ -1916,11 +1970,13 @@ async def task_announce_startup():
 
 
 async def task_llama_startup() -> None:
-    """Ensure llama-server is in gpu-full mode at startup."""
+    """Ensure the correct local model is loaded at startup."""
     await bot.wait_until_ready()
     llama_manager.init()
-    log.info("Ensuring llama-server in gpu-full mode at startup (profile=%s)", LLAMA_PROFILE_NAME)
-    await llama_manager.ensure_gpu_mode()
+    active = llm_provider.get_active_profile_name()
+    if llama_manager.is_local_profile(active):
+        log.info("Ensuring local model at startup (profile=%s)", active)
+        await llama_manager.ensure_model(active)
 
 
 async def main():
