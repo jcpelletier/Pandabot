@@ -46,7 +46,7 @@ from pandabot_core.discord_comms import make_help_cog as _make_help_cog
 from pandabot_core.discord_comms import (
     keep_typing, split_message, send_with_retry as _send_with_retry,
     build_history as _build_history, ConfirmationManager, model_switch_banner,
-    make_confirmation_view,
+    make_confirmation_view, announce_startup as _announce_startup,
 )
 from pandabot_core import identity as _identity
 from pandabot_core import scheduler  # used in fire_scheduled_task and task_scheduler
@@ -191,29 +191,8 @@ except Exception:
 # Config
 # ---------------------------------------------------------------------------
 
-_VERSION_FILE   = os.path.join(os.path.dirname(__file__), "VERSION")
-_CHANGELOG_FILE = os.path.join(os.path.dirname(__file__), "CHANGELOG.md")
+_VERSION_FILE = os.path.join(os.path.dirname(__file__), "VERSION")
 BOT_VERSION = int(open(_VERSION_FILE).read().strip()) if os.path.exists(_VERSION_FILE) else 0
-
-
-def _read_changelog_entry(version: int) -> str:
-    """Return bullet lines for *version* from CHANGELOG.md, or '' if not found."""
-    if not os.path.exists(_CHANGELOG_FILE):
-        return ""
-    bullets: list[str] = []
-    in_section = False
-    with open(_CHANGELOG_FILE) as fh:
-        for line in fh:
-            if line.startswith(f"## v{version}"):
-                in_section = True
-                continue
-            if in_section:
-                if line.startswith("## "):
-                    break
-                stripped = line.strip()
-                if stripped.startswith("- "):
-                    bullets.append("• " + stripped[2:])
-    return "\n".join(bullets)
 
 DISCORD_TOKEN              = os.environ["DISCORD_TOKEN"]
 DISCORD_CHANNEL_ID         = int(os.environ["DISCORD_CHANNEL_ID"])
@@ -1957,15 +1936,9 @@ async def task_voice_idle_check() -> None:
 async def task_announce_startup():
     """Post a one-time startup message with the current version and changelog."""
     await bot.wait_until_ready()
-    from pandabot_core.llm.provider import get_active_model_label
-    msg = _identity.startup_message(BOT_VERSION)
-    label = get_active_model_label()
-    if label:
-        msg += f" — powered by {label}"
-    changelog = _read_changelog_entry(BOT_VERSION)
-    if changelog:
-        msg += f"\n{changelog}"
-    await post_notification(msg)
+    channel = bot.get_channel(DISCORD_CHANNEL_ID)
+    if channel:
+        await _announce_startup(channel, os.path.dirname(__file__))
     log.info("Startup announced: v%d", BOT_VERSION)
 
 

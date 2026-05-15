@@ -1,5 +1,8 @@
 # Changelog
 
+## v195
+- Post changelog entry on startup (was previously missing despite CHANGELOG.md existing)
+
 ## v194
 - Show Confirm/Cancel buttons after destructive-action previews instead of requiring the user to type "yes"; clicking Confirm executes the action, Cancel dismisses it; text "yes" still works as a fallback
 
