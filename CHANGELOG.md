@@ -1,5 +1,9 @@
 # Changelog
 
+## v199
+
+- Voice gateway STT: switch from Docker HTTP API to local faster_whisper library (reuses pre-downloaded medium model at /opt/discord-bot/models; Docker API was timing out on model download)
+
 ## v198
 
 - Voice gateway: reject audio < 1000 bytes before calling Whisper (prevents hang on empty recordings)
