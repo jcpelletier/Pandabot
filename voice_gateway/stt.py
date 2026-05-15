@@ -14,7 +14,7 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-STT_MODEL = os.environ.get("STT_MODEL", "medium")
+STT_MODEL = os.environ.get("STT_MODEL", "small")
 _WHISPER_CACHE = "/opt/discord-bot/models"
 
 _whisper_model = None
@@ -44,6 +44,12 @@ def _transcribe_sync(audio_path: str) -> str | None:
     segments, _ = model.transcribe(audio_path, language="en", beam_size=5)
     text = " ".join(seg.text for seg in segments).strip()
     return text or None
+
+
+async def warm() -> None:
+    """Pre-load the Whisper model in a background thread. Safe to call multiple times."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _get_model)
 
 
 async def transcribe(audio_path: str, _session=None) -> str | None:

@@ -1,5 +1,12 @@
 # Changelog
 
+## v200
+
+- Voice gateway: warm Whisper model in background on WebSocket client connect
+- Voice gateway: broadcast conversation turn events over WebSocket for client history display
+- Voice gateway: switch default STT model from medium to small for faster transcription
+- Voice gateway: wire up Discord mirror (DISCORD_BOT_TOKEN now set in .env)
+
 ## v199
 
 - Voice gateway STT: switch from Docker HTTP API to local faster_whisper library (reuses pre-downloaded medium model at /opt/discord-bot/models; Docker API was timing out on model download)

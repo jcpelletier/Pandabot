@@ -292,6 +292,12 @@ async def transcribe(
         # Persist turn
         session_manager.add_turn(device_id, user_text, response_text)
 
+        # Send turn to client for conversation history display
+        await _broadcast(
+            {"type": "turn", "user_text": user_text, "assistant_text": response_text},
+            device_id,
+        )
+
         # TTS
         mp3_bytes = await tts.synthesize(response_text, http_session)
         if not mp3_bytes:
@@ -333,6 +339,9 @@ async def websocket_endpoint(
 
     await websocket.accept()
     logger.info("WebSocket connected: device=%s", device_id)
+
+    # Start warming Whisper in the background as soon as a client connects
+    asyncio.create_task(stt.warm())
 
     async with _ws_lock:
         if device_id not in _ws_connections:
