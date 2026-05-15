@@ -1,5 +1,9 @@
 # Changelog
 
+## v204
+
+- Merge sync: reconcile staging with main's promotion bookkeeping commits so promote-to-prod can fast-forward
+
 ## v203
 
 - Voice gateway: stricter voice preamble (no emojis, no category-label-colon structure, prefer one short sentence, summarise lists in prose)
