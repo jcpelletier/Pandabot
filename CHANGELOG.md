@@ -1,5 +1,13 @@
 # Changelog
 
+## v196
+- Add trigger_dev_agent tool (gated by ENABLE_DEV_AGENT=true) to hand off dev tasks to Pandabot-Dev
+- POSTs to Pandabot-Dev webhook at DEV_AGENT_URL (default http://localhost:8766/dev-task)
+- Claude uses this when a user requests a code change to any Pandabot repo
+
+## v195
+- Post changelog entry on startup (was previously missing despite CHANGELOG.md existing)
+
 ## v194
 - Show Confirm/Cancel buttons after destructive-action previews instead of requiring the user to type "yes"; clicking Confirm executes the action, Cancel dismisses it; text "yes" still works as a fallback
 

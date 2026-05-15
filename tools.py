@@ -45,6 +45,8 @@ ENABLE_CRAWL_ANALYTICS   = os.environ.get("ENABLE_CRAWL_ANALYTICS",   "false").l
 ENABLE_OPENPROJECT       = os.environ.get("ENABLE_OPENPROJECT",       "false").lower() == "true"
 ENABLE_LOCAL_LLM         = os.environ.get("ENABLE_LOCAL_LLM",         "false").lower() == "true"
 ENABLE_FAMILY            = os.environ.get("ENABLE_FAMILY",            "false").lower() == "true"
+ENABLE_DEV_AGENT         = os.environ.get("ENABLE_DEV_AGENT",         "false").lower() == "true"
+_DEV_AGENT_URL           = os.environ.get("DEV_AGENT_URL",            "http://localhost:8766")
 STEAM_LIBRARY_PATH   = os.path.expanduser(
     os.environ.get("STEAM_LIBRARY_PATH", "~/.steam/steam/steamapps")
 )
@@ -3531,6 +3533,36 @@ def _build_tool_definitions() -> list[dict]:
         _local_profile = os.environ.get("LOCAL_LLM_PROFILE_NAME", "gemma")
         _avail = _get_profiles()
         _avail_str = ", ".join(f"'{p}'" for p in _avail)
+    if ENABLE_DEV_AGENT:
+        tools.append({
+            "name": "trigger_dev_agent",
+            "description": (
+                "Hand off a development task to Pandabot-Dev, the autonomous coding agent. "
+                "Use when the user asks for a code change, new feature, or bug fix to any "
+                "Pandabot repo (Pandabot, pandabot-core, PandabotQA, MediaManagement, etc.). "
+                "Describe exactly what needs to change and why. "
+                "Pandabot-Dev will consult OpenProject for context, submit the task to Jules, "
+                "review the resulting PR with DeepSeek, and post all updates in #pandabot-dev."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": (
+                            "Full description of the code change needed — what to add, change, "
+                            "or fix, which repo it belongs to, and why."
+                        ),
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional extra context such as an OpenProject ticket number or related background.",
+                    },
+                },
+                "required": ["task"],
+            },
+        })
+
         tools += [
             {
                 "name": "query_model_status",
@@ -3695,6 +3727,25 @@ def _query_family_info(person: str, relationship: str = "") -> str:
     result = f"Family members related as '{relationship}':\n" + "\n".join(parts)
     cache.set(cache_key, result)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Dev agent handoff (optional, gated by ENABLE_DEV_AGENT)
+# ---------------------------------------------------------------------------
+
+def trigger_dev_agent(task: str, context: str = "") -> str:
+    """Forward a development task to Pandabot-Dev via its local webhook."""
+    if not ENABLE_DEV_AGENT:
+        return "Dev agent is not enabled (set ENABLE_DEV_AGENT=true)."
+    try:
+        payload = {"task": task, "context": context, "requester": "Pandabot"}
+        r = requests.post(f"{_DEV_AGENT_URL}/dev-task", json=payload, timeout=10)
+        if r.status_code == 200:
+            return "Dev task submitted to Pandabot-Dev. Check #pandabot-dev for progress and updates."
+        return f"Pandabot-Dev returned {r.status_code}: {r.text[:200]}"
+    except Exception as exc:
+        logger.warning("trigger_dev_agent failed: %s", exc)
+        return f"Failed to reach Pandabot-Dev: {exc}"
 
 
 TOOL_DEFINITIONS = _build_tool_definitions()
@@ -3885,4 +3936,9 @@ def execute_tool(name: str, inputs: dict) -> str:
         if not model_name:
             return "Error: switch_model requires a non-empty 'model_name' parameter."
         return switch_model(model_name)
+    if name == "trigger_dev_agent":
+        return trigger_dev_agent(
+            task=inputs.get("task", ""),
+            context=inputs.get("context", ""),
+        )
     return f"Unknown tool: {name}"
