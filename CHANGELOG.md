@@ -1,5 +1,17 @@
 # Changelog
 
+## v200
+
+- Merge sync: align local main with remote promotion commits from Pandabot-Dev
+
+## v199
+
+- Merge sync: align local main with remote promotion commits from Pandabot-Dev
+
+## v198
+
+- Merge sync: align local main with remote promotion commits from Pandabot-Dev
+
 ## v197
 - Add voice_gateway/ FastAPI service: voice terminal bridge (Whisper STT → Claude loop → Kokoro TTS)
 - WebSocket /ws streams state events (thinking/speaking/idle) to Flutter app
