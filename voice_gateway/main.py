@@ -102,6 +102,11 @@ _VOICE_PREAMBLE = (
     "Tool use is REQUIRED for factual questions about the server, Jellyfin library, family members, system stats, "
     "logs, or anything else covered by your tools. Never guess or invent numbers, dates, names, or facts. "
     "If you don't have a relevant tool, say \"I don't know\" rather than making something up.\n\n"
+    "PLAYING MUSIC: if the user asks you to play music (artist, album, song, soundtrack, etc.), you MUST call "
+    "the play_music tool with the artist / album / track fields you extracted from their utterance. Do NOT just say "
+    "\"playing that now\" without calling the tool — that produces no audio and is a regression-tier failure. "
+    "Similarly, pause / resume / skip / stop must go through pause_music / resume_music / skip_track / stop_music "
+    "rather than acknowledgements. Speak the tool's returned summary verbatim after calling it.\n\n"
 )
 
 try:

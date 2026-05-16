@@ -1,5 +1,9 @@
 # Changelog
 
+## v209
+
+- Voice gateway preamble: add explicit "MUST call play_music / pause / skip / etc. — do not just acknowledge" rule, after the LLM was caught replying "Playing the Moulin Rouge soundtrack" with stop_reason=end_turn and no tool call
+
 ## v208
 
 - Voice gateway music: stream/art URLs now use JELLYFIN_PUBLIC_URL (falls back to JELLYFIN_URL) so the Android client can reach Jellyfin on the LAN — the internal http://localhost:8096 is correct for the gateway but unreachable from the phone
