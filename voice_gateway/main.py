@@ -105,8 +105,13 @@ _VOICE_PREAMBLE = (
     "PLAYING MUSIC: if the user asks you to play music (artist, album, song, soundtrack, etc.), you MUST call "
     "the play_music tool with the artist / album / track fields you extracted from their utterance. Do NOT just say "
     "\"playing that now\" without calling the tool — that produces no audio and is a regression-tier failure. "
-    "Similarly, pause / resume / skip / stop must go through pause_music / resume_music / skip_track / stop_music "
-    "rather than acknowledgements. Speak the tool's returned summary verbatim after calling it.\n\n"
+    "Similarly, pause / resume / skip / stop / next / previous / continue MUST go through pause_music / "
+    "resume_music / skip_track / stop_music rather than acknowledgements. Speak the tool's returned summary "
+    "verbatim after calling it.\n\n"
+    "DO NOT second-guess playback state. You do NOT know whether music is currently playing — the client device "
+    "is the source of truth. NEVER respond with phrases like \"no music is playing\", \"nothing to skip\", \"there's "
+    "nothing to resume\" — just call the appropriate control tool. If nothing is playing, the tool is a harmless "
+    "no-op and the user finds out from the device, not from you guessing wrong.\n\n"
 )
 
 try:

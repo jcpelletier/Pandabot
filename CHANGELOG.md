@@ -1,5 +1,9 @@
 # Changelog
 
+## v210
+
+- Voice preamble: tighter rule for music control commands — LLM must NEVER second-guess playback state ("no music is playing", "nothing to skip"). The client is source of truth; just call the tool. Adds next/previous/continue to the always-call-the-tool list.
+
 ## v209
 
 - Voice gateway preamble: add explicit "MUST call play_music / pause / skip / etc. — do not just acknowledge" rule, after the LLM was caught replying "Playing the Moulin Rouge soundtrack" with stop_reason=end_turn and no tool call
