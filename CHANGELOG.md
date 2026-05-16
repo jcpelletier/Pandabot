@@ -1,5 +1,10 @@
 # Changelog
 
+## v208
+
+- Voice gateway music: stream/art URLs now use JELLYFIN_PUBLIC_URL (falls back to JELLYFIN_URL) so the Android client can reach Jellyfin on the LAN — the internal http://localhost:8096 is correct for the gateway but unreachable from the phone
+- play_music success no longer suppresses TTS; the gateway speaks the summary ("Shuffling 14 tracks by Bob Marley...") and the client kicks off the music queue once TTS finishes. Music control tools (pause/resume/skip/stop) stay silent.
+
 ## v207
 
 - Voice gateway music tools (OpenProject #112, #113): play_music searches the Jellyfin library and assembles a play queue (track/album/artist), with album-wins-tiebreak and a not-found echo that the LLM speaks back verbatim

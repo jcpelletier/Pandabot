@@ -82,6 +82,10 @@ JENKINS_URL    = os.environ.get("JENKINS_URL", "http://localhost:8080")
 JENKINS_USER   = os.environ.get("JENKINS_USER", "admin")
 JENKINS_TOKEN  = os.environ.get("JENKINS_TOKEN", "")
 JELLYFIN_URL   = os.environ.get("JELLYFIN_URL", "http://localhost:8096")
+# Public-facing URL for stream/image URLs sent to remote clients (e.g. the
+# Flutter voice terminal). The internal JELLYFIN_URL is usually localhost
+# which clients can't reach. Falls back to JELLYFIN_URL when unset.
+JELLYFIN_PUBLIC_URL = os.environ.get("JELLYFIN_PUBLIC_URL", "") or JELLYFIN_URL
 JELLYFIN_TOKEN = os.environ.get("JELLYFIN_API_KEY", "")
 APPINSIGHTS_APP_ID  = os.environ.get("APPINSIGHTS_APP_ID", "")
 AZURE_TENANT_ID     = os.environ.get("AZURE_TENANT_ID", "")
@@ -855,16 +859,21 @@ def _jf_album_tracks(album_id):
 
 
 def _stream_url(item_id):
-    """Build a streamable URL with ?api_key= query-string auth (per story #112)."""
+    """Build a streamable URL with ?api_key= query-string auth (per story #112).
+
+    Uses JELLYFIN_PUBLIC_URL so the Android client can reach Jellyfin on the
+    LAN — JELLYFIN_URL is typically http://localhost:8096 which is wrong from
+    the phone's perspective.
+    """
     return (
-        f"{JELLYFIN_URL}/Audio/{item_id}/stream"
+        f"{JELLYFIN_PUBLIC_URL}/Audio/{item_id}/stream"
         f"?api_key={urllib.parse.quote(JELLYFIN_TOKEN)}&static=true"
     )
 
 
 def _art_url(item_id):
     return (
-        f"{JELLYFIN_URL}/Items/{item_id}/Images/Primary"
+        f"{JELLYFIN_PUBLIC_URL}/Items/{item_id}/Images/Primary"
         f"?api_key={urllib.parse.quote(JELLYFIN_TOKEN)}"
     )
 
@@ -927,7 +936,7 @@ def play_music(track=None, album=None, artist=None):
                     "queue": queue,
                     "summary": summary,
                     "source": {"album_id": album_item["Id"], "kind": "album"},
-                }, silent_tts=True)
+                })
                 return summary
         if artist:
             return f"I searched for {album} by {artist} but couldn't find that album in your library."
@@ -950,7 +959,7 @@ def play_music(track=None, album=None, artist=None):
                         "queue": queue,
                         "summary": summary,
                         "source": {"album_id": album_item["Id"], "kind": "album"},
-                    }, silent_tts=True)
+                    })
                     return summary
 
         track_hits = _jf_search(track, "Audio", artist_id=artist_id, limit=10)
@@ -969,7 +978,7 @@ def play_music(track=None, album=None, artist=None):
                 "queue": queue,
                 "summary": summary,
                 "source": {"track_id": t["Id"], "kind": "track"},
-            }, silent_tts=True)
+            })
             return summary
         if artist:
             return f"I searched for {track} by {artist} but couldn't find that song."
@@ -987,7 +996,7 @@ def play_music(track=None, album=None, artist=None):
                 "queue": queue,
                 "summary": summary,
                 "source": {"artist_id": artist_id, "kind": "artist_shuffle"},
-            }, silent_tts=True)
+            })
             return summary
         return f"I found {artist_name_resolved} but they have no playable tracks in the library."
 
