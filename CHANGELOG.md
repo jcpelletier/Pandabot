@@ -1,5 +1,9 @@
 # Changelog
 
+## v205
+
+- Voice gateway preamble: forbid switch_model calls (voice runs on whatever model the operator chose in Discord), and require tool use for factual questions to prevent hallucinated answers when running on weaker local models
+
 ## v204
 
 - Merge sync: reconcile staging with main's promotion bookkeeping commits so promote-to-prod can fast-forward

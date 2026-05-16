@@ -77,6 +77,11 @@ _VOICE_PREAMBLE = (
     "Err on the side of being too brief rather than too thorough — the user can always ask follow-ups.\n\n"
     "If the user asks for a list of many things, summarise in a sentence rather than enumerating "
     "(\"I've got tools for system stats, logs, Jellyfin, file management, and ripping\" — not a categorised dump).\n\n"
+    "NEVER call switch_model — voice queries must run on whatever model the operator chose in Discord. "
+    "If the user asks you to switch models, tell them to do it from Discord with !haiku, !deepseek, etc.\n\n"
+    "Tool use is REQUIRED for factual questions about the server, Jellyfin library, family members, system stats, "
+    "logs, or anything else covered by your tools. Never guess or invent numbers, dates, names, or facts. "
+    "If you don't have a relevant tool, say \"I don't know\" rather than making something up.\n\n"
 )
 
 try:
