@@ -14,6 +14,9 @@ import glob as _glob
 import json
 import datetime
 import logging
+import random
+import threading
+import urllib.parse
 import requests
 
 # Family feature imports (optional, gated by ENABLE_FAMILY)
@@ -744,6 +747,273 @@ def query_jellyfin(query_type: str = "stats") -> str:
 
     except requests.RequestException as e:
         return f"Jellyfin API error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Jellyfin music — play_music + control tools (voice-first; Discord-safe)
+# ---------------------------------------------------------------------------
+# These tools are designed for the voice gateway. They emit WebSocket
+# envelopes via a thread-local voice context the gateway installs around
+# run_claude_loop. When no voice context is active (e.g. Discord usage),
+# they still return a useful text summary, but no envelope is broadcast.
+#
+# MVP single-device assumption: voice context is per-thread, and the
+# gateway's transcribe handler is the only caller that sets it. If we
+# ever fan out to multiple concurrent voice clients per process, this
+# context model needs to switch to per-request keys.
+
+_music_log = logging.getLogger("pandabot.music")
+_voice_local = threading.local()
+
+
+def set_voice_context(ctx):
+    """Install (or clear by passing None) a per-thread voice context.
+
+    `ctx`, if given, is a dict with:
+      - 'emit': callable taking a single envelope dict (broadcast queue)
+      - 'silent_tts': bool, set True by tools that should suppress TTS
+    """
+    _voice_local.context = ctx
+
+
+def get_voice_context():
+    return getattr(_voice_local, 'context', None)
+
+
+def _emit_envelope(envelope, silent_tts=False):
+    ctx = get_voice_context()
+    if ctx is None:
+        return
+    try:
+        ctx['emit'](envelope)
+    except Exception:
+        _music_log.exception("envelope emit failed")
+    if silent_tts:
+        ctx['silent_tts'] = True
+
+
+def _jf_headers():
+    return {"X-Emby-Token": JELLYFIN_TOKEN, "Accept": "application/json"}
+
+
+def _jf_search(name, item_types, artist_id=None, limit=10):
+    """Wrapper around Jellyfin's /Items search."""
+    if not JELLYFIN_TOKEN:
+        return []
+    params = {
+        "searchTerm": name,
+        "IncludeItemTypes": item_types,
+        "Recursive": "true",
+        "Limit": limit,
+    }
+    if artist_id:
+        params["ArtistIds"] = artist_id
+    try:
+        r = requests.get(f"{JELLYFIN_URL}/Items", headers=_jf_headers(), params=params, timeout=10)
+        r.raise_for_status()
+        return r.json().get("Items", [])
+    except requests.RequestException as e:
+        _music_log.warning("Jellyfin %s search %r failed: %s", item_types, name, e)
+        return []
+
+
+def _jf_artist_tracks(artist_id, limit=200):
+    if not JELLYFIN_TOKEN:
+        return []
+    params = {
+        "ArtistIds": artist_id,
+        "IncludeItemTypes": "Audio",
+        "Recursive": "true",
+        "Limit": limit,
+        "SortBy": "Name",
+    }
+    try:
+        r = requests.get(f"{JELLYFIN_URL}/Items", headers=_jf_headers(), params=params, timeout=15)
+        r.raise_for_status()
+        return r.json().get("Items", [])
+    except requests.RequestException as e:
+        _music_log.warning("Jellyfin artist-tracks fetch failed: %s", e)
+        return []
+
+
+def _jf_album_tracks(album_id):
+    if not JELLYFIN_TOKEN:
+        return []
+    params = {
+        "ParentId": album_id,
+        "IncludeItemTypes": "Audio",
+        "SortBy": "ParentIndexNumber,IndexNumber",
+        "Limit": 200,
+    }
+    try:
+        r = requests.get(f"{JELLYFIN_URL}/Items", headers=_jf_headers(), params=params, timeout=15)
+        r.raise_for_status()
+        return r.json().get("Items", [])
+    except requests.RequestException as e:
+        _music_log.warning("Jellyfin album-tracks fetch failed: %s", e)
+        return []
+
+
+def _stream_url(item_id):
+    """Build a streamable URL with ?api_key= query-string auth (per story #112)."""
+    return (
+        f"{JELLYFIN_URL}/Audio/{item_id}/stream"
+        f"?api_key={urllib.parse.quote(JELLYFIN_TOKEN)}&static=true"
+    )
+
+
+def _art_url(item_id):
+    return (
+        f"{JELLYFIN_URL}/Items/{item_id}/Images/Primary"
+        f"?api_key={urllib.parse.quote(JELLYFIN_TOKEN)}"
+    )
+
+
+def _track_to_queue_item(item):
+    return {
+        "id": item.get("Id"),
+        "title": item.get("Name"),
+        "artist": (item.get("AlbumArtist") or (item.get("Artists") or [None])[0] or ""),
+        "album": item.get("Album", ""),
+        "duration_ms": (item.get("RunTimeTicks") or 0) // 10000,
+        "url": _stream_url(item.get("Id")),
+        # Album art is attached to the album/parent for tracks
+        "art_url": _art_url(item.get("AlbumId") or item.get("Id")),
+    }
+
+
+def play_music(track=None, album=None, artist=None):
+    """Search Jellyfin and assemble a play queue.
+
+    On success emits a play_audio envelope (with silent_tts) and returns a
+    short summary the LLM logs/mirrors. On miss returns a "not found"
+    sentence the LLM speaks back so the user knows the search terms.
+    """
+    if not JELLYFIN_TOKEN:
+        return "Music playback is not configured (JELLYFIN_API_KEY missing)."
+
+    track = (track or "").strip() or None
+    album = (album or "").strip() or None
+    artist = (artist or "").strip() or None
+
+    if not any([track, album, artist]):
+        return "I didn't catch what to play. Try saying an artist, album, or song title."
+
+    # Resolve artist ID up front when an artist was named
+    artist_id = None
+    artist_name_resolved = artist
+    if artist:
+        hits = _jf_search(artist, "MusicArtist", limit=5)
+        if hits:
+            artist_id = hits[0].get("Id")
+            artist_name_resolved = hits[0].get("Name", artist)
+        else:
+            return f"I searched for {artist} but couldn't find that artist in your library."
+
+    # Album path (album-only, or album+artist)
+    if album:
+        album_hits = _jf_search(album, "MusicAlbum", artist_id=artist_id, limit=5)
+        if not album_hits and artist_id:
+            album_hits = _jf_search(album, "MusicAlbum", limit=5)
+        if album_hits:
+            album_item = album_hits[0]
+            tracks = _jf_album_tracks(album_item["Id"])
+            if tracks:
+                queue = [_track_to_queue_item(t) for t in tracks]
+                artist_display = album_item.get("AlbumArtist") or artist_name_resolved or "Unknown"
+                summary = f"Playing {album_item['Name']} by {artist_display}."
+                _emit_envelope({
+                    "type": "play_audio",
+                    "queue": queue,
+                    "summary": summary,
+                    "source": {"album_id": album_item["Id"], "kind": "album"},
+                }, silent_tts=True)
+                return summary
+        if artist:
+            return f"I searched for {album} by {artist} but couldn't find that album in your library."
+        return f"I searched for the album {album} but couldn't find it in your library."
+
+    # Track path (track-only or track+artist), with album-wins tiebreak
+    if track:
+        # Album-wins tiebreak: a same-named album by the named artist beats a track match
+        if artist_id:
+            album_alt = _jf_search(track, "MusicAlbum", artist_id=artist_id, limit=3)
+            if album_alt:
+                album_item = album_alt[0]
+                tracks = _jf_album_tracks(album_item["Id"])
+                if tracks:
+                    queue = [_track_to_queue_item(t) for t in tracks]
+                    artist_display = album_item.get("AlbumArtist") or artist_name_resolved or "Unknown"
+                    summary = f"Playing the {album_item['Name']} album by {artist_display}."
+                    _emit_envelope({
+                        "type": "play_audio",
+                        "queue": queue,
+                        "summary": summary,
+                        "source": {"album_id": album_item["Id"], "kind": "album"},
+                    }, silent_tts=True)
+                    return summary
+
+        track_hits = _jf_search(track, "Audio", artist_id=artist_id, limit=10)
+        if track_hits:
+            t = track_hits[0]
+            queue = [_track_to_queue_item(t)]
+            artist_display = (
+                t.get("AlbumArtist")
+                or (t.get("Artists") or [None])[0]
+                or artist_name_resolved
+                or "Unknown"
+            )
+            summary = f"Playing {t.get('Name')} by {artist_display}."
+            _emit_envelope({
+                "type": "play_audio",
+                "queue": queue,
+                "summary": summary,
+                "source": {"track_id": t["Id"], "kind": "track"},
+            }, silent_tts=True)
+            return summary
+        if artist:
+            return f"I searched for {track} by {artist} but couldn't find that song."
+        return f"I searched for the song {track} but couldn't find it in your library."
+
+    # Artist-only path: shuffle all tracks by that artist
+    if artist_id:
+        tracks = _jf_artist_tracks(artist_id)
+        if tracks:
+            random.shuffle(tracks)
+            queue = [_track_to_queue_item(t) for t in tracks]
+            summary = f"Shuffling {len(queue)} tracks by {artist_name_resolved}."
+            _emit_envelope({
+                "type": "play_audio",
+                "queue": queue,
+                "summary": summary,
+                "source": {"artist_id": artist_id, "kind": "artist_shuffle"},
+            }, silent_tts=True)
+            return summary
+        return f"I found {artist_name_resolved} but they have no playable tracks in the library."
+
+    return "I didn't catch what to play."
+
+
+def _control_music(action):
+    """Emit a playback_control envelope (pause/resume/skip/stop) and suppress TTS."""
+    _emit_envelope({"type": "playback_control", "action": action}, silent_tts=True)
+    return f"ok ({action})"
+
+
+def pause_music():
+    return _control_music("pause")
+
+
+def resume_music():
+    return _control_music("resume")
+
+
+def skip_track():
+    return _control_music("skip")
+
+
+def stop_music():
+    return _control_music("stop")
 
 
 def query_ripping(query_type: str = "staging") -> str:
@@ -3108,6 +3378,54 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
 
+        # --- Music tools (voice gateway uses these to drive the player) ---
+        tools.append({
+            "name": "play_music",
+            "description": (
+                "Play music from the Jellyfin library. Use this whenever the user asks to "
+                "play music. Extract structured params from their utterance: "
+                "track (song title), album (album name), artist. Examples: "
+                "'play Bob Marley' -> artist='Bob Marley'; "
+                "'play Legend by Bob Marley' -> album='Legend', artist='Bob Marley'; "
+                "'play Three Little Birds by Bob Marley' -> track='Three Little Birds', "
+                "artist='Bob Marley'. "
+                "If only an artist is given, the library shuffles that artist's tracks. "
+                "When a name could be either an album or a song, prefer album. "
+                "If the tool returns a not-found message (starts with 'I searched for'), "
+                "speak it back to the user verbatim so they know the gateway heard the "
+                "request correctly and the failure was a library miss, not a misunderstanding."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "track": {"type": "string", "description": "Song title, if the user named one."},
+                    "album": {"type": "string", "description": "Album name, if the user named one."},
+                    "artist": {"type": "string", "description": "Artist name, if the user named one."},
+                },
+                "required": [],
+            },
+        })
+        tools.append({
+            "name": "pause_music",
+            "description": "Pause the currently playing music. Use when the user says 'pause', 'pause the music', 'hold on', etc.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+        })
+        tools.append({
+            "name": "resume_music",
+            "description": "Resume music that was previously paused or stopped. Use when the user says 'resume music', 'continue playing', 'keep going', etc.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+        })
+        tools.append({
+            "name": "skip_track",
+            "description": "Skip to the next track in the current music queue. Use when the user says 'skip', 'next', 'next song', 'skip this one', etc.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+        })
+        tools.append({
+            "name": "stop_music",
+            "description": "Stop music playback entirely. Use when the user says 'stop', 'stop the music', 'turn it off', etc.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+        })
+
     # --- Write-action tools (gated) ---
     if ENABLE_WRITE_ACTIONS:
         _roots_desc = ", ".join(p for p in [MEDIA_PATH, STAGING_PATH] if p)
@@ -3837,6 +4155,20 @@ def execute_tool(name: str, inputs: dict) -> str:
         return query_network(inputs.get("query_type", "tailscale"))
     if name == "query_jellyfin":
         return query_jellyfin(inputs.get("query_type", "stats"))
+    if name == "play_music":
+        return play_music(
+            track=inputs.get("track"),
+            album=inputs.get("album"),
+            artist=inputs.get("artist"),
+        )
+    if name == "pause_music":
+        return pause_music()
+    if name == "resume_music":
+        return resume_music()
+    if name == "skip_track":
+        return skip_track()
+    if name == "stop_music":
+        return stop_music()
     if name == "query_ripping":
         return query_ripping(inputs.get("query_type", "staging"))
     if name == "get_performance_history":

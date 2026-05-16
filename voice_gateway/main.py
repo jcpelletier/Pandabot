@@ -15,6 +15,26 @@ Environment variables:
     TTS_VOICE             — Kokoro voice (default af_heart)
     DISCORD_VOICE_CHANNEL_ID / DISCORD_CHANNEL_ID — Discord mirror channel
     DISCORD_BOT_TOKEN     — Discord bot token for mirror posts
+
+WebSocket envelope schema (server → client):
+    {state: 'thinking'|'speaking'|'idle', device_id}
+        Lifecycle markers around a voice turn.
+    {type: 'turn', user_text, assistant_text, device_id}
+        Mirrored conversation history; sent for every turn including silent ones.
+    {type: 'push', message, device_id}
+        Operator-initiated push notification.
+    {type: 'play_audio', queue: [{id,title,artist,album,duration_ms,url,art_url}],
+        summary, source, device_id}
+        Music playback request. Client should load queue[0].url and play; on
+        track end advance through the queue. Includes a short human-readable
+        summary string for UI.
+    {type: 'playback_control', action: 'pause'|'resume'|'skip'|'stop', device_id}
+        Music control from voice. Client manipulates its current player.
+
+Music control tools (play_music, pause_music, resume_music, skip_track,
+stop_music) suppress TTS via the per-request voice_ctx['silent_tts'] flag.
+The /transcribe endpoint returns 204 No Content in that case so the client
+does not try to play any audio response.
 """
 
 from __future__ import annotations
@@ -100,15 +120,18 @@ except ImportError:
 # Tool definitions (imported from the discord-bot root via PYTHONPATH)
 # ---------------------------------------------------------------------------
 try:
-    from tools import TOOL_DEFINITIONS, execute_tool  # type: ignore[import]
+    from tools import TOOL_DEFINITIONS, execute_tool, set_voice_context  # type: ignore[import]
 
-    logger.info("Loaded TOOL_DEFINITIONS and execute_tool from tools.py")
+    logger.info("Loaded TOOL_DEFINITIONS, execute_tool, set_voice_context from tools.py")
 except ImportError:
     logger.warning("Could not import tools.py; Claude will run without tools")
     TOOL_DEFINITIONS: list = []
 
     def execute_tool(name: str, params: dict) -> str:  # type: ignore[misc]
         return f"Tool {name!r} is not available in this deployment."
+
+    def set_voice_context(ctx):  # type: ignore[misc]
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -296,28 +319,59 @@ async def transcribe(
         # Fetch conversation history
         history = session_manager.get_history(device_id)
 
+        # Per-request voice context: tools that need to talk to the device
+        # (e.g. play_music, pause_music) push envelopes onto this list and
+        # set silent_tts when no spoken response should follow.
+        pending_envelopes: list[dict] = []
+        voice_ctx = {
+            'emit': pending_envelopes.append,
+            'silent_tts': False,
+        }
+
+        def _run_loop_with_ctx():
+            set_voice_context(voice_ctx)
+            try:
+                return run_claude_loop(
+                    user_text,
+                    history,
+                    TOOL_DEFINITIONS,
+                    execute_tool,
+                    system_prompt,
+                )
+            finally:
+                set_voice_context(None)
+
         # Run Claude loop in thread executor (it is synchronous)
         loop = asyncio.get_event_loop()
-        response_text: str = await loop.run_in_executor(
-            None,
-            run_claude_loop,
-            user_text,
-            history,
-            TOOL_DEFINITIONS,
-            execute_tool,
-            system_prompt,
-        )
+        response_text: str = await loop.run_in_executor(None, _run_loop_with_ctx)
 
-        logger.info("Claude response: %r", response_text[:120])
+        logger.info(
+            "Claude response: %r  envelopes=%d silent_tts=%s",
+            response_text[:120], len(pending_envelopes), voice_ctx['silent_tts'],
+        )
 
         # Persist turn
         session_manager.add_turn(device_id, user_text, response_text)
 
-        # Send turn to client for conversation history display
+        # Send turn to client for conversation history display (always, even for silent turns)
         await _broadcast(
             {"type": "turn", "user_text": user_text, "assistant_text": response_text},
             device_id,
         )
+
+        # Broadcast any tool-emitted envelopes (play_audio, playback_control, etc.)
+        for env in pending_envelopes:
+            env.setdefault("device_id", device_id)
+            await _broadcast(env, device_id)
+
+        # Discord mirror happens for every voice turn, including silent ones,
+        # so operators can scroll back and see music commands in history
+        asyncio.create_task(discord_mirror.post_turn(user_text, response_text, http_session))
+
+        # Silent turns (music control, etc.) skip TTS entirely; return 204
+        if voice_ctx['silent_tts']:
+            asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.2))
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         # TTS
         mp3_bytes = await tts.synthesize(response_text, http_session)
@@ -327,9 +381,6 @@ async def transcribe(
 
         # Notify clients we are speaking
         await _broadcast({"state": "speaking", "device_id": device_id}, device_id)
-
-        # Mirror to Discord (fire-and-forget)
-        asyncio.create_task(discord_mirror.post_turn(user_text, response_text, http_session))
 
         # Schedule idle notification after audio delivery
         asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.5))

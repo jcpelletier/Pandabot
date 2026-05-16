@@ -1,5 +1,13 @@
 # Changelog
 
+## v207
+
+- Voice gateway music tools (OpenProject #112, #113): play_music searches the Jellyfin library and assembles a play queue (track/album/artist), with album-wins-tiebreak and a not-found echo that the LLM speaks back verbatim
+- Add pause_music, resume_music, skip_track, stop_music tools
+- New WebSocket envelopes play_audio (queue + metadata) and playback_control (pause/resume/skip/stop) broadcast to the connected device
+- TTS suppression: music-control tools set a per-request voice_ctx flag; /transcribe returns 204 No Content in that case so the client does not try to play a response. Discord mirror still receives the turn.
+- Stream URLs use ?api_key= query-string auth so just_audio can consume them with no custom HTTP source
+
 ## v206
 
 - Voice gateway TTS: prepend 300ms of silent MP3 to every response so Android AudioTrack warmup does not clip the first ~250ms ("Bob is 10" -> "ob is 10")
