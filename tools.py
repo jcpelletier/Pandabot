@@ -1021,8 +1021,32 @@ def skip_track():
     return _control_music("skip")
 
 
+def previous_track():
+    return _control_music("previous")
+
+
 def stop_music():
+    """Soft stop — current track is paused, queue + position saved so
+    'resume music' picks it back up. UI keeps the now-playing card in
+    its 'on hold' state."""
     return _control_music("stop")
+
+
+def exit_music():
+    """Hard stop — fully exit music mode. Now-playing card disappears,
+    queue is dropped, resume is not possible after this."""
+    return _control_music("exit")
+
+
+def set_loop_mode(mode: str = "all"):
+    """Cycle/set the loop mode. mode = off | all | one."""
+    if mode not in ("off", "all", "one"):
+        mode = "all"
+    _emit_envelope(
+        {"type": "playback_control", "action": "loop", "mode": mode},
+        silent_tts=True,
+    )
+    return f"ok (loop={mode})"
 
 
 def query_ripping(query_type: str = "staging") -> str:
@@ -3430,9 +3454,34 @@ def _build_tool_definitions() -> list[dict]:
             "input_schema": {"type": "object", "properties": {}, "required": []},
         })
         tools.append({
-            "name": "stop_music",
-            "description": "Stop music playback entirely. Use when the user says 'stop', 'stop the music', 'turn it off', etc.",
+            "name": "previous_track",
+            "description": "Play the previous track in the current music queue. Use when the user says 'back', 'previous', 'previous song', 'go back', 'last song'.",
             "input_schema": {"type": "object", "properties": {}, "required": []},
+        })
+        tools.append({
+            "name": "stop_music",
+            "description": "Soft-stop the music — pauses with the queue + position saved so 'resume music' picks it back up later. Use when the user says 'stop' (alone), 'stop the music' (without 'playing'), 'hold on'. For a full exit that clears the now-playing card, use exit_music instead.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+        })
+        tools.append({
+            "name": "exit_music",
+            "description": "Fully exit music mode — drops the queue, clears the now-playing card. After this, 'resume music' will say there's nothing to resume. Use when the user says 'stop playing music', 'exit music', 'turn off the music', 'I'm done with music', 'close the music'.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+        })
+        tools.append({
+            "name": "set_loop_mode",
+            "description": "Set the music loop mode. mode='all' loops the whole queue, mode='one' repeats the current track, mode='off' plays through once. Use when the user says 'loop', 'repeat', 'loop this album', 'repeat this song', 'stop looping', 'turn off repeat'.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["off", "all", "one"],
+                        "description": "'all' = repeat the queue, 'one' = repeat the current track, 'off' = no repeat.",
+                    },
+                },
+                "required": ["mode"],
+            },
         })
 
     # --- Write-action tools (gated) ---
@@ -4178,6 +4227,12 @@ def execute_tool(name: str, inputs: dict) -> str:
         return skip_track()
     if name == "stop_music":
         return stop_music()
+    if name == "previous_track":
+        return previous_track()
+    if name == "exit_music":
+        return exit_music()
+    if name == "set_loop_mode":
+        return set_loop_mode(inputs.get("mode", "all"))
     if name == "query_ripping":
         return query_ripping(inputs.get("query_type", "staging"))
     if name == "get_performance_history":

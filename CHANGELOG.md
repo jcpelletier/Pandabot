@@ -1,5 +1,10 @@
 # Changelog
 
+## v211
+
+- Voice gateway music tools: add previous_track, exit_music, set_loop_mode. exit_music is a hard stop (clears the now-playing card); stop_music remains soft (queue saved for 'resume music')
+- Voice preamble: explicit vocabulary mapping for all music control commands including loop/repeat, previous/back, and the soft/hard stop distinction
+
 ## v210
 
 - Voice preamble: tighter rule for music control commands — LLM must NEVER second-guess playback state ("no music is playing", "nothing to skip"). The client is source of truth; just call the tool. Adds next/previous/continue to the always-call-the-tool list.
