@@ -1,5 +1,9 @@
 # Changelog
 
+## v206
+
+- Voice gateway TTS: prepend 300ms of silent MP3 to every response so Android AudioTrack warmup does not clip the first ~250ms ("Bob is 10" -> "ob is 10")
+
 ## v205
 
 - Voice gateway preamble: forbid switch_model calls (voice runs on whatever model the operator chose in Discord), and require tool use for factual questions to prevent hallucinated answers when running on weaker local models

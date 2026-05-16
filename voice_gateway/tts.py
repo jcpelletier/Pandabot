@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 
 import aiohttp
 
@@ -21,6 +22,37 @@ TTS_VOICE = os.environ.get("TTS_VOICE", "af_heart")
 
 # Module-level reference to the shared aiohttp session; set by main.py at startup.
 _http_session: aiohttp.ClientSession | None = None
+
+# Cached 300ms silent MP3 prepended to every TTS response so the client's
+# AudioTrack has time to warm up before the actual audio begins — without this,
+# Android devices clip the first ~250ms ("Bob is 10" -> "ob is 10").
+_silent_prefix_cache: bytes | None = None
+
+
+def _silent_prefix() -> bytes:
+    global _silent_prefix_cache
+    if _silent_prefix_cache is not None:
+        return _silent_prefix_cache
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi",
+                "-i", "anullsrc=r=24000:cl=mono",
+                "-t", "0.3",
+                "-c:a", "libmp3lame",
+                "-b:a", "64k",
+                "-f", "mp3", "-",
+            ],
+            capture_output=True, timeout=10, check=True,
+        )
+        _silent_prefix_cache = result.stdout
+        logger.info("Generated %d-byte silent MP3 prefix for client warmup", len(_silent_prefix_cache))
+    except Exception:
+        logger.exception("Failed to generate silent MP3 prefix — first ~250ms of responses may clip")
+        _silent_prefix_cache = b""
+    return _silent_prefix_cache
 
 
 def set_session(session: aiohttp.ClientSession) -> None:
@@ -97,4 +129,4 @@ async def synthesize(text: str, client_session: aiohttp.ClientSession | None = N
         return None
 
     logger.debug("TTS synthesized %d bytes of MP3", len(mp3_bytes))
-    return mp3_bytes
+    return _silent_prefix() + mp3_bytes
