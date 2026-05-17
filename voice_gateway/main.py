@@ -114,8 +114,20 @@ _VOICE_PREAMBLE = (
     "Speak the tool's returned summary verbatim after calling it.\n\n"
     "DO NOT second-guess playback state. You do NOT know whether music is currently playing — the client device "
     "is the source of truth. NEVER respond with phrases like \"no music is playing\", \"nothing to skip\", \"there's "
-    "nothing to resume\" — just call the appropriate control tool. If nothing is playing, the tool is a harmless "
-    "no-op and the user finds out from the device, not from you guessing wrong.\n\n"
+    "nothing to resume\", \"it's already playing\", \"going back to the previous track\" (without the call), "
+    "\"looping the whole queue\" (without the call), \"done, exited music mode\" (without the call) — these are "
+    "all hallucinated acknowledgements that produce no actual effect on the device. The contract is: tool call "
+    "FIRST, then a short spoken confirmation. If you only produce the confirmation without the tool call, the user "
+    "sees no change and the test fails.\n\n"
+    "Common phrasings and the REQUIRED tool:\n"
+    "  'pause' / 'pause it' -> pause_music\n"
+    "  'resume' / 'continue' / 'play' (during music) / 'keep going' -> resume_music\n"
+    "  'next' / 'next song' / 'skip' / 'skip this' -> skip_track\n"
+    "  'back' / 'previous' / 'previous song' / 'last song' / 'go back' -> previous_track\n"
+    "  'loop' / 'repeat' / 'loop this album' / 'repeat this song' / 'stop looping' -> set_loop_mode\n"
+    "  'stop' (alone, no 'playing') / 'hold on' -> stop_music (soft)\n"
+    "  'stop playing music' / 'stop the music' / 'exit music' / 'turn off the music' -> exit_music (hard)\n"
+    "Always call the listed tool for these phrasings; do NOT respond with prose only.\n\n"
 )
 
 try:

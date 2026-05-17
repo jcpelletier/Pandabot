@@ -1,5 +1,9 @@
 # Changelog
 
+## v212
+
+- Voice gateway preamble v3: dramatically stricter rules for music control tools. Hallucinated acknowledgements ("Going back to the previous track" without calling previous_track, etc.) were captured in live tests. New preamble lists each common phrasing with the REQUIRED tool name and explicitly forbids "tool-less prose" responses.
+
 ## v211
 
 - Voice gateway music tools: add previous_track, exit_music, set_loop_mode. exit_music is a hard stop (clears the now-playing card); stop_music remains soft (queue saved for 'resume music')
