@@ -1,5 +1,9 @@
 # Changelog
 
+## v214
+
+- Voice gateway: per-request TTS voice selection (WP #121). `/transcribe` now accepts a `voice` form field or `X-Tts-Voice` header; falls back to `TTS_VOICE` env when absent. New `GET /voices` proxies Kokoro's voice catalog and `POST /tts-preview { voice, text }` returns a short audition MP3 (capped at 200 chars). Backwards compatible — old clients keep using the env default.
+
 ## v213
 
 - Voice gateway: music control intent shortcuts. Pattern-match common phrases (pause, resume, next, previous, loop, exit music, etc.) against the STT transcript before invoking the LLM — dispatch the tool directly. Three rounds of preamble strengthening did not fully stop the LLM hallucinating acknowledgements without calling the tool; this guarantees the tool fires for the most common utterances.

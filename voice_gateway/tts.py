@@ -91,13 +91,35 @@ def _strip_markdown(text: str) -> str:
     return text.strip()
 
 
-async def synthesize(text: str, client_session: aiohttp.ClientSession | None = None) -> bytes | None:
+async def list_voices(client_session: aiohttp.ClientSession | None = None) -> dict | None:
+    """Fetch the Kokoro voice catalog. Returns the parsed JSON or None on error."""
+    session = client_session or get_session()
+    url = f"{TTS_URL}/v1/audio/voices"
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with session.get(url, timeout=timeout) as resp:
+            if resp.status != 200:
+                logger.error("Kokoro /voices returned HTTP %d", resp.status)
+                return None
+            return await resp.json()
+    except Exception:
+        logger.exception("Error fetching voice catalog from %s", url)
+        return None
+
+
+async def synthesize(
+    text: str,
+    client_session: aiohttp.ClientSession | None = None,
+    voice: str | None = None,
+) -> bytes | None:
     """
     Synthesize speech from text using the Kokoro TTS service.
 
     Args:
         text: The text to speak.
         client_session: Optional aiohttp session override; defaults to the module-level session.
+        voice: Optional Kokoro voice override (e.g. "af_bella"). Falls back to TTS_VOICE
+            env default when None/empty.
 
     Returns:
         Raw MP3 bytes, or None on error.
@@ -109,7 +131,7 @@ async def synthesize(text: str, client_session: aiohttp.ClientSession | None = N
     payload = {
         "model": "kokoro",
         "input": clean_text,
-        "voice": TTS_VOICE,
+        "voice": (voice or "").strip() or TTS_VOICE,
         "response_format": "mp3",
     }
 

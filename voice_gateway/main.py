@@ -50,6 +50,7 @@ import aiohttp
 import uvicorn
 from fastapi import (
     FastAPI,
+    Form,
     Header,
     HTTPException,
     Request,
@@ -352,8 +353,10 @@ def _try_music_intent(utterance: str) -> tuple[str, str, dict, str] | None:
 async def transcribe(
     request: Request,
     audio: UploadFile,
+    voice: str | None = Form(default=None),
     authorization: str | None = Header(default=None),
     x_device_id: str | None = Header(default=None),
+    x_tts_voice: str | None = Header(default=None),
 ) -> Response:
     """
     Main voice pipeline:
@@ -462,8 +465,9 @@ async def transcribe(
             asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.2))
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-        # TTS
-        mp3_bytes = await tts.synthesize(response_text, http_session)
+        # TTS — voice may come from form field or X-Tts-Voice header
+        selected_voice = voice or x_tts_voice
+        mp3_bytes = await tts.synthesize(response_text, http_session, voice=selected_voice)
         if not mp3_bytes:
             logger.error("TTS returned no bytes for device %s", device_id)
             return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -482,6 +486,53 @@ async def transcribe(
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# GET /voices  — Kokoro voice catalog proxy
+# ---------------------------------------------------------------------------
+
+@app.get("/voices")
+async def voices(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Proxy Kokoro's /v1/audio/voices catalog so clients have a single endpoint."""
+    _check_bearer(authorization)
+    http_session: aiohttp.ClientSession = request.app.state.http_session
+    catalog = await tts.list_voices(http_session)
+    if catalog is None:
+        return JSONResponse({"error": "voice catalog unavailable"}, status_code=502)
+    return JSONResponse(catalog)
+
+
+# ---------------------------------------------------------------------------
+# POST /tts-preview  — audition a voice with a short sample
+# ---------------------------------------------------------------------------
+
+class TtsPreviewRequest(BaseModel):
+    voice: str
+    text: str = "Hello, I'm Pandabot. This is what I sound like."
+
+
+@app.post("/tts-preview")
+async def tts_preview(
+    request: Request,
+    body: TtsPreviewRequest,
+    authorization: str | None = Header(default=None),
+) -> Response:
+    """Synthesize a short audition clip in the requested voice."""
+    _check_bearer(authorization)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    if len(text) > 200:
+        raise HTTPException(status_code=400, detail="text exceeds 200 chars")
+    http_session: aiohttp.ClientSession = request.app.state.http_session
+    mp3_bytes = await tts.synthesize(text, http_session, voice=body.voice)
+    if not mp3_bytes:
+        return Response(status_code=status.HTTP_502_BAD_GATEWAY)
+    return Response(content=mp3_bytes, media_type="audio/mpeg")
 
 
 # ---------------------------------------------------------------------------
