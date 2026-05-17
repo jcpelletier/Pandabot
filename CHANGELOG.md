@@ -1,5 +1,9 @@
 # Changelog
 
+## v213
+
+- Voice gateway: music control intent shortcuts. Pattern-match common phrases (pause, resume, next, previous, loop, exit music, etc.) against the STT transcript before invoking the LLM — dispatch the tool directly. Three rounds of preamble strengthening did not fully stop the LLM hallucinating acknowledgements without calling the tool; this guarantees the tool fires for the most common utterances.
+
 ## v212
 
 - Voice gateway preamble v3: dramatically stricter rules for music control tools. Hallucinated acknowledgements ("Going back to the previous track" without calling previous_track, etc.) were captured in live tests. New preamble lists each common phrasing with the REQUIRED tool name and explicitly forbids "tool-less prose" responses.

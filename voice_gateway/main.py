@@ -298,6 +298,53 @@ app = FastAPI(title="Pandabot Voice Gateway", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
+# Music control intent shortcuts
+# ---------------------------------------------------------------------------
+# Three rounds of preamble strengthening haven't fully stopped deepseek from
+# hallucinating "Going back to the previous track." / "Resuming." / "Done,
+# exited music mode." without actually calling the tool. For the most common
+# music control utterances we pattern-match BEFORE running the LLM loop and
+# dispatch the tool directly. The LLM only sees anything that doesn't match.
+
+import re as _re
+
+_MUSIC_INTENTS: list[tuple[_re.Pattern, str, dict, str]] = [
+    # (regex, tool name, kwargs, spoken confirmation — TTS-suppressed)
+    (_re.compile(r"^pause( it| the music)?[.!]?$", _re.IGNORECASE),
+     "pause_music", {}, "Paused."),
+    (_re.compile(r"^(resume( music| playing)?|continue( music| playing)?|keep going|play(?: it| music)?)[.!]?$", _re.IGNORECASE),
+     "resume_music", {}, "Resuming."),
+    (_re.compile(r"^(next( song| track)?|skip( this| the song| track)?)[.!]?$", _re.IGNORECASE),
+     "skip_track", {}, "Skipping."),
+    (_re.compile(r"^(back|previous( song| track)?|last song|go back|previous)[.!]?$", _re.IGNORECASE),
+     "previous_track", {}, "Going back."),
+    (_re.compile(r"^(loop|repeat|loop (this|the)( album| queue)|loop all|repeat all)[.!]?$", _re.IGNORECASE),
+     "set_loop_mode", {"mode": "all"}, "Looping the queue."),
+    (_re.compile(r"^(repeat (this|the) song|loop( this)? one|repeat one)[.!]?$", _re.IGNORECASE),
+     "set_loop_mode", {"mode": "one"}, "Repeating this song."),
+    (_re.compile(r"^(no loop|no repeat|stop looping|turn off (loop|repeat))[.!]?$", _re.IGNORECASE),
+     "set_loop_mode", {"mode": "off"}, "Loop off."),
+    (_re.compile(r"^(stop( the music)?|hold on)[.!]?$", _re.IGNORECASE),
+     "stop_music", {}, "Stopped."),
+    (_re.compile(r"^(stop playing music|exit music( mode)?|turn off (the )?music|close (the )?music|i'?m done with music)[.!]?$", _re.IGNORECASE),
+     "exit_music", {}, "Music off."),
+]
+
+
+def _try_music_intent(utterance: str) -> tuple[str, str, dict, str] | None:
+    """If the utterance is a recognised music control phrase, return
+    (utterance, tool_name, kwargs, spoken_confirmation). Else None.
+
+    Strips trailing whitespace + common STT artefacts before matching.
+    """
+    u = utterance.strip().rstrip(",")
+    for rx, tool, kwargs, say in _MUSIC_INTENTS:
+        if rx.match(u):
+            return u, tool, kwargs, say
+    return None
+
+
+# ---------------------------------------------------------------------------
 # POST /transcribe
 # ---------------------------------------------------------------------------
 
@@ -342,9 +389,6 @@ async def transcribe(
 
         logger.info("User said: %r", user_text)
 
-        # Fetch conversation history
-        history = session_manager.get_history(device_id)
-
         # Per-request voice context: tools that need to talk to the device
         # (e.g. play_music, pause_music) push envelopes onto this list and
         # set silent_tts when no spoken response should follow.
@@ -354,22 +398,41 @@ async def transcribe(
             'silent_tts': False,
         }
 
-        def _run_loop_with_ctx():
+        # FAST PATH — music control intents bypass the LLM. The model has
+        # been caught hallucinating "Going back to the previous track."
+        # / "Resuming." / "Done, exited music mode." without calling the
+        # tool. Pattern-match the common phrases and dispatch directly.
+        intent = _try_music_intent(user_text)
+        if intent is not None:
+            _, tool_name, tool_kwargs, spoken = intent
+            logger.info("Music intent shortcut: %s%s -> %s",
+                        tool_name, tool_kwargs, spoken)
             set_voice_context(voice_ctx)
             try:
-                return run_claude_loop(
-                    user_text,
-                    history,
-                    TOOL_DEFINITIONS,
-                    execute_tool,
-                    system_prompt,
-                )
+                execute_tool(tool_name, tool_kwargs)
             finally:
                 set_voice_context(None)
+            response_text = spoken
+        else:
+            # Fetch conversation history
+            history = session_manager.get_history(device_id)
 
-        # Run Claude loop in thread executor (it is synchronous)
-        loop = asyncio.get_event_loop()
-        response_text: str = await loop.run_in_executor(None, _run_loop_with_ctx)
+            def _run_loop_with_ctx():
+                set_voice_context(voice_ctx)
+                try:
+                    return run_claude_loop(
+                        user_text,
+                        history,
+                        TOOL_DEFINITIONS,
+                        execute_tool,
+                        system_prompt,
+                    )
+                finally:
+                    set_voice_context(None)
+
+            # Run Claude loop in thread executor (it is synchronous)
+            loop = asyncio.get_event_loop()
+            response_text: str = await loop.run_in_executor(None, _run_loop_with_ctx)
 
         logger.info(
             "Claude response: %r  envelopes=%d silent_tts=%s",
