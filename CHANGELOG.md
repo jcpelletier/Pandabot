@@ -1,5 +1,9 @@
 # Changelog
 
+## v215
+
+- Voice notifications: non-LLM alerts (Jenkins failures, disk/watchdog monitors, scheduled reminders, media pipeline) now also speak through the Flutter voice app when a client is connected. Voice gateway gains `POST /speak` — TTS-synthesises text and broadcasts base64 MP3 as a `{type: 'speak'}` WebSocket event. `post_notification_to()` fire-and-forgets to `/speak` after every Discord send. Discord markdown and status emoji are stripped before TTS.
+
 ## v214
 
 - Voice gateway: per-request TTS voice selection (WP #121). `/transcribe` now accepts a `voice` form field or `X-Tts-Voice` header; falls back to `TTS_VOICE` env when absent. New `GET /voices` proxies Kokoro's voice catalog and `POST /tts-preview { voice, text }` returns a short audition MP3 (capped at 200 chars). Backwards compatible — old clients keep using the env default.

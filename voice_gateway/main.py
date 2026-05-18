@@ -30,6 +30,9 @@ WebSocket envelope schema (server → client):
         summary string for UI.
     {type: 'playback_control', action: 'pause'|'resume'|'skip'|'stop', device_id}
         Music control from voice. Client manipulates its current player.
+    {type: 'speak', text, audio_b64, device_id}
+        System notification pushed from the Discord bot. audio_b64 is a
+        base64-encoded MP3. Client should play it immediately if not busy.
 
 Music control tools (play_music, pause_music, resume_music, skip_track,
 stop_music) suppress TTS via the per-request voice_ctx['silent_tts'] flag.
@@ -40,6 +43,7 @@ does not try to play any audio response.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -602,6 +606,50 @@ async def push(
     }
     await _broadcast(event, payload.device_id)
     return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# POST /speak  — synthesise text and push audio to connected Flutter clients
+# ---------------------------------------------------------------------------
+
+class SpeakPayload(BaseModel):
+    text: str
+    device_id: str | None = None
+
+
+@app.post("/speak")
+async def speak(
+    request: Request,
+    payload: SpeakPayload,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """
+    Synthesise text via TTS and broadcast the resulting MP3 to all connected
+    Flutter clients as a {type: 'speak', text, audio_b64} WebSocket event.
+    Called by the Discord bot when a non-LLM notification fires.
+    """
+    _check_bearer(authorization)
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    http_session: aiohttp.ClientSession = request.app.state.http_session
+    mp3_bytes = await tts.synthesize(text, http_session)
+    if not mp3_bytes:
+        logger.warning("/speak: TTS returned no bytes for text %r", text[:80])
+        return JSONResponse({"ok": False, "error": "TTS failed"}, status_code=502)
+
+    audio_b64 = base64.b64encode(mp3_bytes).decode()
+    clients_before = _total_connections()
+    await _broadcast(
+        {"type": "speak", "text": text, "audio_b64": audio_b64, "device_id": payload.device_id},
+        payload.device_id,
+    )
+    logger.info(
+        "/speak: %d chars → %d bytes audio → %d client(s)",
+        len(text), len(mp3_bytes), clients_before,
+    )
+    return JSONResponse({"ok": True, "clients_notified": clients_before})
 
 
 # ---------------------------------------------------------------------------

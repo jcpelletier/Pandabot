@@ -230,6 +230,10 @@ TTS_AUTO_JOIN_CHANNEL_ID = int(os.environ["TTS_AUTO_JOIN_CHANNEL_ID"]) if os.env
 TTS_TRIGGER_BOT_IDS      = {int(x) for x in os.environ.get("TTS_TRIGGER_BOT_IDS", "").split(",") if x.strip()}
 ENABLE_KOKORO_IDLE       = os.environ.get("ENABLE_KOKORO_IDLE", "false").lower() == "true"
 
+# Voice gateway (Flutter app notifications)
+VOICE_GATEWAY_URL   = os.environ.get("VOICE_GATEWAY_URL", "http://127.0.0.1:8900")
+VOICE_GATEWAY_TOKEN = os.environ.get("VOICE_GATEWAY_TOKEN", "")
+
 if ENABLE_KOKORO_IDLE:
     import kokoro_manager
 
@@ -1561,6 +1565,46 @@ async def on_message(message: discord.Message):
 # Notification webhook (local only — Jenkins / scripts POST here)
 # ---------------------------------------------------------------------------
 
+_NOTIF_EMOJI_MAP = {
+    "🔴": "Failure:", "✅": "Success:", "❌": "Error:",
+    "⚠️": "Alert:", "🟢": "Success:", "🟡": "Warning:",
+    "⏱️": "Timed out:", "🔄": "Pending:",
+    "🎬": "", "🎵": "", "📦": "",
+}
+
+def _strip_discord_markdown(text: str) -> str:
+    """Convert a Discord-formatted notification to plain spoken text for TTS."""
+    for emoji, word in _NOTIF_EMOJI_MAP.items():
+        text = text.replace(emoji, word)
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    text = re.sub(r'<@!?\d+>', '', text)
+    text = re.sub(r'https?://\S+', '', text)
+    text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+async def _speak_via_gateway(text: str) -> None:
+    """Fire-and-forget: push a spoken notification to connected Flutter clients."""
+    if not VOICE_GATEWAY_TOKEN:
+        return
+    spoken = _strip_discord_markdown(text)
+    if not spoken:
+        return
+    try:
+        async with aiohttp.ClientSession() as session:
+            await session.post(
+                f"{VOICE_GATEWAY_URL}/speak",
+                json={"text": spoken},
+                headers={"Authorization": f"Bearer {VOICE_GATEWAY_TOKEN}"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            )
+    except Exception:
+        pass
+
+
 async def post_notification(text: str):
     """Send a notification to the configured Discord channel."""
     await post_notification_to(DISCORD_CHANNEL_ID, text)
@@ -1574,6 +1618,7 @@ async def post_notification_to(channel_id: int, text: str):
         return
     for chunk in split_message(text):
         await send_with_retry(channel, chunk)
+    asyncio.create_task(_speak_via_gateway(text))
 
 
 async def post_scheduled_notification(channel_id: int, text: str):
