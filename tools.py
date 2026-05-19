@@ -845,14 +845,18 @@ def _jf_album_tracks(album_id):
         return []
     params = {
         "ParentId": album_id,
+        "Recursive": "true",
         "IncludeItemTypes": "Audio",
         "SortBy": "ParentIndexNumber,IndexNumber",
+        "SortOrder": "Ascending",
         "Limit": 200,
     }
     try:
         r = requests.get(f"{JELLYFIN_URL}/Items", headers=_jf_headers(), params=params, timeout=15)
         r.raise_for_status()
-        return r.json().get("Items", [])
+        tracks = r.json().get("Items", [])
+        _music_log.info("Album %s: fetched %d tracks", album_id, len(tracks))
+        return tracks
     except requests.RequestException as e:
         _music_log.warning("Jellyfin album-tracks fetch failed: %s", e)
         return []

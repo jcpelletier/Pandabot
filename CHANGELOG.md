@@ -1,5 +1,9 @@
 # Changelog
 
+## v216
+
+- Music: fix album track fetch — add `Recursive=true` and `SortOrder=Ascending` to `_jf_album_tracks()` so tracks in disc subfolders are returned correctly.
+
 ## v215
 
 - Voice notifications: non-LLM alerts (Jenkins failures, disk/watchdog monitors, scheduled reminders, media pipeline) now also speak through the Flutter voice app when a client is connected. Voice gateway gains `POST /speak` — TTS-synthesises text and broadcasts base64 MP3 as a `{type: 'speak'}` WebSocket event. `post_notification_to()` fire-and-forgets to `/speak` after every Discord send. Discord markdown and status emoji are stripped before TTS.
