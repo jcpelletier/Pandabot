@@ -2814,6 +2814,31 @@ def update_op_work_package(wp_id: int, subject: str = "", type_id: int = 0,
         return f"OpenProject error: {e}"
 
 
+def move_work_package(work_package_id: int, target_project_identifier: str) -> dict:
+    """Make a PATCH call to move a work package to a new project."""
+    current = _op("GET", f"/work_packages/{work_package_id}")
+    lock_version = current.get("lockVersion", 0)
+    body = {
+        "lockVersion": lock_version,
+        "_links": {
+            "project": {
+                "href": f"/api/v3/projects/{target_project_identifier}"
+            }
+        }
+    }
+    return _op("PATCH", f"/work_packages/{work_package_id}", json=body)
+
+
+def move_op_work_package(work_package_id: int, target_project: str) -> str:
+    """Move a work package from its current project to a different project."""
+    if not ENABLE_OPENPROJECT:
+        return "OpenProject integration is not enabled."
+    try:
+        return json.dumps(_op_slim_wp(move_work_package(work_package_id, target_project)), indent=2)
+    except Exception as e:
+        return f"OpenProject error: {e}"
+
+
 def list_op_types(project: str = "") -> str:
     if not ENABLE_OPENPROJECT:
         return "OpenProject integration is not enabled."
@@ -3829,6 +3854,18 @@ def _build_tool_definitions() -> list[dict]:
                 },
             },
             {
+                "name": "move_op_work_package",
+                "description": "Move a work package from its current project to a different project.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "work_package_id": {"type": "integer", "description": "The ID of the work package to move."},
+                        "target_project":  {"type": "string", "description": "The project identifier or ID to move the work package to."},
+                    },
+                    "required": ["work_package_id", "target_project"],
+                },
+            },
+            {
                 "name": "list_op_types",
                 "description": "List available work package types. Optionally scope to a project to see only that project's enabled types.",
                 "input_schema": {
@@ -4309,6 +4346,8 @@ def execute_tool(name: str, inputs: dict) -> str:
             inputs.get("status", ""), inputs.get("start_date", ""), inputs.get("due_date", ""),
             inputs.get("parent_wp_id", 0),
         )
+    if name == "move_op_work_package":
+        return move_op_work_package(inputs["work_package_id"], inputs["target_project"])
     if name == "list_op_types":
         return list_op_types(inputs.get("project", ""))
     if name == "add_op_project_member":
