@@ -32,8 +32,30 @@ os.environ.setdefault("DISCORD_CHANNEL_ID", "123456789012345678")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 # --- Stub heavy runtime deps via pandabot_core.testing ---
-from pandabot_core.testing import stub_discord
-stub_discord()
+try:
+    from pandabot_core.testing import stub_discord
+    stub_discord()
+except ImportError:
+    # Environment missing pandabot_core shared library (e.g. CI/dev)
+    import sys
+    from unittest.mock import MagicMock
+    for modname in [
+        "pandabot_core", "pandabot_core.llm", "pandabot_core.llm.usage",
+        "pandabot_core.llm.provider", "pandabot_core.llm.loop",
+        "pandabot_core.telemetry", "pandabot_core.discord_comms",
+        "pandabot_core.testing"
+    ]:
+        m = MagicMock()
+        if modname == "pandabot_core.discord_comms":
+            # Provide a basic implementation of split_message for tests
+            def split_message(text, limit=1900):
+                if not text: return [""]
+                chunks = []
+                for i in range(0, len(text), limit):
+                    chunks.append(text[i:i+limit])
+                return chunks
+            m.split_message.side_effect = split_message
+        sys.modules.setdefault(modname, m)
 
 
 @pytest.fixture

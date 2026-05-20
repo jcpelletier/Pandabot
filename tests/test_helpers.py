@@ -200,3 +200,54 @@ class TestSplitMessage:
     def test_empty_string(self):
         chunks = self.split_message("")
         assert chunks == [""]
+
+
+# ---------------------------------------------------------------------------
+# _strip_discord_markdown (from bot.py)
+# ---------------------------------------------------------------------------
+
+class TestStripDiscordMarkdown:
+    @pytest.fixture(autouse=True)
+    def setup_bot(self):
+        import bot
+        self.strip = bot._strip_discord_markdown
+
+    def test_bold_stripped(self):
+        assert self.strip("Hello **world**!") == "Hello world!"
+
+    def test_italics_stripped(self):
+        assert self.strip("Hello *world*!") == "Hello world!"
+
+    def test_code_stripped(self):
+        assert self.strip("Use `pip install` to start.") == "Use pip install to start."
+
+    def test_user_ping_stripped(self):
+        assert self.strip("Hello <@123456789>!") == "Hello !"
+        assert self.strip("Hello <@!123456789>!") == "Hello !"
+
+    def test_url_stripped(self):
+        assert self.strip("Check out https://example.com/page") == "Check out"
+
+    def test_blockquote_stripped(self):
+        assert self.strip("> This is a quote\nAnd this is not.") == "This is a quote And this is not."
+
+    def test_emoji_mapped(self):
+        assert self.strip("🔴 Job failed") == "Failure: Job failed"
+        assert self.strip("✅ Job succeeded") == "Success: Job succeeded"
+
+    def test_multiple_markdown_combined(self):
+        text = "> **Alert:** `Disk usage` is high! ⚠️ See https://monitor.local"
+        # 1. > Blockquote -> "Alert: `Disk usage` is high! ⚠️ See https://monitor.local"
+        # 2. **Bold** -> "Alert: `Disk usage` is high! ⚠️ See https://monitor.local"
+        # 3. `Code` -> "Alert: Disk usage is high! ⚠️ See https://monitor.local"
+        # 4. ⚠️ Emoji -> "Alert: Disk usage is high! Alert: See https://monitor.local"
+        # 5. URL -> "Alert: Disk usage is high! Alert: See "
+        # 6. whitespace -> "Alert: Disk usage is high! Alert: See"
+        assert self.strip(text) == "Alert: Disk usage is high! Alert: See"
+
+    def test_empty_string(self):
+        assert self.strip("") == ""
+
+    def test_only_markdown_returns_empty(self):
+        assert self.strip("**bold**") == "bold"
+        assert self.strip("<@123>") == ""
