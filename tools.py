@@ -86,6 +86,11 @@ JELLYFIN_URL   = os.environ.get("JELLYFIN_URL", "http://localhost:8096")
 # Flutter voice terminal). The internal JELLYFIN_URL is usually localhost
 # which clients can't reach. Falls back to JELLYFIN_URL when unset.
 JELLYFIN_PUBLIC_URL = os.environ.get("JELLYFIN_PUBLIC_URL", "") or JELLYFIN_URL
+
+# HTTPS base URL used only for Cast stream URLs. Newer Chromecast/Google Home
+# firmware blocks HTTP media — use an HTTPS reverse-proxy URL here.
+# Falls back to JELLYFIN_PUBLIC_URL when not set (HTTP, fine for older devices).
+JELLYFIN_CAST_BASE_URL = os.environ.get("JELLYFIN_CAST_BASE_URL", "") or JELLYFIN_PUBLIC_URL
 JELLYFIN_TOKEN = os.environ.get("JELLYFIN_API_KEY", "")
 APPINSIGHTS_APP_ID  = os.environ.get("APPINSIGHTS_APP_ID", "")
 AZURE_TENANT_ID     = os.environ.get("AZURE_TENANT_ID", "")
@@ -879,9 +884,12 @@ def _cast_stream_url(item_id):
     declare audio/mpeg, causing the receiver to reject the stream silently.
     Requesting .mp3 tells Jellyfin to transcode to MP3 regardless of source
     format, so the declared content-type is always accurate.
+
+    JELLYFIN_CAST_BASE_URL should point to an HTTPS reverse proxy (e.g.
+    https://jellyfin.jpelletier.com) because newer Cast firmware blocks HTTP.
     """
     return (
-        f"{JELLYFIN_PUBLIC_URL}/Audio/{item_id}/stream.mp3"
+        f"{JELLYFIN_CAST_BASE_URL}/Audio/{item_id}/stream.mp3"
         f"?api_key={urllib.parse.quote(JELLYFIN_TOKEN)}"
     )
 

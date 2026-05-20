@@ -1,5 +1,9 @@
 # Changelog
 
+## v219
+
+- Cast (Story #125): add `JELLYFIN_CAST_BASE_URL` env var; `_cast_stream_url` now uses it so Cast streams go via the HTTPS reverse proxy (`https://jellyfin.jpelletier.com`) rather than `http://192.168.1.100:8096`. Newer Cast firmware blocks HTTP media. Falls back to `JELLYFIN_PUBLIC_URL` when not set.
+
 ## v218
 
 - Cast (Story #125): fix silent Cast playback — add `_cast_stream_url()` using `.mp3` extension to force Jellyfin transcoding; include `cast_url` in `_track_to_queue_item` so Flutter uses the MP3 URL for Cast (accurate `audio/mpeg` content-type) while local ExoPlayer keeps the lossless `static=true` URL.
