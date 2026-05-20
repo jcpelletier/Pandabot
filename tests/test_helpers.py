@@ -155,6 +155,12 @@ class TestFmtBytes:
     def test_gigabytes(self):
         assert tools._fmt_bytes(1024 ** 3) == "1.0 GB"
 
+    def test_terabytes(self):
+        assert tools._fmt_bytes(1024 ** 4) == "1.0 TB"
+
+    def test_petabytes(self):
+        assert tools._fmt_bytes(1024 ** 5) == "1.0 PB"
+
     def test_fractional_mb(self):
         result = tools._fmt_bytes(int(1.5 * 1024 * 1024))
         assert result == "1.5 MB"
