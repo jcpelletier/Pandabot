@@ -1,5 +1,9 @@
 # Changelog
 
+## v218
+
+- Cast (Story #125): fix silent Cast playback — add `_cast_stream_url()` using `.mp3` extension to force Jellyfin transcoding; include `cast_url` in `_track_to_queue_item` so Flutter uses the MP3 URL for Cast (accurate `audio/mpeg` content-type) while local ExoPlayer keeps the lossless `static=true` URL.
+
 ## v217
 
 - Cast (Story #125): `play_music` now accepts `cast_target` parameter; all four emit paths include it in the `play_audio` envelope when set.

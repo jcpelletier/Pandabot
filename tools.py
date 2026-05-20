@@ -871,6 +871,21 @@ def _stream_url(item_id):
     )
 
 
+def _cast_stream_url(item_id):
+    """Build a Cast-compatible MP3 stream URL (story #125).
+
+    Chromecast receivers require an accurate Content-Type declaration.
+    Using static=true serves the original file format (FLAC, etc.) but we
+    declare audio/mpeg, causing the receiver to reject the stream silently.
+    Requesting .mp3 tells Jellyfin to transcode to MP3 regardless of source
+    format, so the declared content-type is always accurate.
+    """
+    return (
+        f"{JELLYFIN_PUBLIC_URL}/Audio/{item_id}/stream.mp3"
+        f"?api_key={urllib.parse.quote(JELLYFIN_TOKEN)}"
+    )
+
+
 def _art_url(item_id):
     return (
         f"{JELLYFIN_PUBLIC_URL}/Items/{item_id}/Images/Primary"
@@ -879,15 +894,19 @@ def _art_url(item_id):
 
 
 def _track_to_queue_item(item):
+    item_id = item.get("Id")
     return {
-        "id": item.get("Id"),
+        "id": item_id,
         "title": item.get("Name"),
         "artist": (item.get("AlbumArtist") or (item.get("Artists") or [None])[0] or ""),
         "album": item.get("Album", ""),
         "duration_ms": (item.get("RunTimeTicks") or 0) // 10000,
-        "url": _stream_url(item.get("Id")),
+        "url": _stream_url(item_id),
+        # Separate Cast URL: forces MP3 transcoding so content-type is always accurate
+        # (static=true serves original FLAC/etc. which Cast receivers reject when told audio/mpeg)
+        "cast_url": _cast_stream_url(item_id),
         # Album art is attached to the album/parent for tracks
-        "art_url": _art_url(item.get("AlbumId") or item.get("Id")),
+        "art_url": _art_url(item.get("AlbumId") or item_id),
     }
 
 
