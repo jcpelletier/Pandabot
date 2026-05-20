@@ -845,18 +845,14 @@ def _jf_album_tracks(album_id):
         return []
     params = {
         "ParentId": album_id,
-        "Recursive": "true",
         "IncludeItemTypes": "Audio",
         "SortBy": "ParentIndexNumber,IndexNumber",
-        "SortOrder": "Ascending",
         "Limit": 200,
     }
     try:
         r = requests.get(f"{JELLYFIN_URL}/Items", headers=_jf_headers(), params=params, timeout=15)
         r.raise_for_status()
-        tracks = r.json().get("Items", [])
-        _music_log.info("Album %s: fetched %d tracks", album_id, len(tracks))
-        return tracks
+        return r.json().get("Items", [])
     except requests.RequestException as e:
         _music_log.warning("Jellyfin album-tracks fetch failed: %s", e)
         return []
@@ -895,7 +891,7 @@ def _track_to_queue_item(item):
     }
 
 
-def play_music(track=None, album=None, artist=None):
+def play_music(track=None, album=None, artist=None, cast_target=None):
     """Search Jellyfin and assemble a play queue.
 
     On success emits a play_audio envelope (with silent_tts) and returns a
@@ -940,6 +936,7 @@ def play_music(track=None, album=None, artist=None):
                     "queue": queue,
                     "summary": summary,
                     "source": {"album_id": album_item["Id"], "kind": "album"},
+                    **({"cast_target": cast_target} if cast_target else {}),
                 })
                 return summary
         if artist:
@@ -963,6 +960,7 @@ def play_music(track=None, album=None, artist=None):
                         "queue": queue,
                         "summary": summary,
                         "source": {"album_id": album_item["Id"], "kind": "album"},
+                        **({"cast_target": cast_target} if cast_target else {}),
                     })
                     return summary
 
@@ -982,6 +980,7 @@ def play_music(track=None, album=None, artist=None):
                 "queue": queue,
                 "summary": summary,
                 "source": {"track_id": t["Id"], "kind": "track"},
+                **({"cast_target": cast_target} if cast_target else {}),
             })
             return summary
         if artist:
@@ -1000,6 +999,7 @@ def play_music(track=None, album=None, artist=None):
                 "queue": queue,
                 "summary": summary,
                 "source": {"artist_id": artist_id, "kind": "artist_shuffle"},
+                **({"cast_target": cast_target} if cast_target else {}),
             })
             return summary
         return f"I found {artist_name_resolved} but they have no playable tracks in the library."
@@ -3430,7 +3430,13 @@ def _build_tool_definitions() -> list[dict]:
                 "When a name could be either an album or a song, prefer album. "
                 "If the tool returns a not-found message (starts with 'I searched for'), "
                 "speak it back to the user verbatim so they know the gateway heard the "
-                "request correctly and the failure was a library miss, not a misunderstanding."
+                "request correctly and the failure was a library miss, not a misunderstanding. "
+                "CASTING: If the user says to cast or send the music to a device (e.g. 'cast it "
+                "to the living room', 'play on the TV'), set cast_target to the EXACT device "
+                "name from the Chromecast device list in the system prompt. Fuzzy-match their "
+                "utterance to the list. If ambiguous between multiple devices, respond with the "
+                "available names and ask them to be more specific — do not call this tool yet. "
+                "If no Chromecast devices are listed, tell the user none are found on the network."
             ),
             "input_schema": {
                 "type": "object",
@@ -3438,6 +3444,7 @@ def _build_tool_definitions() -> list[dict]:
                     "track": {"type": "string", "description": "Song title, if the user named one."},
                     "album": {"type": "string", "description": "Album name, if the user named one."},
                     "artist": {"type": "string", "description": "Artist name, if the user named one."},
+                    "cast_target": {"type": "string", "description": "Exact Chromecast device name to cast to, if the user asked to cast."},
                 },
                 "required": [],
             },
@@ -4222,6 +4229,7 @@ def execute_tool(name: str, inputs: dict) -> str:
             track=inputs.get("track"),
             album=inputs.get("album"),
             artist=inputs.get("artist"),
+            cast_target=inputs.get("cast_target"),
         )
     if name == "pause_music":
         return pause_music()

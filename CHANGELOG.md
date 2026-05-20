@@ -1,5 +1,10 @@
 # Changelog
 
+## v217
+
+- Cast (Story #125): `play_music` now accepts `cast_target` parameter; all four emit paths include it in the `play_audio` envelope when set.
+- Voice gateway: incoming WebSocket `cast_devices` messages are now parsed and stored per device; Chromecast device names are injected into the per-request LLM system prompt for Cast routing.
+
 ## v216
 
 - Music: fix album track fetch — add `Recursive=true` and `SortOrder=Ascending` to `_jf_album_tracks()` so tracks in disc subfolders are returned correctly.

@@ -18,6 +18,12 @@ Environment variables:
 
 WebSocket envelope schema (server → client):
     {state: 'thinking'|'speaking'|'idle', device_id}
+
+WebSocket messages (client → server):
+    {type: 'cast_devices', devices: ["name1", "name2", ...]}
+        Sent by the Flutter app whenever the discovered Chromecast device
+        list changes. Gateway stores these per device_id and injects them
+        into the LLM system prompt so it knows which cast_target names to use.
         Lifecycle markers around a voice turn.
     {type: 'turn', user_text, assistant_text, device_id}
         Mirrored conversation history; sent for every turn including silent ones.
@@ -197,6 +203,9 @@ session_manager = SessionManager()
 # WebSocket connections: device_id → set of active WebSocket objects
 _ws_connections: dict[str, set[WebSocket]] = {}
 _ws_lock = asyncio.Lock()
+
+# Cast devices reported by each client: device_id → list of friendly names
+_cast_devices: dict[str, list[str]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +433,21 @@ async def transcribe(
             # Fetch conversation history
             history = session_manager.get_history(device_id)
 
+            cast_devs = _cast_devices.get(device_id, [])
+            effective_prompt = system_prompt
+            if cast_devs:
+                names = ", ".join(f'"{d}"' for d in cast_devs)
+                effective_prompt += (
+                    f"\n\nChromecast devices currently visible on the network: {names}.\n"
+                    "When the user asks to cast music to a device:\n"
+                    "- Match their utterance to one of the names above (fuzzy match).\n"
+                    "- If confident of the match, call play_music with cast_target set "
+                    "to the EXACT device name from the list above.\n"
+                    "- If ambiguous between multiple devices, list the available device "
+                    "names and ask the user to be more specific — do not call play_music yet.\n"
+                    "- If the user asks to stop casting, call stop_music.\n"
+                )
+
             def _run_loop_with_ctx():
                 set_voice_context(voice_ctx)
                 try:
@@ -432,7 +456,7 @@ async def transcribe(
                         history,
                         TOOL_DEFINITIONS,
                         execute_tool,
-                        system_prompt,
+                        effective_prompt,
                     )
                 finally:
                     set_voice_context(None)
@@ -566,11 +590,19 @@ async def websocket_endpoint(
 
     try:
         while True:
-            # Accept incoming messages (ignored for now) to keep the connection alive
             try:
-                await websocket.receive_text()
+                msg_text = await websocket.receive_text()
             except WebSocketDisconnect:
                 break
+            try:
+                msg = json.loads(msg_text)
+                if isinstance(msg, dict) and msg.get("type") == "cast_devices":
+                    devs = msg.get("devices", [])
+                    if isinstance(devs, list):
+                        _cast_devices[device_id] = [str(d) for d in devs if d]
+                        logger.debug("Cast devices for %s: %s", device_id, _cast_devices[device_id])
+            except Exception:
+                pass
     except Exception:
         pass
     finally:
