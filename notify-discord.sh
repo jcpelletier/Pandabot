@@ -54,3 +54,37 @@ curl -sf \
   -d "$PAYLOAD" \
   "http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/notify" \
 || echo "WARNING: Discord notification failed (bot may be down)"
+
+# On failure, also push a toast notification to the voice gateway
+# so the ambient terminal device shows an alert banner.
+if [ "$STATUS" = "FAILURE" ] || [ "$STATUS" = "FAILED" ]; then
+  GATEWAY_TOKEN=""
+  if [ -f /opt/discord-bot/voice-gateway.token ]; then
+    GATEWAY_TOKEN=$(cat /opt/discord-bot/voice-gateway.token | tr -d '[:space:]')
+  fi
+
+  if [ -n "$GATEWAY_TOKEN" ]; then
+    PUSH_PAYLOAD=$(python3 - "$JOB_NAME" "$BUILD_NUMBER" "$BUILD_URL" <<'PYEOF'
+import json, sys
+_, job, build_num, url = sys.argv
+print(json.dumps({
+    "type": "push",
+    "message": f"Jenkins {job} #{build_num} FAILED" + (f" — {url}" if url else ""),
+    "device_id": "",
+}))
+PYEOF
+    )
+    GATEWAY_PORT=8900
+    GATEWAY_HOST="127.0.0.1"
+    if getent hosts host-gateway >/dev/null 2>&1; then
+      GATEWAY_HOST="host-gateway"
+    fi
+    curl -sf \
+      -X POST \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $GATEWAY_TOKEN" \
+      -d "$PUSH_PAYLOAD" \
+      "http://${GATEWAY_HOST}:${GATEWAY_PORT}/push" \
+    || echo "WARNING: Voice gateway push notification failed (gateway may be down)"
+  fi
+fi

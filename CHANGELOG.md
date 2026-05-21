@@ -1,5 +1,9 @@
 # Changelog
 
+## v220
+
+- Jenkins failure alert (Story #109): `notify-discord.sh` now also POSTs a push notification to the voice gateway (`/push`) on FAILURE so the Flutter ambient terminal shows an alert banner. Token read from `/opt/discord-bot/voice-gateway.token`.
+
 ## v219
 
 - Cast (Story #125): add `JELLYFIN_CAST_BASE_URL` env var; `_cast_stream_url` now uses it so Cast streams go via the HTTPS reverse proxy (`https://jellyfin.jpelletier.com`) rather than `http://192.168.1.100:8096`. Newer Cast firmware blocks HTTP media. Falls back to `JELLYFIN_PUBLIC_URL` when not set.
