@@ -110,6 +110,11 @@ _VOICE_PREAMBLE = (
     "(\"I've got tools for system stats, logs, Jellyfin, file management, and ripping\" — not a categorised dump).\n\n"
     "NEVER call switch_model — voice queries must run on whatever model the operator chose in Discord. "
     "If the user asks you to switch models, tell them to do it from Discord with !haiku, !deepseek, etc.\n\n"
+    "SCHEDULING — this rule overrides the 'answer immediately' instructions above: if the user asks for "
+    "something at a FUTURE time or on a condition ('in X minutes', 'in X hours', 'tomorrow', 'at [time]', "
+    "'remind me', 'when X happens', 'once X is done', etc.), you MUST call manage_schedule to defer the "
+    "task — do NOT answer or perform the action immediately. After scheduling, confirm in one short sentence "
+    "(e.g. 'Got it, I'll tell you a joke in two minutes.').\n\n"
     "Tool use is REQUIRED for factual questions about the server, Jellyfin library, family members, system stats, "
     "logs, or anything else covered by your tools. Never guess or invent numbers, dates, names, or facts. "
     "If you don't have a relevant tool, say \"I don't know\" rather than making something up.\n\n"
@@ -647,6 +652,7 @@ async def push(
 class SpeakPayload(BaseModel):
     text: str
     device_id: str | None = None
+    voice: str | None = None
 
 
 @app.post("/speak")
@@ -666,7 +672,7 @@ async def speak(
         raise HTTPException(status_code=400, detail="text is required")
 
     http_session: aiohttp.ClientSession = request.app.state.http_session
-    mp3_bytes = await tts.synthesize(text, http_session)
+    mp3_bytes = await tts.synthesize(text, http_session, voice=payload.voice)
     if not mp3_bytes:
         logger.warning("/speak: TTS returned no bytes for text %r", text[:80])
         return JSONResponse({"ok": False, "error": "TTS failed"}, status_code=502)

@@ -1,5 +1,10 @@
 # Changelog
 
+## v221
+
+- Voice notifications (Story #130): scheduled-task `/speak` calls now pass `voice: am_santa` so the ambient terminal speaks notifications in the same voice as live TTS. Added `voice` field to `SpeakPayload` in the voice gateway; `_speak_via_gateway` in `bot.py` includes the voice in its POST body.
+- Voice scheduling fix: added SCHEDULING rule to `_VOICE_PREAMBLE` that overrides the "answer immediately" instruction for future-time requests, so "tell me a joke in two minutes" via voice now correctly calls `manage_schedule` instead of answering inline.
+
 ## v220
 
 - Jenkins failure alert (Story #109): `notify-discord.sh` now also POSTs a push notification to the voice gateway (`/push`) on FAILURE so the Flutter ambient terminal shows an alert banner. Token read from `/opt/discord-bot/voice-gateway.token`.

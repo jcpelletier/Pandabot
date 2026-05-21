@@ -1597,7 +1597,7 @@ async def _speak_via_gateway(text: str) -> None:
         async with aiohttp.ClientSession() as session:
             await session.post(
                 f"{VOICE_GATEWAY_URL}/speak",
-                json={"text": spoken},
+                json={"text": spoken, "voice": "am_santa"},
                 headers={"Authorization": f"Bearer {VOICE_GATEWAY_TOKEN}"},
                 timeout=aiohttp.ClientTimeout(total=15),
             )
