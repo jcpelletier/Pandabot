@@ -1,5 +1,9 @@
 # Changelog
 
+## v222
+
+- Set `TTS_VOICE` default to `am_santa` (was `af_heart`) in `tts.py` and `.env.example`; updated server `.env` directly so any new deploy or unset env var falls back to `am_santa` without needing per-call overrides.
+
 ## v221
 
 - Voice notifications (Story #130): scheduled-task `/speak` calls now pass `voice: am_santa` so the ambient terminal speaks notifications in the same voice as live TTS. Added `voice` field to `SpeakPayload` in the voice gateway; `_speak_via_gateway` in `bot.py` includes the voice in its POST body.

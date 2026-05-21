@@ -18,7 +18,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 TTS_URL = os.environ.get("TTS_URL", "http://localhost:8880")
-TTS_VOICE = os.environ.get("TTS_VOICE", "af_heart")
+TTS_VOICE = os.environ.get("TTS_VOICE", "am_santa")
 
 # Module-level reference to the shared aiohttp session; set by main.py at startup.
 _http_session: aiohttp.ClientSession | None = None

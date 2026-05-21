@@ -12,7 +12,7 @@ Environment variables:
     VOICE_GATEWAY_PORT    — listen port (default 8900)
     STT_URL               — Whisper endpoint (default http://localhost:8001)
     TTS_URL               — Kokoro endpoint (default http://localhost:8880)
-    TTS_VOICE             — Kokoro voice (default af_heart)
+    TTS_VOICE             — Kokoro voice (default am_santa)
     DISCORD_VOICE_CHANNEL_ID / DISCORD_CHANNEL_ID — Discord mirror channel
     DISCORD_BOT_TOKEN     — Discord bot token for mirror posts
 
