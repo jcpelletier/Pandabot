@@ -1,5 +1,10 @@
 # Changelog
 
+## v225
+
+- Natural cadence pauses (Story #133): Flutter `_drainChunkQueue` now inserts a 150-350 ms pause every 2-3 sentence chunks for responses of 3+ chunks total, giving longer answers a more conversational delivery. The pause interval (`_pauseEvery`: 2 or 3) is randomised per turn in `_onStreamingComplete`; the duration is random within the 150-350 ms range each time. Short 1- or 2-sentence answers play straight through. Barge-in remains instant because the `_bargedIn` flag is checked immediately after each `Future.delayed`. All changes in `pandabot-flutter/lib/main.dart`; no gateway changes.
+- `notify-discord.sh` cleanup: removed empty `"device_id": ""` field from the JSON payload (no functional change).
+
 ## v224
 
 - Voice STT GPU (Story #132): `stt.py` now supports GPU-accelerated Whisper via three new env vars: `STT_DEVICE` (cuda/cpu, default cpu), `STT_COMPUTE_TYPE` (float16/int8, default int8), `STT_GPU_MIN_FREE_MB` (default 1000). When `STT_DEVICE=cuda`, a per-transcription nvidia-smi check queries free VRAM; if less than `STT_GPU_MIN_FREE_MB` is available (gaming is active and consuming most of the GTX 970's 4 GB), the call automatically falls back to a lazy-loaded CPU model for that turn without disrupting the game. The GPU model is reused on the next turn once the game releases memory. Primary model load errors (driver mismatch, no CUDA) automatically fall back to CPU int8 and log the failure. Added all three vars to `.env.example`.

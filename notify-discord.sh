@@ -70,7 +70,6 @@ _, job, build_num, url = sys.argv
 print(json.dumps({
     "type": "push",
     "message": f"Jenkins {job} #{build_num} FAILED" + (f" — {url}" if url else ""),
-    "device_id": "",
 }))
 PYEOF
     )
