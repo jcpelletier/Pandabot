@@ -1,5 +1,9 @@
 # Changelog
 
+## v224
+
+- Voice STT GPU (Story #132): `stt.py` now supports GPU-accelerated Whisper via three new env vars: `STT_DEVICE` (cuda/cpu, default cpu), `STT_COMPUTE_TYPE` (float16/int8, default int8), `STT_GPU_MIN_FREE_MB` (default 1000). When `STT_DEVICE=cuda`, a per-transcription nvidia-smi check queries free VRAM; if less than `STT_GPU_MIN_FREE_MB` is available (gaming is active and consuming most of the GTX 970's 4 GB), the call automatically falls back to a lazy-loaded CPU model for that turn without disrupting the game. The GPU model is reused on the next turn once the game releases memory. Primary model load errors (driver mismatch, no CUDA) automatically fall back to CPU int8 and log the failure. Added all three vars to `.env.example`.
+
 ## v223
 
 - Voice latency (Story #131 — WP-131): three round-trip improvements:
