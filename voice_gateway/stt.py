@@ -15,6 +15,7 @@ import threading
 logger = logging.getLogger(__name__)
 
 STT_MODEL = os.environ.get("STT_MODEL", "small")
+STT_BEAM_SIZE = int(os.environ.get("STT_BEAM_SIZE", "1"))
 _WHISPER_CACHE = "/opt/discord-bot/models"
 
 _whisper_model = None
@@ -41,7 +42,7 @@ def _get_model():
 
 def _transcribe_sync(audio_path: str) -> str | None:
     model = _get_model()
-    segments, _ = model.transcribe(audio_path, language="en", beam_size=5)
+    segments, _ = model.transcribe(audio_path, language="en", beam_size=STT_BEAM_SIZE)
     text = " ".join(seg.text for seg in segments).strip()
     return text or None
 

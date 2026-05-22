@@ -11,8 +11,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import subprocess
-
 import aiohttp
 
 logger = logging.getLogger(__name__)
@@ -22,37 +20,6 @@ TTS_VOICE = os.environ.get("TTS_VOICE", "am_santa")
 
 # Module-level reference to the shared aiohttp session; set by main.py at startup.
 _http_session: aiohttp.ClientSession | None = None
-
-# Cached 300ms silent MP3 prepended to every TTS response so the client's
-# AudioTrack has time to warm up before the actual audio begins — without this,
-# Android devices clip the first ~250ms ("Bob is 10" -> "ob is 10").
-_silent_prefix_cache: bytes | None = None
-
-
-def _silent_prefix() -> bytes:
-    global _silent_prefix_cache
-    if _silent_prefix_cache is not None:
-        return _silent_prefix_cache
-    try:
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-hide_banner", "-loglevel", "error",
-                "-f", "lavfi",
-                "-i", "anullsrc=r=24000:cl=mono",
-                "-t", "0.3",
-                "-c:a", "libmp3lame",
-                "-b:a", "64k",
-                "-f", "mp3", "-",
-            ],
-            capture_output=True, timeout=10, check=True,
-        )
-        _silent_prefix_cache = result.stdout
-        logger.info("Generated %d-byte silent MP3 prefix for client warmup", len(_silent_prefix_cache))
-    except Exception:
-        logger.exception("Failed to generate silent MP3 prefix — first ~250ms of responses may clip")
-        _silent_prefix_cache = b""
-    return _silent_prefix_cache
 
 
 def set_session(session: aiohttp.ClientSession) -> None:
@@ -151,4 +118,32 @@ async def synthesize(
         return None
 
     logger.debug("TTS synthesized %d bytes of MP3", len(mp3_bytes))
-    return _silent_prefix() + mp3_bytes
+    return mp3_bytes
+
+
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentence-level chunks on punctuation boundaries."""
+    parts = _SENTENCE_SPLIT_RE.split(text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+async def synthesize_sentences(
+    text: str,
+    client_session: aiohttp.ClientSession | None = None,
+    voice: str | None = None,
+):
+    """Async generator that yields MP3 bytes for each sentence of *text*.
+
+    Sentences are split on punctuation boundaries (.!?) and synthesised
+    individually, so the first chunk is available while later sentences are
+    still being synthesised.  The caller receives an async iterable of raw
+    MP3 byte strings, one per non-empty sentence.
+    """
+    clean = _strip_markdown(text)
+    for sentence in _split_sentences(clean):
+        mp3 = await synthesize(sentence, client_session=client_session, voice=voice)
+        if mp3:
+            yield mp3

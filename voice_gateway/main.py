@@ -39,6 +39,14 @@ WebSocket messages (client → server):
     {type: 'speak', text, audio_b64, device_id}
         System notification pushed from the Discord bot. audio_b64 is a
         base64-encoded MP3. Client should play it immediately if not busy.
+    {type: 'speak_chunk', seq: int, audio_b64: str, device_id}
+        Sentence-level TTS chunk for a voice turn. Sent one per sentence before
+        the HTTP /transcribe response returns. Client queues and plays each
+        chunk as it arrives so audio starts before all sentences are synthesised.
+    {type: 'speak_done', total: int, device_id}
+        Sentinel sent after all speak_chunk events for a turn. total is the
+        number of chunks sent. /transcribe returns HTTP 202 immediately after
+        this event is broadcast.
 
 Music control tools (play_music, pause_music, resume_music, skip_track,
 stop_music) suppress TTS via the per-request voice_ctx['silent_tts'] flag.
@@ -270,7 +278,7 @@ async def lifespan(app: FastAPI):
         VOICE_GATEWAY_PORT,
         os.environ.get("STT_URL", "http://localhost:8001"),
         os.environ.get("TTS_URL", "http://localhost:8880"),
-        os.environ.get("TTS_VOICE", "af_heart"),
+        os.environ.get("TTS_VOICE", "am_santa"),
     )
 
     http_session = aiohttp.ClientSession()
@@ -498,20 +506,37 @@ async def transcribe(
             asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.2))
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-        # TTS — voice may come from form field or X-Tts-Voice header
+        # TTS — stream sentence-by-sentence over WebSocket so the client can
+        # start playing sentence 1 while sentence 2 is still being synthesised.
+        # voice may come from the multipart form field or X-Tts-Voice header.
         selected_voice = voice or x_tts_voice
-        mp3_bytes = await tts.synthesize(response_text, http_session, voice=selected_voice)
-        if not mp3_bytes:
-            logger.error("TTS returned no bytes for device %s", device_id)
-            return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        # Notify clients we are speaking
         await _broadcast({"state": "speaking", "device_id": device_id}, device_id)
 
-        # Schedule idle notification after audio delivery
+        seq = 0
+        async for chunk_bytes in tts.synthesize_sentences(response_text, http_session, voice=selected_voice):
+            audio_b64 = base64.b64encode(chunk_bytes).decode()
+            await _broadcast(
+                {
+                    "type": "speak_chunk",
+                    "seq": seq,
+                    "audio_b64": audio_b64,
+                    "device_id": device_id,
+                },
+                device_id,
+            )
+            logger.debug("speak_chunk seq=%d  %d bytes  device=%s", seq, len(chunk_bytes), device_id)
+            seq += 1
+
+        await _broadcast(
+            {"type": "speak_done", "total": seq, "device_id": device_id},
+            device_id,
+        )
+        logger.info("TTS streaming done: %d chunk(s) for device %s", seq, device_id)
+
         asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.5))
 
-        return Response(content=mp3_bytes, media_type="audio/mpeg")
+        # Return 202 Accepted — audio has been pushed via WebSocket
+        return Response(status_code=status.HTTP_202_ACCEPTED)
 
     finally:
         if tmp_path:

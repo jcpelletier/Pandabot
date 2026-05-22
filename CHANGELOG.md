@@ -1,5 +1,12 @@
 # Changelog
 
+## v223
+
+- Voice latency (Story #131 — WP-131): three round-trip improvements:
+  1. **Sentence streaming**: `/transcribe` now synthesises each sentence individually and broadcasts it as `{type: speak_chunk, seq, audio_b64}` over the WebSocket before returning HTTP 202. `speak_done` is sent after the last chunk. The Flutter client queues and plays chunks as they arrive; first audio now starts while later sentences are still synthesising. Full MP3 return path (HTTP 200) retained for backwards compatibility.
+  2. **STT beam_size**: `STT_BEAM_SIZE` env var (default 1) replaces the hardcoded `beam_size=5` in `stt.py`. Greedy decode is ~2× faster at minimal accuracy cost. Set `STT_BEAM_SIZE=5` in `.env` to restore the previous behaviour. Added to `.env.example`.
+  3. **Silent prefix removed**: `tts.py` no longer prepends a 300 ms silent MP3 to every TTS response. The prefix was added to stabilise ExoPlayer against a bitrate-transition idle event; that root cause was fixed in the Flutter app (audio session stays in play+record mode). Removing it saves ~300 ms per turn.
+
 ## v222
 
 - Set `TTS_VOICE` default to `am_santa` (was `af_heart`) in `tts.py` and `.env.example`; updated server `.env` directly so any new deploy or unset env var falls back to `am_santa` without needing per-call overrides.
