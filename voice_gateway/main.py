@@ -52,6 +52,11 @@ Music control tools (play_music, pause_music, resume_music, skip_track,
 stop_music) suppress TTS via the per-request voice_ctx['silent_tts'] flag.
 The /transcribe endpoint returns 204 No Content in that case so the client
 does not try to play any audio response.
+
+POST /chat accepts {"text": "...", "device_id": "...", "voice": "..."} and
+runs the same Claude→TTS pipeline as /transcribe but skips Whisper STT.
+Used by Android Auto: Google Assistant App Actions provide the transcription;
+the Android background service posts the extracted text here directly.
 """
 
 from __future__ import annotations
@@ -372,6 +377,125 @@ def _try_music_intent(utterance: str) -> tuple[str, str, dict, str] | None:
 
 
 # ---------------------------------------------------------------------------
+# _process_utterance — shared pipeline (called by /transcribe and /chat)
+# ---------------------------------------------------------------------------
+
+async def _process_utterance(
+    user_text: str,
+    device_id: str,
+    voice: str | None,
+    http_session: aiohttp.ClientSession,
+) -> Response:
+    """text → Claude loop → Kokoro TTS → WebSocket broadcast.
+
+    Returns 202 Accepted (TTS chunks broadcast) or 204 No Content (silent turn).
+    Caller is responsible for broadcasting the 'thinking' state before calling this.
+    """
+    pending_envelopes: list[dict] = []
+    voice_ctx = {
+        'emit': pending_envelopes.append,
+        'silent_tts': False,
+    }
+
+    # FAST PATH — music control intents bypass the LLM. The model has
+    # been caught hallucinating "Going back to the previous track."
+    # / "Resuming." / "Done, exited music mode." without calling the
+    # tool. Pattern-match the common phrases and dispatch directly.
+    intent = _try_music_intent(user_text)
+    if intent is not None:
+        _, tool_name, tool_kwargs, spoken = intent
+        logger.info("Music intent shortcut: %s%s -> %s", tool_name, tool_kwargs, spoken)
+        set_voice_context(voice_ctx)
+        try:
+            execute_tool(tool_name, tool_kwargs)
+        finally:
+            set_voice_context(None)
+        response_text = spoken
+    else:
+        history = session_manager.get_history(device_id)
+
+        cast_devs = _cast_devices.get(device_id, [])
+        effective_prompt = system_prompt
+        if cast_devs:
+            names = ", ".join(f'"{d}"' for d in cast_devs)
+            effective_prompt += (
+                f"\n\nChromecast devices currently visible on the network: {names}.\n"
+                "When the user asks to cast music to a device:\n"
+                "- Match their utterance to one of the names above (fuzzy match).\n"
+                "- If confident of the match, call play_music with cast_target set "
+                "to the EXACT device name from the list above.\n"
+                "- If ambiguous between multiple devices, list the available device "
+                "names and ask the user to be more specific — do not call play_music yet.\n"
+                "- If the user asks to stop casting, call stop_music.\n"
+            )
+
+        def _run_loop_with_ctx():
+            set_voice_context(voice_ctx)
+            try:
+                return run_claude_loop(
+                    user_text,
+                    history,
+                    TOOL_DEFINITIONS,
+                    execute_tool,
+                    effective_prompt,
+                )
+            finally:
+                set_voice_context(None)
+
+        loop = asyncio.get_event_loop()
+        response_text: str = await loop.run_in_executor(None, _run_loop_with_ctx)
+
+    logger.info(
+        "Claude response: %r  envelopes=%d silent_tts=%s",
+        response_text[:120], len(pending_envelopes), voice_ctx['silent_tts'],
+    )
+
+    session_manager.add_turn(device_id, user_text, response_text)
+
+    await _broadcast(
+        {"type": "turn", "user_text": user_text, "assistant_text": response_text},
+        device_id,
+    )
+
+    for env in pending_envelopes:
+        env.setdefault("device_id", device_id)
+        await _broadcast(env, device_id)
+
+    asyncio.create_task(discord_mirror.post_turn(user_text, response_text, http_session))
+
+    if voice_ctx['silent_tts']:
+        asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.2))
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    await _broadcast({"state": "speaking", "device_id": device_id}, device_id)
+
+    seq = 0
+    async for chunk_bytes in tts.synthesize_sentences(response_text, http_session, voice=voice):
+        audio_b64 = base64.b64encode(chunk_bytes).decode()
+        await _broadcast(
+            {
+                "type": "speak_chunk",
+                "seq": seq,
+                "audio_b64": audio_b64,
+                "device_id": device_id,
+            },
+            device_id,
+        )
+        logger.debug("speak_chunk seq=%d  %d bytes  device=%s", seq, len(chunk_bytes), device_id)
+        seq += 1
+
+    await _broadcast(
+        {"type": "speak_done", "total": seq, "device_id": device_id},
+        device_id,
+    )
+    logger.info("TTS streaming done: %d chunk(s) for device %s", seq, device_id)
+
+    asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.5))
+
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+# ---------------------------------------------------------------------------
 # POST /transcribe
 # ---------------------------------------------------------------------------
 
@@ -394,7 +518,6 @@ async def transcribe(
 
     tmp_path: str | None = None
     try:
-        # Save uploaded audio to a temp file
         suffix = os.path.splitext(audio.filename or "audio.wav")[1] or ".wav"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp_path = tmp.name
@@ -407,10 +530,8 @@ async def transcribe(
             logger.info("Audio too small (%d bytes) — ignoring", len(content))
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-        # Notify clients we are thinking
         await _broadcast({"state": "thinking", "device_id": device_id}, device_id)
 
-        # STT
         user_text = await stt.transcribe(tmp_path, http_session)
         if not user_text:
             logger.info("STT returned empty result; returning 204")
@@ -418,125 +539,7 @@ async def transcribe(
 
         logger.info("User said: %r", user_text)
 
-        # Per-request voice context: tools that need to talk to the device
-        # (e.g. play_music, pause_music) push envelopes onto this list and
-        # set silent_tts when no spoken response should follow.
-        pending_envelopes: list[dict] = []
-        voice_ctx = {
-            'emit': pending_envelopes.append,
-            'silent_tts': False,
-        }
-
-        # FAST PATH — music control intents bypass the LLM. The model has
-        # been caught hallucinating "Going back to the previous track."
-        # / "Resuming." / "Done, exited music mode." without calling the
-        # tool. Pattern-match the common phrases and dispatch directly.
-        intent = _try_music_intent(user_text)
-        if intent is not None:
-            _, tool_name, tool_kwargs, spoken = intent
-            logger.info("Music intent shortcut: %s%s -> %s",
-                        tool_name, tool_kwargs, spoken)
-            set_voice_context(voice_ctx)
-            try:
-                execute_tool(tool_name, tool_kwargs)
-            finally:
-                set_voice_context(None)
-            response_text = spoken
-        else:
-            # Fetch conversation history
-            history = session_manager.get_history(device_id)
-
-            cast_devs = _cast_devices.get(device_id, [])
-            effective_prompt = system_prompt
-            if cast_devs:
-                names = ", ".join(f'"{d}"' for d in cast_devs)
-                effective_prompt += (
-                    f"\n\nChromecast devices currently visible on the network: {names}.\n"
-                    "When the user asks to cast music to a device:\n"
-                    "- Match their utterance to one of the names above (fuzzy match).\n"
-                    "- If confident of the match, call play_music with cast_target set "
-                    "to the EXACT device name from the list above.\n"
-                    "- If ambiguous between multiple devices, list the available device "
-                    "names and ask the user to be more specific — do not call play_music yet.\n"
-                    "- If the user asks to stop casting, call stop_music.\n"
-                )
-
-            def _run_loop_with_ctx():
-                set_voice_context(voice_ctx)
-                try:
-                    return run_claude_loop(
-                        user_text,
-                        history,
-                        TOOL_DEFINITIONS,
-                        execute_tool,
-                        effective_prompt,
-                    )
-                finally:
-                    set_voice_context(None)
-
-            # Run Claude loop in thread executor (it is synchronous)
-            loop = asyncio.get_event_loop()
-            response_text: str = await loop.run_in_executor(None, _run_loop_with_ctx)
-
-        logger.info(
-            "Claude response: %r  envelopes=%d silent_tts=%s",
-            response_text[:120], len(pending_envelopes), voice_ctx['silent_tts'],
-        )
-
-        # Persist turn
-        session_manager.add_turn(device_id, user_text, response_text)
-
-        # Send turn to client for conversation history display (always, even for silent turns)
-        await _broadcast(
-            {"type": "turn", "user_text": user_text, "assistant_text": response_text},
-            device_id,
-        )
-
-        # Broadcast any tool-emitted envelopes (play_audio, playback_control, etc.)
-        for env in pending_envelopes:
-            env.setdefault("device_id", device_id)
-            await _broadcast(env, device_id)
-
-        # Discord mirror happens for every voice turn, including silent ones,
-        # so operators can scroll back and see music commands in history
-        asyncio.create_task(discord_mirror.post_turn(user_text, response_text, http_session))
-
-        # Silent turns (music control, etc.) skip TTS entirely; return 204
-        if voice_ctx['silent_tts']:
-            asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.2))
-            return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-        # TTS — stream sentence-by-sentence over WebSocket so the client can
-        # start playing sentence 1 while sentence 2 is still being synthesised.
-        # voice may come from the multipart form field or X-Tts-Voice header.
-        selected_voice = voice or x_tts_voice
-        await _broadcast({"state": "speaking", "device_id": device_id}, device_id)
-
-        seq = 0
-        async for chunk_bytes in tts.synthesize_sentences(response_text, http_session, voice=selected_voice):
-            audio_b64 = base64.b64encode(chunk_bytes).decode()
-            await _broadcast(
-                {
-                    "type": "speak_chunk",
-                    "seq": seq,
-                    "audio_b64": audio_b64,
-                    "device_id": device_id,
-                },
-                device_id,
-            )
-            logger.debug("speak_chunk seq=%d  %d bytes  device=%s", seq, len(chunk_bytes), device_id)
-            seq += 1
-
-        await _broadcast(
-            {"type": "speak_done", "total": seq, "device_id": device_id},
-            device_id,
-        )
-        logger.info("TTS streaming done: %d chunk(s) for device %s", seq, device_id)
-
-        asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.5))
-
-        # Return 202 Accepted — audio has been pushed via WebSocket
-        return Response(status_code=status.HTTP_202_ACCEPTED)
+        return await _process_utterance(user_text, device_id, voice or x_tts_voice, http_session)
 
     finally:
         if tmp_path:
@@ -544,6 +547,47 @@ async def transcribe(
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# POST /chat  — text-first pipeline (Android Auto / Google Assistant App Actions)
+# ---------------------------------------------------------------------------
+
+class ChatRequest(BaseModel):
+    text: str
+    device_id: str = "default"
+    voice: str | None = None
+
+
+@app.post("/chat")
+async def chat(
+    request: Request,
+    body: ChatRequest,
+    authorization: str | None = Header(default=None),
+) -> Response:
+    """
+    Text-first pipeline — skips Whisper STT:
+      text → Claude loop → Kokoro TTS → WebSocket broadcast
+
+    Used by Android Auto: Google Assistant provides transcription via an App
+    Action intent; the Android background service posts the extracted text here
+    instead of sending raw audio to /transcribe.
+
+    Returns 202 Accepted (TTS broadcast via WebSocket) or 204 No Content
+    for silent turns (music control commands).
+    """
+    _check_bearer(authorization)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    http_session: aiohttp.ClientSession = request.app.state.http_session
+    device_id = body.device_id or "default"
+
+    logger.info("Chat request from device %s: %r", device_id, text[:120])
+    await _broadcast({"state": "thinking", "device_id": device_id}, device_id)
+
+    return await _process_utterance(text, device_id, body.voice, http_session)
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,9 @@
 # Changelog
 
+## v226
+
+- Android Auto gateway (WP-139): extracted post-STT logic from `/transcribe` into `_process_utterance()` and added a new `POST /chat` endpoint that accepts `{"text", "device_id", "voice"}` and runs the full Claude→TTS pipeline without Whisper. Used by the Android Auto background service — Google Assistant provides transcription via App Action intents; the service posts the extracted text directly to `/chat` instead of sending raw audio.
+
 ## v225
 
 - Natural cadence pauses (Story #133): Flutter `_drainChunkQueue` now inserts a 150-350 ms pause every 2-3 sentence chunks for responses of 3+ chunks total, giving longer answers a more conversational delivery. The pause interval (`_pauseEvery`: 2 or 3) is randomised per turn in `_onStreamingComplete`; the duration is random within the 150-350 ms range each time. Short 1- or 2-sentence answers play straight through. Barge-in remains instant because the `_bargedIn` flag is checked immediately after each `Future.delayed`. All changes in `pandabot-flutter/lib/main.dart`; no gateway changes.
