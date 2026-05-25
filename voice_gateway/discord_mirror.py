@@ -78,7 +78,7 @@ async def post_turn(
                 body = await resp.text()
                 logger.error("Discord mirror returned HTTP %d: %s", resp.status, body[:200])
             else:
-                logger.debug("Voice turn mirrored to Discord channel %s", channel_id)
+                logger.info("Voice turn mirrored to Discord channel %s", channel_id)
 
     except Exception:
         logger.exception("Unexpected error mirroring voice turn to Discord")

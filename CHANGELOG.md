@@ -1,5 +1,9 @@
 # Changelog
 
+## v227
+
+- voice gateway Discord mirror: log success at INFO level so mirrored Android Auto turns are visible in the pandabot-voice journal without needing a root log-level change.
+
 ## v226
 
 - Android Auto gateway (WP-139): extracted post-STT logic from `/transcribe` into `_process_utterance()` and added a new `POST /chat` endpoint that accepts `{"text", "device_id", "voice"}` and runs the full Claude→TTS pipeline without Whisper. Used by the Android Auto background service — Google Assistant provides transcription via App Action intents; the service posts the extracted text directly to `/chat` instead of sending raw audio.
