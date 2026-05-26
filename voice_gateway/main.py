@@ -715,6 +715,47 @@ async def push(
 
 
 # ---------------------------------------------------------------------------
+# POST /play_radio  — push a radio stream URL to connected Flutter clients
+# ---------------------------------------------------------------------------
+
+class PlayRadioPayload(BaseModel):
+    station: str
+    url: str
+    device_id: str | None = None
+
+
+@app.post("/play_radio")
+async def play_radio_endpoint(
+    payload: PlayRadioPayload,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    _check_bearer(authorization)
+    event = {"type": "play_radio", "station": payload.station, "url": payload.url}
+    await _broadcast(event, payload.device_id)
+    logger.info("/play_radio: station=%r url=%r", payload.station, payload.url)
+    return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# POST /stop_radio  — stop radio playback on connected Flutter clients
+# ---------------------------------------------------------------------------
+
+class StopRadioPayload(BaseModel):
+    device_id: str | None = None
+
+
+@app.post("/stop_radio")
+async def stop_radio_endpoint(
+    payload: StopRadioPayload = StopRadioPayload(),
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    _check_bearer(authorization)
+    await _broadcast({"type": "stop_radio"}, payload.device_id)
+    logger.info("/stop_radio broadcast")
+    return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # POST /speak  — synthesise text and push audio to connected Flutter clients
 # ---------------------------------------------------------------------------
 

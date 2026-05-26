@@ -50,7 +50,10 @@ ENABLE_LOCAL_LLM         = os.environ.get("ENABLE_LOCAL_LLM",         "false").l
 ENABLE_FAMILY            = os.environ.get("ENABLE_FAMILY",            "false").lower() == "true"
 ENABLE_DEV_AGENT         = os.environ.get("ENABLE_DEV_AGENT",         "false").lower() == "true"
 ENABLE_WEATHER           = os.environ.get("ENABLE_WEATHER",           "false").lower() == "true"
+ENABLE_STREAMING         = os.environ.get("ENABLE_STREAMING",         "false").lower() == "true"
 _DEV_AGENT_URL           = os.environ.get("DEV_AGENT_URL",            "http://localhost:8766")
+_VOICE_GATEWAY_URL       = os.environ.get("VOICE_GATEWAY_URL",        "http://127.0.0.1:8900")
+_VOICE_GATEWAY_TOKEN     = os.environ.get("VOICE_GATEWAY_TOKEN",      "")
 STEAM_LIBRARY_PATH   = os.path.expanduser(
     os.environ.get("STEAM_LIBRARY_PATH", "~/.steam/steam/steamapps")
 )
@@ -4041,6 +4044,52 @@ def _build_tool_definitions() -> list[dict]:
             },
         ]
 
+    if ENABLE_STREAMING:
+        tools += [
+            {
+                "name": "play_radio",
+                "description": (
+                    "Stream an internet radio station by call sign or name. "
+                    "With no device, streams to the Flutter voice terminal. "
+                    "With a device name, casts to that Google Home speaker. "
+                    "Examples: 'Stream WGBH', 'Cast WRPS to kitchen speaker'."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Call sign or station name to search for, e.g. 'WGBH' or 'NPR Boston'.",
+                        },
+                        "device": {
+                            "type": "string",
+                            "description": "Friendly name of a Google Home speaker to cast to. Omit to play on the Flutter terminal.",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "stop_radio",
+                "description": "Stop the currently playing radio stream (local or cast).",
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "radio_status",
+                "description": "Report what radio station is currently playing and where.",
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "list_speakers",
+                "description": (
+                    "Discover Google Home and Chromecast devices on the LAN. "
+                    "Use when the user asks what speakers are available or wants "
+                    "to cast radio but isn't sure of the device name."
+                ),
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            },
+        ]
+
     return tools
 
 
@@ -4339,6 +4388,216 @@ def get_weather(location: str = "") -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Internet radio streaming (voice-first; Discord-safe)
+# ---------------------------------------------------------------------------
+# Stations are discovered via Radio Browser API (radio-browser.info).
+# Local playback = Flutter terminal via WebSocket envelope (voice path) or
+# gateway HTTP POST (Discord path).  Cast = pychromecast on LAN directly.
+
+_radio_log = logging.getLogger("pandabot.radio")
+_RADIO_BROWSER_API = "https://de1.api.radio-browser.info/json"
+_radio_lock = threading.Lock()
+_radio_state: dict = {"station": None, "stream_url": None, "mode": None, "cast_device": None}
+_radio_cast = None   # active pychromecast cast object
+_radio_browser = None  # active pychromecast browser (for cleanup)
+
+
+def _rb_search(query: str) -> list[dict]:
+    """Search Radio Browser API by name/call sign. Returns list of station dicts."""
+    try:
+        r = requests.get(
+            f"{_RADIO_BROWSER_API}/stations/search",
+            params={"name": query, "countrycode": "US", "limit": 5,
+                    "order": "votes", "reverse": "true"},
+            headers={"User-Agent": "Pandabot/1.0"},
+            timeout=8,
+        )
+        r.raise_for_status()
+        results = r.json()
+        if results:
+            return results
+        # Second pass without country filter for non-US stations
+        r2 = requests.get(
+            f"{_RADIO_BROWSER_API}/stations/search",
+            params={"name": query, "limit": 5, "order": "votes", "reverse": "true"},
+            headers={"User-Agent": "Pandabot/1.0"},
+            timeout=8,
+        )
+        r2.raise_for_status()
+        return r2.json()
+    except Exception as exc:
+        _radio_log.warning("Radio Browser search for %r failed: %s", query, exc)
+        return []
+
+
+def _gateway_post_radio(path: str, payload: dict) -> bool:
+    """POST to the voice gateway for Discord-path radio control. Fire-and-forget."""
+    if not _VOICE_GATEWAY_TOKEN:
+        _radio_log.warning("VOICE_GATEWAY_TOKEN not set; skipping gateway post to %s", path)
+        return False
+    try:
+        r = requests.post(
+            f"{_VOICE_GATEWAY_URL}{path}",
+            json=payload,
+            headers={"Authorization": f"Bearer {_VOICE_GATEWAY_TOKEN}"},
+            timeout=5,
+        )
+        return r.ok
+    except Exception as exc:
+        _radio_log.warning("Gateway POST %s failed: %s", path, exc)
+        return False
+
+
+def _stop_cast_radio() -> None:
+    """Stop and clean up any active pychromecast session."""
+    global _radio_cast, _radio_browser
+    try:
+        if _radio_cast:
+            try:
+                _radio_cast.media_controller.stop()
+            except Exception:
+                pass
+            _radio_cast = None
+        if _radio_browser:
+            try:
+                _radio_browser.stop_discovery()
+            except Exception:
+                pass
+            _radio_browser = None
+    except Exception as exc:
+        _radio_log.warning("Error cleaning up cast session: %s", exc)
+
+
+def play_radio(query: str, device: str | None = None) -> str:
+    """Search Radio Browser by call sign/name and start streaming.
+
+    With device=None streams to the Flutter terminal (local).
+    With device=<speaker name> casts to that Google Home device.
+    """
+    global _radio_cast, _radio_browser
+
+    stations = _rb_search(query)
+    if not stations:
+        return (
+            f"Couldn't find a radio station matching '{query}'. "
+            "Try the full call sign, e.g. WGBH or WRPS."
+        )
+
+    station = stations[0]
+    name = station.get("name", query).strip()
+    url = (station.get("url_resolved") or station.get("url") or "").strip()
+    if not url:
+        return f"Found {name} but couldn't get a playable stream URL for it."
+
+    _stop_cast_radio()
+
+    if device:
+        try:
+            import pychromecast  # type: ignore[import]
+        except ImportError:
+            return "pychromecast is not installed. Run: pip install pychromecast"
+
+        try:
+            chromecasts, browser = pychromecast.get_listed_chromecasts(
+                friendly_names=[device], timeout=10
+            )
+            if not chromecasts:
+                # Fuzzy fallback — discover all and substring-match
+                chromecasts, browser = pychromecast.get_chromecasts(timeout=10)
+                chromecasts = [c for c in chromecasts if device.lower() in c.name.lower()]
+            if not chromecasts:
+                browser.stop_discovery()
+                return (
+                    f"No speaker named '{device}' found on the network. "
+                    "Use list_speakers to see available devices."
+                )
+            cast = chromecasts[0]
+            cast.wait()
+
+            codec = station.get("codec", "").lower()
+            if ".m3u8" in url or "hls" in codec:
+                content_type = "application/x-mpegURL"
+            elif "aac" in codec:
+                content_type = "audio/aac"
+            else:
+                content_type = "audio/mpeg"
+
+            cast.media_controller.play_media(url, content_type, title=name, stream_type="LIVE")
+            cast.media_controller.block_until_active(timeout=10)
+
+            with _radio_lock:
+                _radio_state.update({"station": name, "stream_url": url,
+                                     "mode": "cast", "cast_device": cast.name})
+            _radio_cast = cast
+            _radio_browser = browser
+            return f"Casting {name} to {cast.name}."
+        except Exception as exc:
+            _radio_log.error("Cast failed for %r: %s", name, exc)
+            return f"Failed to cast {name}: {exc}"
+
+    # Local path — Flutter terminal
+    envelope = {"type": "play_radio", "station": name, "url": url}
+    with _radio_lock:
+        _radio_state.update({"station": name, "stream_url": url,
+                             "mode": "local", "cast_device": None})
+    ctx = get_voice_context()
+    if ctx is not None:
+        _emit_envelope(envelope, silent_tts=True)
+    else:
+        _gateway_post_radio("/play_radio", {"station": name, "url": url})
+    return f"Streaming {name} on your terminal."
+
+
+def stop_radio() -> str:
+    """Stop the current radio stream."""
+    global _radio_cast, _radio_browser
+    with _radio_lock:
+        mode = _radio_state.get("mode")
+        station = _radio_state.get("station") or "radio"
+        _radio_state.update({"station": None, "stream_url": None,
+                             "mode": None, "cast_device": None})
+
+    if mode == "cast":
+        _stop_cast_radio()
+        return f"Stopped {station}."
+    elif mode == "local":
+        ctx = get_voice_context()
+        if ctx is not None:
+            _emit_envelope({"type": "stop_radio"}, silent_tts=True)
+        else:
+            _gateway_post_radio("/stop_radio", {})
+        return f"Stopped {station}."
+    return "No radio is currently playing."
+
+
+def radio_status() -> str:
+    """Return current radio playback status."""
+    with _radio_lock:
+        state = dict(_radio_state)
+    if not state.get("station"):
+        return "No radio is currently playing."
+    device_part = f" on {state['cast_device']}" if state.get("cast_device") else ""
+    return f"Playing {state['station']}{device_part} ({state.get('mode', '?')} mode)."
+
+
+def list_speakers() -> str:
+    """Discover Google Home / Chromecast devices on the LAN via mDNS."""
+    try:
+        import pychromecast  # type: ignore[import]
+    except ImportError:
+        return "pychromecast is not installed. Run: pip install pychromecast"
+    try:
+        chromecasts, browser = pychromecast.get_chromecasts(timeout=10)
+        browser.stop_discovery()
+        if not chromecasts:
+            return "No Chromecast or Google Home devices found on the network."
+        names = [c.name for c in chromecasts]
+        return "Available speakers: " + ", ".join(names) + "."
+    except Exception as exc:
+        return f"Speaker discovery failed: {exc}"
+
+
 TOOL_DEFINITIONS = _build_tool_definitions()
 
 
@@ -4555,4 +4814,15 @@ def execute_tool(name: str, inputs: dict) -> str:
         )
     if name == "get_weather":
         return get_weather(inputs.get("location", ""))
+    if name == "play_radio":
+        return play_radio(
+            query=inputs.get("query", ""),
+            device=inputs.get("device"),
+        )
+    if name == "stop_radio":
+        return stop_radio()
+    if name == "radio_status":
+        return radio_status()
+    if name == "list_speakers":
+        return list_speakers()
     return f"Unknown tool: {name}"

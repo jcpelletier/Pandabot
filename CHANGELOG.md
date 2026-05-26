@@ -1,5 +1,9 @@
 # Changelog
 
+## v231
+
+- add internet radio streaming tools: `play_radio`, `stop_radio`, `radio_status`, `list_speakers`; stations discovered via Radio Browser API by call sign; local playback pushes WS envelope to Flutter terminal; cast path uses pychromecast; voice gateway gets `/play_radio` and `/stop_radio` endpoints; gated behind `ENABLE_STREAMING=true`
+
 ## v230
 
 - weather: switch to imperial units (°F, mph, inches); fix home location to Rockland, MA

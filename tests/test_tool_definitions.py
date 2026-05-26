@@ -85,6 +85,18 @@ class TestToolPresence:
         ]:
             assert expected in names, f"Missing core tool: {expected}"
 
+    def test_streaming_disabled_hides_radio_tools(self, monkeypatch):
+        monkeypatch.setattr(tools, "ENABLE_STREAMING", False)
+        names = _names(tools._build_tool_definitions())
+        for t in ("play_radio", "stop_radio", "radio_status", "list_speakers"):
+            assert t not in names
+
+    def test_streaming_enabled_shows_radio_tools(self, monkeypatch):
+        monkeypatch.setattr(tools, "ENABLE_STREAMING", True)
+        names = _names(tools._build_tool_definitions())
+        for t in ("play_radio", "stop_radio", "radio_status", "list_speakers"):
+            assert t in names, f"Missing radio tool: {t}"
+
 
 # ---------------------------------------------------------------------------
 # SMART aspect in query_system
