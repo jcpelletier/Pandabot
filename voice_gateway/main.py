@@ -721,6 +721,7 @@ async def push(
 class PlayRadioPayload(BaseModel):
     station: str
     url: str
+    cast_target: str | None = None
     device_id: str | None = None
 
 
@@ -730,10 +731,36 @@ async def play_radio_endpoint(
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     _check_bearer(authorization)
-    event = {"type": "play_radio", "station": payload.station, "url": payload.url}
+    event: dict = {"type": "play_radio", "station": payload.station, "url": payload.url}
+    if payload.cast_target:
+        event["cast_target"] = payload.cast_target
     await _broadcast(event, payload.device_id)
-    logger.info("/play_radio: station=%r url=%r", payload.station, payload.url)
+    logger.info("/play_radio: station=%r cast_target=%r", payload.station, payload.cast_target)
     return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# GET /cast_devices  — list Cast devices reported by connected Flutter clients
+# ---------------------------------------------------------------------------
+
+@app.get("/cast_devices")
+async def cast_devices_endpoint(
+    authorization: str | None = Header(default=None),
+    device_id: str | None = None,
+) -> JSONResponse:
+    """Return the union of Cast devices reported by all (or one) Flutter client."""
+    _check_bearer(authorization)
+    if device_id:
+        devices = list(_cast_devices.get(device_id, []))
+    else:
+        seen: set[str] = set()
+        devices = []
+        for devs in _cast_devices.values():
+            for d in devs:
+                if d not in seen:
+                    seen.add(d)
+                    devices.append(d)
+    return JSONResponse({"devices": devices})
 
 
 # ---------------------------------------------------------------------------

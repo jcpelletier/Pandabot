@@ -1,5 +1,9 @@
 # Changelog
 
+## v232
+
+- fix(streaming): remove pychromecast from server; radio casting now uses cast_target in play_radio WS envelope (same pattern as play_music) — Flutter's flutter_chrome_cast SDK handles Chromecast; list_speakers reads from gateway GET /cast_devices
+
 ## v231
 
 - add internet radio streaming tools: `play_radio`, `stop_radio`, `radio_status`, `list_speakers`; stations discovered via Radio Browser API by call sign; local playback pushes WS envelope to Flutter terminal; cast path uses pychromecast; voice gateway gets `/play_radio` and `/stop_radio` endpoints; gated behind `ENABLE_STREAMING=true`
