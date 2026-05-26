@@ -1,5 +1,9 @@
 # Changelog
 
+## v236
+
+- feat(video): add `play_video` tool — searches Jellyfin for a movie or show and casts it to a Chromecast via the Flutter voice terminal; supports resume position and external subtitle tracks
+
 ## v235
 
 - feat(jellyfin): add `create_playlist` — creates a new Jellyfin music playlist (Discord + Flutter)

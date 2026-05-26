@@ -1190,6 +1190,201 @@ def set_loop_mode(mode: str = "all"):
 
 
 # ---------------------------------------------------------------------------
+# Jellyfin video cast (story #127)
+# ---------------------------------------------------------------------------
+
+def _video_cast_stream_url(item_id):
+    """Build a Cast-compatible MP4 video stream URL.
+
+    Uses /Videos/{id}/stream with h264+aac targets so Jellyfin serves
+    direct-play for compatible content and transcodes otherwise.
+    JELLYFIN_CAST_BASE_URL must be HTTPS; newer Cast firmware blocks HTTP.
+    """
+    return (
+        f"{JELLYFIN_CAST_BASE_URL}/Videos/{item_id}/stream"
+        f"?Container=mp4&VideoCodec=h264&AudioCodec=aac"
+        f"&api_key={urllib.parse.quote(JELLYFIN_TOKEN)}"
+    )
+
+
+def _video_subtitle_url(item_id, stream_index):
+    """Build a VTT subtitle URL accessible from Cast devices."""
+    return (
+        f"{JELLYFIN_CAST_BASE_URL}/Videos/{item_id}/Subtitles/{stream_index}/0/Stream.vtt"
+        f"?api_key={urllib.parse.quote(JELLYFIN_TOKEN)}"
+    )
+
+
+def _jf_video_info(item_id):
+    """Fetch subtitle tracks and resume position for a video item.
+
+    Returns (subtitles, resume_ticks) where:
+      subtitles: list of {index, label, language, url}
+      resume_ticks: int (0 if not started or user not found)
+    """
+    uid = _jf_get_user_id()
+    subtitles = []
+    resume_ticks = 0
+    try:
+        params = {"Fields": "MediaStreams"}
+        if uid:
+            params["UserId"] = uid
+        r = requests.get(
+            f"{JELLYFIN_URL}/Items/{item_id}",
+            headers=_jf_headers(),
+            params=params,
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        for stream in data.get("MediaStreams", []):
+            if stream.get("Type") == "Subtitle" and not stream.get("IsForced", False):
+                idx = stream.get("Index", 0)
+                subtitles.append({
+                    "index": idx,
+                    "label": stream.get("DisplayTitle") or stream.get("Language") or "Unknown",
+                    "language": stream.get("Language") or "",
+                    "url": _video_subtitle_url(item_id, idx),
+                })
+        if uid:
+            resume_ticks = data.get("UserData", {}).get("PlaybackPositionTicks", 0) or 0
+    except requests.RequestException as e:
+        _music_log.warning("Jellyfin video info fetch failed for %s: %s", item_id, e)
+    return subtitles, resume_ticks
+
+
+def _jf_next_unwatched_episode(series_id):
+    """Return the next unwatched episode for a TV series, or None."""
+    uid = _jf_get_user_id()
+    if not uid:
+        return None
+    params = {
+        "UserId": uid,
+        "Filters": "IsUnplayed",
+        "ParentId": series_id,
+        "IncludeItemTypes": "Episode",
+        "Recursive": "true",
+        "SortBy": "PremiereDate,SortName",
+        "SortOrder": "Ascending",
+        "Fields": "MediaStreams",
+        "Limit": 1,
+    }
+    try:
+        r = requests.get(f"{JELLYFIN_URL}/Items", headers=_jf_headers(), params=params, timeout=10)
+        r.raise_for_status()
+        items = r.json().get("Items", [])
+        return items[0] if items else None
+    except requests.RequestException as e:
+        _music_log.warning("Jellyfin next-unwatched fetch failed for series %s: %s", series_id, e)
+        return None
+
+
+def play_video(title, media_type=None, cast_target=None):
+    """Search Jellyfin for a video item and cast it via the cast_video envelope.
+
+    Emits cast_video (silent_tts) so the Flutter app loads the video on the
+    named Chromecast device. Returns a short summary or an error message the
+    LLM speaks back.
+    """
+    if not JELLYFIN_TOKEN:
+        return "Video cast is not configured (JELLYFIN_API_KEY missing)."
+    if not cast_target:
+        return (
+            "I need to know which Chromecast device to cast to. "
+            "Please say which device — for example, 'cast to the Living Room TV'."
+        )
+
+    title = (title or "").strip()
+    if not title:
+        return "I didn't catch what video to play. Try saying a movie or show title."
+
+    media_type = (media_type or "movie").lower().strip()
+    if media_type in ("show", "series", "tv show", "tv series"):
+        jf_type = "Series"
+        type_display = "show"
+    else:
+        jf_type = "Movie"
+        type_display = "movie"
+
+    # Search Jellyfin for the requested type
+    hits = _jf_search(title, jf_type, limit=5)
+    # If movie search misses, try series as a fallback (and vice versa)
+    if not hits:
+        alt_type = "Series" if jf_type == "Movie" else "Movie"
+        alt_hits = _jf_search(title, alt_type, limit=3)
+        if alt_hits:
+            hits = alt_hits
+            jf_type = alt_type
+            type_display = "show" if alt_type == "Series" else "movie"
+
+    if not hits:
+        return f"I searched for the {type_display} '{title}' but couldn't find it in your library."
+
+    item = hits[0]
+    item_id = item["Id"]
+    display_title = item.get("Name", title)
+
+    # For series: load the next unwatched episode
+    if jf_type == "Series":
+        episode = _jf_next_unwatched_episode(item_id)
+        if episode:
+            item = episode
+            item_id = episode["Id"]
+            ep_name = episode.get("Name", "")
+            series_name = episode.get("SeriesName") or display_title
+            season_num = episode.get("ParentIndexNumber")
+            ep_num = episode.get("IndexNumber")
+            if season_num is not None and ep_num is not None:
+                display_title = f"{series_name} S{season_num:02d}E{ep_num:02d}"
+                if ep_name:
+                    display_title += f" – {ep_name}"
+            else:
+                display_title = series_name
+            type_display = "episode"
+        else:
+            # No unwatched episodes: try Episode search directly
+            ep_hits = _jf_search(title, "Episode", limit=3)
+            if ep_hits:
+                item = ep_hits[0]
+                item_id = item["Id"]
+                display_title = (
+                    f"{item.get('SeriesName', display_title)}: {item.get('Name', display_title)}"
+                )
+            else:
+                return (
+                    f"I found '{display_title}' but there are no unwatched episodes in your library."
+                )
+
+    # Fetch subtitle tracks and resume position
+    subtitles, resume_ticks = _jf_video_info(item_id)
+
+    # Thumbnail (poster art)
+    thumb_url = _art_url(item_id)
+
+    _emit_envelope(
+        {
+            "type": "cast_video",
+            "item_id": item_id,
+            "stream_url": _video_cast_stream_url(item_id),
+            "resume_ticks": resume_ticks,
+            "title": display_title,
+            "thumbnail_url": thumb_url,
+            "subtitles": subtitles,
+            "cast_target": cast_target,
+        },
+        silent_tts=True,
+    )
+
+    resume_msg = ""
+    if resume_ticks > 0:
+        resume_s = resume_ticks // 10_000_000
+        m, s = divmod(resume_s, 60)
+        resume_msg = f", resuming from {m}:{s:02d}"
+
+    return f"Casting {display_title} to {cast_target}{resume_msg}."
+
+
+# ---------------------------------------------------------------------------
 # Jellyfin playlist management
 # ---------------------------------------------------------------------------
 
@@ -3824,6 +4019,44 @@ def _build_tool_definitions() -> list[dict]:
                 "required": ["mode"],
             },
         })
+
+        # --- Video cast tool (story #127) ---
+        tools.append({
+            "name": "play_video",
+            "description": (
+                "Cast a Jellyfin video (movie or TV show) to a Chromecast device. "
+                "Use when the user asks to watch, cast, or play a video on the TV. "
+                "Examples: 'cast Tomorrowland to the TV', 'play Breaking Bad on the living room TV', "
+                "'watch Inception on the bedroom TV'. "
+                "Extract the title from their utterance and set media_type to 'movie' (default) or "
+                "'show'/'series'. For a show with no episode specified, the tool picks the next "
+                "unwatched episode automatically. "
+                "CASTING: cast_target is REQUIRED — set it to the EXACT device name from the "
+                "Chromecast device list in the system prompt. Fuzzy-match their utterance to the list. "
+                "If ambiguous between multiple devices, list the available names and ask — do NOT "
+                "call this tool yet. If no Chromecast devices are listed, tell the user none are found. "
+                "If the tool returns a not-found message (starts with 'I searched for'), speak it back "
+                "verbatim so the user knows it was a library miss, not a mishearing."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Movie or show title to search for."},
+                    "media_type": {
+                        "type": "string",
+                        "enum": ["movie", "show"],
+                        "description": "'movie' (default) or 'show'/'series'.",
+                        "default": "movie",
+                    },
+                    "cast_target": {
+                        "type": "string",
+                        "description": "Exact Chromecast device name from the system prompt device list.",
+                    },
+                },
+                "required": ["title", "cast_target"],
+            },
+        })
+
         tools.append({
             "name": "create_playlist",
             "description": (
@@ -5007,6 +5240,12 @@ def execute_tool(name: str, inputs: dict) -> str:
         return exit_music()
     if name == "set_loop_mode":
         return set_loop_mode(inputs.get("mode", "all"))
+    if name == "play_video":
+        return play_video(
+            title=inputs.get("title", ""),
+            media_type=inputs.get("media_type", "movie"),
+            cast_target=inputs.get("cast_target"),
+        )
     if name == "create_playlist":
         return create_playlist(inputs.get("name", ""))
     if name == "add_currently_playing_to_playlist":
