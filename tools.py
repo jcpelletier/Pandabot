@@ -4274,9 +4274,9 @@ def get_weather(location: str = "") -> str:
                     "weathercode",
                     "windspeed_10m_max",
                 ]),
-                "temperature_unit": "celsius",
-                "windspeed_unit": "kmh",
-                "precipitation_unit": "mm",
+                "temperature_unit": "fahrenheit",
+                "windspeed_unit": "mph",
+                "precipitation_unit": "inch",
                 "timezone": "auto",
                 "forecast_days": 7,
             },
@@ -4306,7 +4306,7 @@ def get_weather(location: str = "") -> str:
 
     lines = [f"**Weather for {location_label}** ({time_label})", ""]
     lines.append(
-        f"**Now:** {cur_desc}, {cur_temp}°C, wind {cur_wind} km/h"
+        f"**Now:** {cur_desc}, {cur_temp}°F, wind {cur_wind} mph"
     )
     lines.append("")
     lines.append("**7-day forecast:**")
@@ -4324,11 +4324,11 @@ def get_weather(location: str = "") -> str:
         else:
             day_label = f"{d.strftime('%A')} {d.day} {d.strftime('%b')}"
 
-        hi  = f"{highs[i]}°C"  if i < len(highs)      else "?"
-        lo  = f"{lows[i]}°C"   if i < len(lows)        else "?"
+        hi  = f"{highs[i]}°F"   if i < len(highs)      else "?"
+        lo  = f"{lows[i]}°F"    if i < len(lows)        else "?"
         pct = f"{precip_pct[i]}%" if i < len(precip_pct) else "?"
-        mm  = f"{precip[i]} mm"  if i < len(precip)      else "?"
-        wnd = f"{wind_max[i]} km/h" if i < len(wind_max) else "?"
+        mm  = f'{precip[i]}"'   if i < len(precip)      else "?"
+        wnd = f"{wind_max[i]} mph" if i < len(wind_max) else "?"
         desc = _wmo_desc(codes[i]) if i < len(codes) else "?"
 
         rain_part = f", rain {pct} ({mm})" if precip_pct and int(precip_pct[i] or 0) > 0 else ""

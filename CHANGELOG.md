@@ -1,5 +1,9 @@
 # Changelog
 
+## v230
+
+- weather: switch to imperial units (°F, mph, inches); fix home location to Rockland, MA
+
 ## v229
 
 - deploy: restart `pandabot-voice` alongside `discord-bot-staging` on staging deploys so voice gateway picks up new tools.py automatically
