@@ -813,6 +813,80 @@ def _jf_headers():
     return {"X-Emby-Token": JELLYFIN_TOKEN, "Accept": "application/json"}
 
 
+def _jf_get_user_id():
+    """Return the first non-automation Jellyfin user ID, or None on failure."""
+    try:
+        r = requests.get(f"{JELLYFIN_URL}/Users", headers=_jf_headers(), timeout=10)
+        r.raise_for_status()
+        users = [u for u in r.json() if u.get("Name", "").lower() != "automation"]
+        return users[0]["Id"] if users else None
+    except requests.RequestException as e:
+        _music_log.warning("Jellyfin user fetch failed: %s", e)
+        return None
+
+
+def _jf_find_playlist(name):
+    """Search Jellyfin for a playlist by name (exact match preferred).
+    Returns the first matching playlist item dict, or None."""
+    uid = _jf_get_user_id()
+    if not uid:
+        return None
+    params = {
+        "IncludeItemTypes": "Playlist",
+        "Recursive": "true",
+        "SearchTerm": name,
+        "Limit": 5,
+    }
+    try:
+        r = requests.get(f"{JELLYFIN_URL}/Users/{uid}/Items",
+                         headers=_jf_headers(), params=params, timeout=10)
+        r.raise_for_status()
+        items = r.json().get("Items", [])
+        name_lower = name.strip().lower()
+        for item in items:
+            if item.get("Name", "").lower() == name_lower:
+                return item
+        return items[0] if items else None
+    except requests.RequestException as e:
+        _music_log.warning("Jellyfin playlist search %r failed: %s", name, e)
+        return None
+
+
+def _jf_playlist_tracks(playlist_id, uid):
+    """Return all audio tracks in a Jellyfin playlist."""
+    try:
+        r = requests.get(
+            f"{JELLYFIN_URL}/Playlists/{playlist_id}/Items",
+            headers=_jf_headers(),
+            params={"UserId": uid, "Fields": "RunTimeTicks", "Limit": 500},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return r.json().get("Items", [])
+    except requests.RequestException as e:
+        _music_log.warning("Jellyfin playlist items fetch failed: %s", e)
+        return []
+
+
+def _jf_currently_playing_audio():
+    """Return the NowPlayingItem for the first active audio session, or None."""
+    try:
+        r = requests.get(
+            f"{JELLYFIN_URL}/Sessions",
+            headers=_jf_headers(),
+            params={"ActiveWithinSeconds": 300},
+            timeout=10,
+        )
+        r.raise_for_status()
+        for session in r.json():
+            item = session.get("NowPlayingItem")
+            if item and item.get("MediaType") == "Audio":
+                return item
+    except requests.RequestException as e:
+        _music_log.warning("Jellyfin sessions fetch failed: %s", e)
+    return None
+
+
 def _jf_search(name, item_types, artist_id=None, limit=10):
     """Wrapper around Jellyfin's /Items search."""
     if not JELLYFIN_TOKEN:
@@ -980,6 +1054,33 @@ def play_music(track=None, album=None, artist=None, cast_target=None):
 
     # Track path (track-only or track+artist), with album-wins tiebreak
     if track:
+        # Playlist priority: when no artist is specified, a playlist name beats a track match
+        if not artist:
+            playlist_hit = _jf_find_playlist(track)
+            if playlist_hit:
+                uid = _jf_get_user_id()
+                if uid:
+                    pl_tracks = _jf_playlist_tracks(playlist_hit["Id"], uid)
+                    if pl_tracks:
+                        if get_voice_context() is None:
+                            return (
+                                f"Found a playlist called '{playlist_hit['Name']}' — "
+                                "playlist playback is only available in the Pandabot voice terminal."
+                            )
+                        queue = [_track_to_queue_item(t) for t in pl_tracks]
+                        summary = f"Playing playlist {playlist_hit['Name']} ({len(queue)} tracks)."
+                        _emit_envelope(
+                            {
+                                "type": "play_audio",
+                                "queue": queue,
+                                "summary": summary,
+                                "source": {"playlist_id": playlist_hit["Id"], "kind": "playlist"},
+                                **({"cast_target": cast_target} if cast_target else {}),
+                            },
+                            silent_tts=True,
+                        )
+                        return summary
+
         # Album-wins tiebreak: a same-named album by the named artist beats a track match
         if artist_id:
             album_alt = _jf_search(track, "MusicAlbum", artist_id=artist_id, limit=3)
@@ -1086,6 +1187,105 @@ def set_loop_mode(mode: str = "all"):
         silent_tts=True,
     )
     return f"ok (loop={mode})"
+
+
+# ---------------------------------------------------------------------------
+# Jellyfin playlist management
+# ---------------------------------------------------------------------------
+
+def create_playlist(name: str) -> str:
+    """Create a new Jellyfin music playlist."""
+    if not JELLYFIN_TOKEN:
+        return "Music features are not configured (JELLYFIN_API_KEY missing)."
+    name = (name or "").strip()
+    if not name:
+        return "Playlist name is required."
+    uid = _jf_get_user_id()
+    if not uid:
+        return "Could not find a Jellyfin user to create the playlist under."
+    existing = _jf_find_playlist(name)
+    if existing and existing.get("Name", "").lower() == name.lower():
+        return f"A playlist called '{existing['Name']}' already exists."
+    try:
+        r = requests.post(
+            f"{JELLYFIN_URL}/Playlists",
+            headers={**_jf_headers(), "Content-Type": "application/json"},
+            json={"Name": name, "UserId": uid, "MediaType": "Audio"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return f"Created playlist '{name}'."
+    except requests.RequestException as e:
+        return f"Failed to create playlist: {e}"
+
+
+def add_currently_playing_to_playlist(playlist_name: str) -> str:
+    """Add the currently playing Jellyfin audio track to a named playlist."""
+    if not JELLYFIN_TOKEN:
+        return "Music features are not configured (JELLYFIN_API_KEY missing)."
+    playlist_name = (playlist_name or "").strip()
+    if not playlist_name:
+        return "Playlist name is required."
+    item = _jf_currently_playing_audio()
+    if not item:
+        return "Nothing is currently playing in Jellyfin."
+    track_id = item.get("Id")
+    track_name = item.get("Name", "Unknown")
+    artist = item.get("AlbumArtist") or (item.get("Artists") or [None])[0] or "Unknown"
+    playlist = _jf_find_playlist(playlist_name)
+    if not playlist:
+        return (
+            f"I couldn't find a playlist called '{playlist_name}'. "
+            f"Create it first with 'create a playlist called {playlist_name}'."
+        )
+    uid = _jf_get_user_id()
+    if not uid:
+        return "Could not find a Jellyfin user."
+    try:
+        r = requests.post(
+            f"{JELLYFIN_URL}/Playlists/{playlist['Id']}/Items",
+            headers=_jf_headers(),
+            params={"Ids": track_id, "UserId": uid},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return f"Added '{track_name}' by {artist} to '{playlist['Name']}'."
+    except requests.RequestException as e:
+        return f"Failed to add track to playlist: {e}"
+
+
+def play_playlist(playlist_name: str, cast_target=None) -> str:
+    """Play a Jellyfin playlist. Only available from the Flutter voice terminal."""
+    if not JELLYFIN_TOKEN:
+        return "Music features are not configured (JELLYFIN_API_KEY missing)."
+    ctx = get_voice_context()
+    if ctx is None:
+        return "Playlist playback is only available in the Pandabot voice terminal, not Discord."
+    playlist_name = (playlist_name or "").strip()
+    if not playlist_name:
+        return "Playlist name is required."
+    uid = _jf_get_user_id()
+    if not uid:
+        return "Could not find a Jellyfin user."
+    playlist = _jf_find_playlist(playlist_name)
+    if not playlist:
+        return f"I couldn't find a playlist called '{playlist_name}'."
+    tracks = _jf_playlist_tracks(playlist["Id"], uid)
+    if not tracks:
+        return f"The playlist '{playlist['Name']}' is empty."
+    queue = [_track_to_queue_item(t) for t in tracks]
+    summary = f"Playing playlist {playlist['Name']} ({len(queue)} tracks)."
+    _emit_envelope(
+        {
+            "type": "play_audio",
+            "queue": queue,
+            "summary": summary,
+            "source": {"playlist_id": playlist["Id"], "kind": "playlist"},
+            **({"cast_target": cast_target} if cast_target else {}),
+        },
+        silent_tts=True,
+    )
+    return summary
 
 
 def query_ripping(query_type: str = "staging") -> str:
@@ -3554,6 +3754,10 @@ def _build_tool_definitions() -> list[dict]:
                 "artist='Bob Marley'. "
                 "If only an artist is given, the library shuffles that artist's tracks. "
                 "When a name could be either an album or a song, prefer album. "
+                "PLAYLIST PRIORITY: when only a track name is given (no artist), the tool "
+                "checks playlists first — if a playlist with that name exists it plays instead. "
+                "For an explicit playlist request ('play the Disco Favorites playlist'), "
+                "prefer play_playlist. "
                 "If the tool returns a not-found message (starts with 'I searched for'), "
                 "speak it back to the user verbatim so they know the gateway heard the "
                 "request correctly and the failure was a library miss, not a misunderstanding. "
@@ -3618,6 +3822,61 @@ def _build_tool_definitions() -> list[dict]:
                     },
                 },
                 "required": ["mode"],
+            },
+        })
+        tools.append({
+            "name": "create_playlist",
+            "description": (
+                "Create a new empty Jellyfin music playlist. "
+                "Use when the user says 'create a playlist called X', 'make a playlist named X', etc. "
+                "Works from both Discord and the Flutter voice terminal. "
+                "Do NOT use this as part of an add-to-playlist request — create and add are separate steps."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name for the new playlist."},
+                },
+                "required": ["name"],
+            },
+        })
+        tools.append({
+            "name": "add_currently_playing_to_playlist",
+            "description": (
+                "Add the currently playing Jellyfin audio track to an existing playlist. "
+                "Use ONLY when the user refers to what is playing right now — "
+                "'add this song to Disco Favorites', 'add this to my playlist', "
+                "'put the current track in Road Trip'. "
+                "Do NOT use when the user names a specific song ('add Billie Jean to…') — "
+                "this tool can only add what Jellyfin is actively playing. "
+                "Works from both Discord and the Flutter voice terminal."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "playlist_name": {"type": "string", "description": "Name of the existing playlist to add to."},
+                },
+                "required": ["playlist_name"],
+            },
+        })
+        tools.append({
+            "name": "play_playlist",
+            "description": (
+                "Play a Jellyfin music playlist from the Flutter voice terminal. "
+                "Use when the user explicitly names a playlist to play: "
+                "'play the Disco Favorites playlist', 'play my road trip playlist', "
+                "'put on Disco Favorites'. "
+                "Only works from the Flutter voice terminal — if called from Discord, "
+                "explain it is Flutter-only. "
+                "CASTING: same cast_target rules as play_music."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "playlist_name": {"type": "string", "description": "Name of the playlist to play."},
+                    "cast_target": {"type": "string", "description": "Exact Chromecast device name, if the user asked to cast."},
+                },
+                "required": ["playlist_name"],
             },
         })
 
@@ -4748,6 +5007,12 @@ def execute_tool(name: str, inputs: dict) -> str:
         return exit_music()
     if name == "set_loop_mode":
         return set_loop_mode(inputs.get("mode", "all"))
+    if name == "create_playlist":
+        return create_playlist(inputs.get("name", ""))
+    if name == "add_currently_playing_to_playlist":
+        return add_currently_playing_to_playlist(inputs.get("playlist_name", ""))
+    if name == "play_playlist":
+        return play_playlist(inputs.get("playlist_name", ""), inputs.get("cast_target"))
     if name == "query_ripping":
         return query_ripping(inputs.get("query_type", "staging"))
     if name == "get_performance_history":

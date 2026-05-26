@@ -1,5 +1,12 @@
 # Changelog
 
+## v235
+
+- feat(jellyfin): add `create_playlist` — creates a new Jellyfin music playlist (Discord + Flutter)
+- feat(jellyfin): add `add_currently_playing_to_playlist` — adds the active Jellyfin audio track to an existing playlist (Discord + Flutter)
+- feat(jellyfin): add `play_playlist` — plays a named playlist via the Flutter voice terminal (Flutter-only)
+- feat(jellyfin): playlist priority in `play_music` — when only a track name is given (no artist), checks playlists first before searching tracks
+
 ## v234
 
 - fix(voice): don't store silent (tool-dispatched) turns in session history — prevents LLM from regurgitating play_radio/play_music response text on repeat requests instead of calling the tool again
