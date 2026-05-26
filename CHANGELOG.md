@@ -1,5 +1,9 @@
 # Changelog
 
+## v228
+
+- add `get_weather` tool: current conditions + 7-day forecast via Open-Meteo (no API key required); default location from `HOME_LATITUDE`/`HOME_LONGITUDE` env vars; named city lookup via Open-Meteo Geocoding API; gated behind `ENABLE_WEATHER=true`
+
 ## v227
 
 - voice gateway Discord mirror: log success at INFO level so mirrored Android Auto turns are visible in the pandabot-voice journal without needing a root log-level change.

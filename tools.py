@@ -49,6 +49,7 @@ ENABLE_OPENPROJECT       = os.environ.get("ENABLE_OPENPROJECT",       "false").l
 ENABLE_LOCAL_LLM         = os.environ.get("ENABLE_LOCAL_LLM",         "false").lower() == "true"
 ENABLE_FAMILY            = os.environ.get("ENABLE_FAMILY",            "false").lower() == "true"
 ENABLE_DEV_AGENT         = os.environ.get("ENABLE_DEV_AGENT",         "false").lower() == "true"
+ENABLE_WEATHER           = os.environ.get("ENABLE_WEATHER",           "false").lower() == "true"
 _DEV_AGENT_URL           = os.environ.get("DEV_AGENT_URL",            "http://localhost:8766")
 STEAM_LIBRARY_PATH   = os.path.expanduser(
     os.environ.get("STEAM_LIBRARY_PATH", "~/.steam/steam/steamapps")
@@ -102,6 +103,10 @@ CRAWL_ANALYTICS_TOKEN = os.environ.get("CRAWL_ANALYTICS_TOKEN", "")
 
 OP_URL     = os.environ.get("OPENPROJECT_URL",     "").rstrip("/")
 OP_API_KEY = os.environ.get("OPENPROJECT_API_KEY", "")
+
+# Weather (optional, gated by ENABLE_WEATHER)
+HOME_LATITUDE  = os.environ.get("HOME_LATITUDE",  "")
+HOME_LONGITUDE = os.environ.get("HOME_LONGITUDE", "")
 
 STAGING_PATH = os.environ.get("STAGING_PATH", "/mnt/media/Video")
 MEDIA_PATH   = os.environ.get("MEDIA_PATH",   "/mnt/media/Media")
@@ -3711,6 +3716,34 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
 
+    # --- Weather ---
+    if ENABLE_WEATHER:
+        tools.append({
+            "name": "get_weather",
+            "description": (
+                "Get current weather conditions and a 7-day forecast. "
+                "Uses the server's home location by default (configured via HOME_LATITUDE / HOME_LONGITUDE). "
+                "Pass a city name in 'location' to get weather for any other place instead — "
+                "e.g. 'Boston', 'Tokyo', 'Paris, France'. "
+                "Returns current temperature, precipitation, wind speed, and a day-by-day "
+                "forecast with high/low temps, precipitation probability, and weather description."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": (
+                            "City name to look up (e.g. 'Boston', 'Tokyo'). "
+                            "Omit to use the server's home location."
+                        ),
+                        "default": "",
+                    },
+                },
+                "required": [],
+            },
+        })
+
     # --- OpenProject ---
     if ENABLE_OPENPROJECT and OP_URL:
         tools += [
@@ -4162,6 +4195,150 @@ def trigger_dev_agent(task: str, context: str = "") -> str:
         return f"Failed to reach Pandabot-Dev: {exc}"
 
 
+# ---------------------------------------------------------------------------
+# Weather (optional, gated by ENABLE_WEATHER)
+# ---------------------------------------------------------------------------
+
+_WMO_DESCRIPTIONS = {
+    0: "Clear sky",
+    1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Foggy", 48: "Icy fog",
+    51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
+    61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+    71: "Slight snow", 73: "Moderate snow", 75: "Heavy snow",
+    77: "Snow grains",
+    80: "Slight rain showers", 81: "Moderate rain showers", 82: "Violent rain showers",
+    85: "Slight snow showers", 86: "Heavy snow showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with slight hail", 99: "Thunderstorm with heavy hail",
+}
+
+
+def _wmo_desc(code: int) -> str:
+    return _WMO_DESCRIPTIONS.get(code, f"Weather code {code}")
+
+
+def get_weather(location: str = "") -> str:
+    """Fetch current conditions + 7-day forecast from Open-Meteo."""
+    if not ENABLE_WEATHER:
+        return "Weather feature is not enabled (set ENABLE_WEATHER=true)."
+
+    lat: str | None = None
+    lon: str | None = None
+    location_label = "home"
+
+    if location.strip():
+        # Resolve city name to coordinates via Open-Meteo Geocoding API
+        try:
+            geo = requests.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": location.strip(), "count": 1, "language": "en", "format": "json"},
+                timeout=10,
+            ).json()
+        except Exception as exc:
+            return f"Could not reach geocoding API: {exc}"
+        results = geo.get("results") or []
+        if not results:
+            return f"Location not found: '{location}'. Try a different city name."
+        best = results[0]
+        lat = str(best["latitude"])
+        lon = str(best["longitude"])
+        name = best.get("name", location)
+        country = best.get("country", "")
+        admin1 = best.get("admin1", "")
+        parts = [p for p in [name, admin1, country] if p]
+        location_label = ", ".join(parts)
+    else:
+        if not HOME_LATITUDE or not HOME_LONGITUDE:
+            return (
+                "No home location configured. "
+                "Set HOME_LATITUDE and HOME_LONGITUDE in .env, "
+                "or ask about a specific city (e.g. 'What's the weather in Boston?')."
+            )
+        lat = HOME_LATITUDE
+        lon = HOME_LONGITUDE
+        location_label = "home"
+
+    try:
+        resp = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "current_weather": "true",
+                "daily": ",".join([
+                    "temperature_2m_max",
+                    "temperature_2m_min",
+                    "precipitation_sum",
+                    "precipitation_probability_max",
+                    "weathercode",
+                    "windspeed_10m_max",
+                ]),
+                "temperature_unit": "celsius",
+                "windspeed_unit": "kmh",
+                "precipitation_unit": "mm",
+                "timezone": "auto",
+                "forecast_days": 7,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        return f"Could not fetch weather data: {exc}"
+
+    cw = data.get("current_weather", {})
+    cur_temp   = cw.get("temperature", "?")
+    cur_wind   = cw.get("windspeed", "?")
+    cur_code   = cw.get("weathercode", -1)
+    cur_desc   = _wmo_desc(cur_code)
+    is_day     = cw.get("is_day", 1)
+    time_label = "daytime" if is_day else "nighttime"
+
+    daily = data.get("daily", {})
+    dates      = daily.get("time", [])
+    highs      = daily.get("temperature_2m_max", [])
+    lows       = daily.get("temperature_2m_min", [])
+    precip     = daily.get("precipitation_sum", [])
+    precip_pct = daily.get("precipitation_probability_max", [])
+    wind_max   = daily.get("windspeed_10m_max", [])
+    codes      = daily.get("weathercode", [])
+
+    lines = [f"**Weather for {location_label}** ({time_label})", ""]
+    lines.append(
+        f"**Now:** {cur_desc}, {cur_temp}°C, wind {cur_wind} km/h"
+    )
+    lines.append("")
+    lines.append("**7-day forecast:**")
+
+    today = datetime.date.today()
+    for i, date_str in enumerate(dates):
+        try:
+            d = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            continue
+        if d == today:
+            day_label = "Today"
+        elif d == today + datetime.timedelta(days=1):
+            day_label = "Tomorrow"
+        else:
+            day_label = f"{d.strftime('%A')} {d.day} {d.strftime('%b')}"
+
+        hi  = f"{highs[i]}°C"  if i < len(highs)      else "?"
+        lo  = f"{lows[i]}°C"   if i < len(lows)        else "?"
+        pct = f"{precip_pct[i]}%" if i < len(precip_pct) else "?"
+        mm  = f"{precip[i]} mm"  if i < len(precip)      else "?"
+        wnd = f"{wind_max[i]} km/h" if i < len(wind_max) else "?"
+        desc = _wmo_desc(codes[i]) if i < len(codes) else "?"
+
+        rain_part = f", rain {pct} ({mm})" if precip_pct and int(precip_pct[i] or 0) > 0 else ""
+        lines.append(
+            f"  **{day_label}:** {desc}, {hi}/{lo}{rain_part}, wind {wnd}"
+        )
+
+    return "\n".join(lines)
+
+
 TOOL_DEFINITIONS = _build_tool_definitions()
 
 
@@ -4376,4 +4553,6 @@ def execute_tool(name: str, inputs: dict) -> str:
             task=inputs.get("task", ""),
             context=inputs.get("context", ""),
         )
+    if name == "get_weather":
+        return get_weather(inputs.get("location", ""))
     return f"Unknown tool: {name}"
