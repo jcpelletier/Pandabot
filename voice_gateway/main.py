@@ -157,6 +157,12 @@ _VOICE_PREAMBLE = (
     "  'stop' (alone, no 'playing') / 'hold on' -> stop_music (soft)\n"
     "  'stop playing music' / 'stop the music' / 'exit music' / 'turn off the music' -> exit_music (hard)\n"
     "Always call the listed tool for these phrasings; do NOT respond with prose only.\n\n"
+    "RADIO: if the user asks to stream or play a radio station (by call sign, name, or frequency), "
+    "you MUST call play_radio with the call sign or name as the query. Do NOT just say "
+    "\"streaming that now\" without calling the tool. "
+    "To stop a stream: call stop_radio. "
+    "To check what is playing: call radio_status. "
+    "Speak the tool's returned summary verbatim after calling it.\n\n"
 )
 
 try:

@@ -2065,8 +2065,99 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
             )
         return f"✅ Deleted {done} file(s) matching {dest!r} from {src}"
 
+    # ── merge ─────────────────────────────────────────────────────────────────
+    elif action == "merge":
+        if not dest:
+            return "merge requires dest — the existing target directory to merge files into."
+
+        dst = _resolve(dest)
+
+        if not os.path.isdir(src):
+            return f"merge source must be a directory: {src}"
+        if not os.path.isdir(dst):
+            return f"merge dest must be an existing directory: {dst}"
+        if not _is_allowed(dst):
+            return f"Destination not allowed. Must be under: {', '.join(ALLOWED_ROOTS)}"
+        if _is_root(dst):
+            return "Cannot merge into a root library path directly."
+        if os.path.realpath(src) == os.path.realpath(dst):
+            return "Source and destination are the same directory."
+
+        # Collect all files from source (preserving relative subdirectory structure)
+        try:
+            src_files: list[tuple[str, str, str]] = []
+            for dirpath, _, filenames in os.walk(src):
+                for fname in sorted(filenames):
+                    full_src = os.path.join(dirpath, fname)
+                    rel = os.path.relpath(full_src, src)
+                    full_dst = os.path.join(dst, rel)
+                    src_files.append((full_src, full_dst, rel))
+            src_files.sort(key=lambda t: t[2])
+        except OSError as e:
+            return f"Could not list source directory: {e}"
+
+        if not src_files:
+            return f"Source directory is empty: {src}"
+
+        conflicts = [rel for _, full_dst, rel in src_files if os.path.exists(full_dst)]
+        total_bytes = sum(os.path.getsize(s) for s, _, _ in src_files if os.path.exists(s))
+
+        if not confirmed:
+            lines = [
+                f"Ready to merge {len(src_files)} file(s):",
+                f"  from  {src}",
+                f"  into  {dst}",
+                "",
+            ]
+            shown = src_files[:20]
+            for _, _, rel in shown:
+                lines.append(f"  {rel}")
+            if len(src_files) > 20:
+                lines.append(f"  … and {len(src_files) - 20} more file(s)")
+            lines.append(f"\nTotal: {len(src_files)} file(s), {_fmt_bytes(total_bytes)}")
+            lines.append("Source folder will be removed after merge.")
+            if conflicts:
+                lines.append(f"\n⚠️ {len(conflicts)} filename conflict(s) — these already exist in dest:")
+                for rel in conflicts[:5]:
+                    lines.append(f"  {rel}")
+                if len(conflicts) > 5:
+                    lines.append(f"  … and {len(conflicts) - 5} more")
+                lines.append("\nResolve conflicts first (rename or delete them), then retry.")
+                return "\n".join(lines)
+            lines.append("\nReply **yes** to confirm.")
+            return "\n".join(lines)
+
+        if conflicts:
+            return (
+                f"Cannot merge: {len(conflicts)} filename conflict(s) exist in destination. "
+                "Resolve them first."
+            )
+
+        _sync_before_write()
+        errors: list[str] = []
+        done = 0
+        for full_src, full_dst, rel in src_files:
+            try:
+                os.makedirs(os.path.dirname(full_dst), exist_ok=True)
+                shutil.move(full_src, full_dst)
+                done += 1
+            except Exception as e:
+                errors.append(f"{rel}: {e}")
+
+        if errors:
+            return f"Merged {done}/{len(src_files)} files. Errors:\n" + "\n".join(errors)
+
+        try:
+            shutil.rmtree(src)
+        except Exception as e:
+            return f"✅ Merged {done} file(s). Warning: could not remove source folder: {e}"
+        return (
+            f"✅ Merged {done} file(s) from {os.path.basename(src)!r} "
+            f"into {os.path.basename(dst)!r} and removed source folder."
+        )
+
     else:
-        return f"Unknown action '{action}'. Use: delete, delete_matching, rename, rename_all, or move."
+        return f"Unknown action '{action}'. Use: delete, delete_matching, merge, rename, rename_all, or move."
 
 
 def query_media_library(action: str, path: str = "", pattern: str = "",
@@ -3544,6 +3635,9 @@ def _build_tool_definitions() -> list[dict]:
                 "delete_matching: deletes all files matching a glob pattern (e.g. *.srt or *.srt,*.ass,*.sup) "
                 "recursively under source directory — use this to bulk-delete subtitle files or other file types "
                 "without touching video files; shows full file list and total size before confirming. "
+                "merge: moves all files from source directory into an existing dest directory in one operation, "
+                "then removes the (now-empty) source folder — use this to combine multi-disc album folders or "
+                "flatten a nested rip into its parent; blocks if any filename conflicts exist in dest. "
                 "rename: renames a single file or folder in-place — dest must be a bare name, no path separators. "
                 "rename_all: renames every file in a directory to sequential generic names in one operation — "
                 "dest is the name pattern (e.g. rip_{n:02d}); file extensions are preserved; "
@@ -3555,7 +3649,7 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["move", "rename", "rename_all", "delete", "delete_matching"],
+                        "enum": ["move", "merge", "rename", "rename_all", "delete", "delete_matching"],
                         "description": "Operation to perform.",
                     },
                     "source": {
@@ -3569,6 +3663,7 @@ def _build_tool_definitions() -> list[dict]:
                         "type": "string",
                         "description": (
                             "For move: target directory or full destination path. "
+                            "For merge: existing target directory to merge all source files into. "
                             "For rename: new bare filename (no slashes). "
                             "For rename_all: name pattern with {n} as the counter, e.g. rip_{n:02d} "
                             "(default: rip_{n:02d}). Extensions are always preserved. "

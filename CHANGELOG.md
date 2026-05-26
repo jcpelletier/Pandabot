@@ -1,5 +1,10 @@
 # Changelog
 
+## v233
+
+- feat(files): add `merge` action to `manage_files` — moves all files from source dir into an existing dest dir and removes the source; prevents hallucinated multi-move workflows for album consolidation
+- fix(voice): add RADIO section to voice gateway system prompt so LLM reliably calls `play_radio`/`stop_radio`/`radio_status` instead of hallucinating a response
+
 ## v232
 
 - fix(streaming): remove pychromecast from server; radio casting now uses cast_target in play_radio WS envelope (same pattern as play_music) — Flutter's flutter_chrome_cast SDK handles Chromecast; list_speakers reads from gateway GET /cast_devices
