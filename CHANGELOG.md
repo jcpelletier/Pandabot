@@ -1,5 +1,10 @@
 # Changelog
 
+## v234
+
+- fix(voice): don't store silent (tool-dispatched) turns in session history — prevents LLM from regurgitating play_radio/play_music response text on repeat requests instead of calling the tool again
+- fix(voice): strengthen RADIO system prompt: "EVERY time, even if you called it moments ago" to prevent history-induced skipping
+
 ## v233
 
 - feat(files): add `merge` action to `manage_files` — moves all files from source dir into an existing dest dir and removes the source; prevents hallucinated multi-move workflows for album consolidation

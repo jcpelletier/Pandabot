@@ -158,8 +158,10 @@ _VOICE_PREAMBLE = (
     "  'stop playing music' / 'stop the music' / 'exit music' / 'turn off the music' -> exit_music (hard)\n"
     "Always call the listed tool for these phrasings; do NOT respond with prose only.\n\n"
     "RADIO: if the user asks to stream or play a radio station (by call sign, name, or frequency), "
-    "you MUST call play_radio with the call sign or name as the query. Do NOT just say "
-    "\"streaming that now\" without calling the tool. "
+    "you MUST call play_radio with the call sign or name as the query — EVERY time, even if you called it "
+    "moments ago in this conversation. Do NOT produce a confirmation like \"Streaming X on your terminal.\" "
+    "or any similar phrase without first calling the tool. The tool call is what starts the stream; "
+    "a text response without a tool call does nothing. "
     "To stop a stream: call stop_radio. "
     "To check what is playing: call radio_status. "
     "Speak the tool's returned summary verbatim after calling it.\n\n"
@@ -456,7 +458,12 @@ async def _process_utterance(
         response_text[:120], len(pending_envelopes), voice_ctx['silent_tts'],
     )
 
-    session_manager.add_turn(device_id, user_text, response_text)
+    # Don't store silent (tool-dispatched) turns in history. The action
+    # happened via WS envelope; storing the tool's return text causes the
+    # LLM to regurgitate that text on the next identical utterance instead
+    # of calling the tool again.
+    if not voice_ctx['silent_tts']:
+        session_manager.add_turn(device_id, user_text, response_text)
 
     await _broadcast(
         {"type": "turn", "user_text": user_text, "assistant_text": response_text},
