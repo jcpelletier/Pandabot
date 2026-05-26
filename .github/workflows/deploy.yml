@@ -27,7 +27,7 @@ jobs:
           ssh genesis@100.65.72.102 \
             "sudo git -C /opt/discord-bot-staging pull origin staging && \
              sudo chown discord-bot:discord-bot /opt/discord-bot-staging/scheduler.db && \
-             sudo systemctl restart discord-bot-staging"
+             sudo systemctl restart discord-bot-staging pandabot-voice"
 
       - name: Deploy to production
         if: github.ref == 'refs/heads/main'
