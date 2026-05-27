@@ -2,11 +2,11 @@
 
 Main Discord bot for the panda home server.
 GitHub: `jcpelletier/Pandabot`
-Local path: `C:\Users\genes\GitHub\PandaMigration\discord-bot`
+Local path: `C:\Users\genes\GitHub\PandaEcosystem\discord-bot`
 Server path: `/opt/discord-bot/` (systemd service `discord-bot`, user `discord-bot`)
 
 For server-wide context (hardware, other services, Cloudflare, DNS, deployment patterns)
-see the parent `CLAUDE.md` at `C:\Users\genes\GitHub\PandaMigration\CLAUDE.md`.
+see the parent `CLAUDE.md` at `C:\Users\genes\GitHub\PandaEcosystem\CLAUDE.md`.
 
 ## Dependency on pandabot-core
 
@@ -24,7 +24,7 @@ from pandabot_core import identity, scheduler
 **Do not re-implement** anything that pandabot-core already provides. If you need new
 shared behavior, add it to pandabot-core first, then import it here.
 
-pandabot-core local path: `C:\Users\genes\GitHub\PandaMigration\pandabot-core`
+pandabot-core local path: `C:\Users\genes\GitHub\PandaEcosystem\pandabot-core`
 pandabot-core server path: `/opt/pandabot-core/` (on `PYTHONPATH` via systemd unit)
 
 ## What is local (not in core)
@@ -50,7 +50,7 @@ pandabot-core server path: `/opt/pandabot-core/` (on `PYTHONPATH` via systemd un
 ## Running tests
 
 ```bash
-cd "C:\Users\genes\GitHub\PandaMigration\discord-bot"
+cd "C:\Users\genes\GitHub\PandaEcosystem\discord-bot"
 python -m pytest tests/ -v
 ```
 
@@ -88,7 +88,7 @@ git push origin staging
 #    "run smoke tests in staging"
 
 # 3. After QA passes — promote to production
-cd "C:\Users\genes\GitHub\PandaMigration\discord-bot"
+cd "C:\Users\genes\GitHub\PandaEcosystem\discord-bot"
 ./promote-to-prod.sh           # dry-run first: ./promote-to-prod.sh --dry-run
 # GitHub Actions deploys production automatically on push to main
 ```

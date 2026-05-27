@@ -1,5 +1,9 @@
 # Changelog
 
+## v238
+
+- chore: rename local paths from PandaMigration to PandaEcosystem in CLAUDE.md
+
 ## v237
 
 - chore: update local paths in CLAUDE.md for repo move from Downloads to GitHub directory
