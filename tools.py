@@ -1216,15 +1216,17 @@ def _video_subtitle_url(item_id, stream_index):
 
 
 def _jf_video_info(item_id):
-    """Fetch subtitle tracks and resume position for a video item.
+    """Fetch subtitle tracks, resume position, and runtime for a video item.
 
-    Returns (subtitles, resume_ticks) where:
+    Returns (subtitles, resume_ticks, runtime_ticks) where:
       subtitles: list of {index, label, language, url}
       resume_ticks: int (0 if not started or user not found)
+      runtime_ticks: int total duration in 100ns ticks (0 if unavailable)
     """
     uid = _jf_get_user_id()
     subtitles = []
     resume_ticks = 0
+    runtime_ticks = 0
     try:
         params = {"Fields": "MediaStreams"}
         if uid:
@@ -1237,6 +1239,7 @@ def _jf_video_info(item_id):
         )
         r.raise_for_status()
         data = r.json()
+        runtime_ticks = data.get("RunTimeTicks") or 0
         for stream in data.get("MediaStreams", []):
             if stream.get("Type") == "Subtitle" and not stream.get("IsForced", False):
                 idx = stream.get("Index", 0)
@@ -1250,7 +1253,7 @@ def _jf_video_info(item_id):
             resume_ticks = data.get("UserData", {}).get("PlaybackPositionTicks", 0) or 0
     except requests.RequestException as e:
         _music_log.warning("Jellyfin video info fetch failed for %s: %s", item_id, e)
-    return subtitles, resume_ticks
+    return subtitles, resume_ticks, runtime_ticks
 
 
 def _jf_next_unwatched_episode(series_id):
@@ -1355,8 +1358,8 @@ def play_video(title, media_type=None, cast_target=None):
                     f"I found '{display_title}' but there are no unwatched episodes in your library."
                 )
 
-    # Fetch subtitle tracks and resume position
-    subtitles, resume_ticks = _jf_video_info(item_id)
+    # Fetch subtitle tracks, resume position, and total runtime
+    subtitles, resume_ticks, runtime_ticks = _jf_video_info(item_id)
 
     # Thumbnail (poster art)
     thumb_url = _art_url(item_id)
@@ -1367,6 +1370,7 @@ def play_video(title, media_type=None, cast_target=None):
             "item_id": item_id,
             "stream_url": _video_cast_stream_url(item_id),
             "resume_ticks": resume_ticks,
+            "runtime_ticks": runtime_ticks,
             "title": display_title,
             "thumbnail_url": thumb_url,
             "subtitles": subtitles,

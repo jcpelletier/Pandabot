@@ -1,5 +1,9 @@
 # Changelog
 
+## v239
+
+- feat(video): include `runtime_ticks` in cast_video envelope so Flutter app always has the full video duration up front
+
 ## v238
 
 - chore: rename local paths from PandaMigration to PandaEcosystem in CLAUDE.md
