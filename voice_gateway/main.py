@@ -841,6 +841,116 @@ async def speak(
 
 
 # ---------------------------------------------------------------------------
+# POST /debug/inject  — text injection for automated UI/Cast testing
+# ---------------------------------------------------------------------------
+
+class InjectRequest(BaseModel):
+    text: str
+    device_id: str = "pandabot-terminal-1"
+
+
+@app.post("/debug/inject")
+async def debug_inject(
+    request: Request,
+    body: InjectRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """
+    Inject a text command without TTS — for automated UI/Cast testing.
+    Runs the full Claude loop and broadcasts envelopes to connected WebSocket
+    clients but does not synthesize or broadcast audio.
+
+    Returns {response_text, envelopes, silent_tts}.
+    """
+    _check_bearer(authorization)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    http_session: aiohttp.ClientSession = request.app.state.http_session
+    device_id = body.device_id or "default"
+
+    logger.info("Debug inject from device %s: %r", device_id, text[:120])
+
+    pending_envelopes: list[dict] = []
+    voice_ctx = {
+        'emit': pending_envelopes.append,
+        'silent_tts': False,
+    }
+
+    await _broadcast({"state": "thinking", "device_id": device_id}, device_id)
+
+    intent = _try_music_intent(text)
+    if intent is not None:
+        _, tool_name, tool_kwargs, spoken = intent
+        logger.info("Music intent shortcut: %s%s -> %s", tool_name, tool_kwargs, spoken)
+        set_voice_context(voice_ctx)
+        try:
+            execute_tool(tool_name, tool_kwargs)
+        finally:
+            set_voice_context(None)
+        response_text = spoken
+    else:
+        history = session_manager.get_history(device_id)
+        cast_devs = _cast_devices.get(device_id, [])
+        effective_prompt = system_prompt
+        if cast_devs:
+            names = ", ".join(f'"{d}"' for d in cast_devs)
+            effective_prompt += (
+                f"\n\nChromecast devices currently visible on the network: {names}.\n"
+                "When the user asks to cast music to a device:\n"
+                "- Match their utterance to one of the names above (fuzzy match).\n"
+                "- If confident of the match, call play_music with cast_target set "
+                "to the EXACT device name from the list above.\n"
+                "- If ambiguous between multiple devices, list the available device "
+                "names and ask the user to be more specific — do not call play_music yet.\n"
+                "- If the user asks to stop casting, call stop_music.\n"
+            )
+
+        def _run_loop_with_ctx():
+            set_voice_context(voice_ctx)
+            try:
+                return run_claude_loop(
+                    text,
+                    history,
+                    TOOL_DEFINITIONS,
+                    execute_tool,
+                    effective_prompt,
+                )
+            finally:
+                set_voice_context(None)
+
+        loop = asyncio.get_event_loop()
+        response_text: str = await loop.run_in_executor(None, _run_loop_with_ctx)
+
+    logger.info(
+        "Inject response: %r  envelopes=%d",
+        response_text[:120], len(pending_envelopes),
+    )
+
+    if not voice_ctx['silent_tts']:
+        session_manager.add_turn(device_id, text, response_text)
+
+    await _broadcast(
+        {"type": "turn", "user_text": text, "assistant_text": response_text},
+        device_id,
+    )
+
+    for env in pending_envelopes:
+        env.setdefault("device_id", device_id)
+        await _broadcast(env, device_id)
+
+    asyncio.create_task(discord_mirror.post_turn(text, response_text, http_session))
+    asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.2))
+
+    return JSONResponse({
+        "response_text": response_text,
+        "envelopes": pending_envelopes,
+        "silent_tts": voice_ctx['silent_tts'],
+    })
+
+
+# ---------------------------------------------------------------------------
 # GET /health
 # ---------------------------------------------------------------------------
 

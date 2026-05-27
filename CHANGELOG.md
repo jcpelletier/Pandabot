@@ -1,5 +1,9 @@
 # Changelog
 
+## v240
+
+- feat(gateway): add POST /debug/inject endpoint for automated UI/Cast testing without TTS
+
 ## v239
 
 - feat(video): include `runtime_ticks` in cast_video envelope so Flutter app always has the full video duration up front
