@@ -1,5 +1,9 @@
 # Changelog
 
+## v237
+
+- chore: update local paths in CLAUDE.md for repo move from Downloads to GitHub directory
+
 ## v236
 
 - feat(video): add `play_video` tool — searches Jellyfin for a movie or show and casts it to a Chromecast via the Flutter voice terminal; supports resume position and external subtitle tracks
