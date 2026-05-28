@@ -1,5 +1,9 @@
 # Changelog
 
+## v242
+
+- fix(cast): correct Jellyfin subtitle VTT URL by inserting required mediaSourceId path segment (was returning 404 to Cast receiver)
+
 ## v241
 
 - fix(cast): make video cast streams seekable so seeking no longer restarts the video — direct-play (`?static=true`) for Chromecast-compatible H264/AAC MP4, HLS `master.m3u8` for incompatible codecs; `cast_video` envelope now carries `content_type`

@@ -1256,8 +1256,10 @@ def _is_cast_direct_play(data):
 
 def _video_subtitle_url(item_id, stream_index):
     """Build a VTT subtitle URL accessible from Cast devices."""
+    # Jellyfin subtitle route requires mediaSourceId between itemId and Subtitles;
+    # for local (non-split) content mediaSourceId == itemId.
     return (
-        f"{JELLYFIN_CAST_BASE_URL}/Videos/{item_id}/Subtitles/{stream_index}/0/Stream.vtt"
+        f"{JELLYFIN_CAST_BASE_URL}/Videos/{item_id}/{item_id}/Subtitles/{stream_index}/0/Stream.vtt"
         f"?api_key={urllib.parse.quote(JELLYFIN_TOKEN)}"
     )
 
