@@ -891,6 +891,13 @@ def _jf_search(name, item_types, artist_id=None, limit=10):
     """Wrapper around Jellyfin's /Items search."""
     if not JELLYFIN_TOKEN:
         return []
+    # Movie/Series/Episode visibility is user-scoped on this server; the
+    # unscoped /Items endpoint returns 0 results for those types.
+    video_types = {"Movie", "Series", "Episode"}
+    uid = None
+    if any(t in item_types for t in video_types):
+        uid = _jf_get_user_id()
+    base = f"{JELLYFIN_URL}/Users/{uid}/Items" if uid else f"{JELLYFIN_URL}/Items"
     params = {
         "searchTerm": name,
         "IncludeItemTypes": item_types,
@@ -900,7 +907,7 @@ def _jf_search(name, item_types, artist_id=None, limit=10):
     if artist_id:
         params["ArtistIds"] = artist_id
     try:
-        r = requests.get(f"{JELLYFIN_URL}/Items", headers=_jf_headers(), params=params, timeout=10)
+        r = requests.get(base, headers=_jf_headers(), params=params, timeout=10)
         r.raise_for_status()
         return r.json().get("Items", [])
     except requests.RequestException as e:

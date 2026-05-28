@@ -1,5 +1,9 @@
 # Changelog
 
+## v243
+
+- fix(cast): use user-scoped Jellyfin endpoint for movie/series search — unscoped /Items returns 0 results for video types on this server
+
 ## v242
 
 - fix(cast): correct Jellyfin subtitle VTT URL by inserting required mediaSourceId path segment (was returning 404 to Cast receiver)
