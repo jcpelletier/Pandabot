@@ -1193,17 +1193,64 @@ def set_loop_mode(mode: str = "all"):
 # Jellyfin video cast (story #127)
 # ---------------------------------------------------------------------------
 
-def _video_cast_stream_url(item_id):
-    """Build a Cast-compatible MP4 video stream URL.
+def _video_cast_stream_url(item_id, direct_play=True):
+    """Build a *seekable* Cast video stream URL.
 
-    Uses /Videos/{id}/stream with h264+aac targets so Jellyfin serves
-    direct-play for compatible content and transcodes otherwise.
+    The previous progressive endpoint (/Videos/{id}/stream?Container=mp4...)
+    serves a non-seekable transcode (Accept-Ranges: none), so the Cast receiver
+    could only reload from 0 on a seek. Both branches below are seekable:
+
+    direct_play=True — source is already H264/AAC in an MP4 container. Serve the
+    original file with ?static=true; Jellyfin sends it with byte-range support
+    (Accept-Ranges: bytes), so the receiver seeks inside the file with no reload
+    and no transcode.
+
+    direct_play=False — incompatible codec/container (HEVC, MPEG-4, AV1, MKV...).
+    Use an HLS master playlist; Jellyfin transcodes to H264/AAC on demand and
+    the VOD playlist lists every segment, so the receiver seeks by jumping
+    segments — again with no reload.
+
     JELLYFIN_CAST_BASE_URL must be HTTPS; newer Cast firmware blocks HTTP.
     """
+    key = urllib.parse.quote(JELLYFIN_TOKEN)
+    if direct_play:
+        return (
+            f"{JELLYFIN_CAST_BASE_URL}/Videos/{item_id}/stream"
+            f"?static=true&api_key={key}"
+        )
     return (
-        f"{JELLYFIN_CAST_BASE_URL}/Videos/{item_id}/stream"
-        f"?Container=mp4&VideoCodec=h264&AudioCodec=aac"
-        f"&api_key={urllib.parse.quote(JELLYFIN_TOKEN)}"
+        f"{JELLYFIN_CAST_BASE_URL}/Videos/{item_id}/master.m3u8"
+        f"?MediaSourceId={item_id}&VideoCodec=h264&AudioCodec=aac&api_key={key}"
+    )
+
+
+# Codecs/containers the Chromecast Default Media Receiver can direct-play.
+_CAST_DIRECT_VIDEO_CODECS = {"h264"}
+_CAST_DIRECT_AUDIO_CODECS = {"aac", "mp3"}
+
+
+def _is_cast_direct_play(data):
+    """True if a Jellyfin item DTO can be direct-played by a Chromecast.
+
+    Requires H264 video, AAC/MP3 audio, and an MP4/MOV container. Anything else
+    (HEVC, AV1, MPEG-4, MKV, AC3/DTS audio...) must go through HLS transcoding.
+    """
+    container = (data.get("Container") or "").lower()
+    if not container:
+        sources = data.get("MediaSources") or []
+        if sources:
+            container = (sources[0].get("Container") or "").lower()
+    if not ("mp4" in container or "mov" in container):
+        return False
+    video_codec = audio_codec = None
+    for stream in data.get("MediaStreams", []):
+        if stream.get("Type") == "Video" and video_codec is None:
+            video_codec = (stream.get("Codec") or "").lower()
+        elif stream.get("Type") == "Audio" and audio_codec is None:
+            audio_codec = (stream.get("Codec") or "").lower()
+    return (
+        video_codec in _CAST_DIRECT_VIDEO_CODECS
+        and audio_codec in _CAST_DIRECT_AUDIO_CODECS
     )
 
 
@@ -1216,19 +1263,23 @@ def _video_subtitle_url(item_id, stream_index):
 
 
 def _jf_video_info(item_id):
-    """Fetch subtitle tracks, resume position, and runtime for a video item.
+    """Fetch subtitle tracks, resume position, runtime, and Cast compatibility.
 
-    Returns (subtitles, resume_ticks, runtime_ticks) where:
+    Returns (subtitles, resume_ticks, runtime_ticks, direct_play) where:
       subtitles: list of {index, label, language, url}
       resume_ticks: int (0 if not started or user not found)
       runtime_ticks: int total duration in 100ns ticks (0 if unavailable)
+      direct_play: bool — True if the Chromecast can play the original file
+                   (H264/AAC/MP4), False if it needs HLS transcoding. Defaults
+                   to False on error so we fall back to the always-playable HLS.
     """
     uid = _jf_get_user_id()
     subtitles = []
     resume_ticks = 0
     runtime_ticks = 0
+    direct_play = False
     try:
-        params = {"Fields": "MediaStreams"}
+        params = {"Fields": "MediaStreams,MediaSources,Container"}
         if uid:
             params["UserId"] = uid
         r = requests.get(
@@ -1240,6 +1291,7 @@ def _jf_video_info(item_id):
         r.raise_for_status()
         data = r.json()
         runtime_ticks = data.get("RunTimeTicks") or 0
+        direct_play = _is_cast_direct_play(data)
         for stream in data.get("MediaStreams", []):
             if stream.get("Type") == "Subtitle" and not stream.get("IsForced", False):
                 idx = stream.get("Index", 0)
@@ -1253,7 +1305,7 @@ def _jf_video_info(item_id):
             resume_ticks = data.get("UserData", {}).get("PlaybackPositionTicks", 0) or 0
     except requests.RequestException as e:
         _music_log.warning("Jellyfin video info fetch failed for %s: %s", item_id, e)
-    return subtitles, resume_ticks, runtime_ticks
+    return subtitles, resume_ticks, runtime_ticks, direct_play
 
 
 def _jf_next_unwatched_episode(series_id):
@@ -1358,8 +1410,8 @@ def play_video(title, media_type=None, cast_target=None):
                     f"I found '{display_title}' but there are no unwatched episodes in your library."
                 )
 
-    # Fetch subtitle tracks, resume position, and total runtime
-    subtitles, resume_ticks, runtime_ticks = _jf_video_info(item_id)
+    # Fetch subtitle tracks, resume position, runtime, and Cast compatibility
+    subtitles, resume_ticks, runtime_ticks, direct_play = _jf_video_info(item_id)
 
     # Thumbnail (poster art)
     thumb_url = _art_url(item_id)
@@ -1368,7 +1420,10 @@ def play_video(title, media_type=None, cast_target=None):
         {
             "type": "cast_video",
             "item_id": item_id,
-            "stream_url": _video_cast_stream_url(item_id),
+            "stream_url": _video_cast_stream_url(item_id, direct_play),
+            # Tells the Flutter app which Cast content-type to declare:
+            # HLS needs application/x-mpegurl; direct-play is a plain MP4.
+            "content_type": "video/mp4" if direct_play else "application/x-mpegurl",
             "resume_ticks": resume_ticks,
             "runtime_ticks": runtime_ticks,
             "title": display_title,

@@ -1,5 +1,9 @@
 # Changelog
 
+## v241
+
+- fix(cast): make video cast streams seekable so seeking no longer restarts the video — direct-play (`?static=true`) for Chromecast-compatible H264/AAC MP4, HLS `master.m3u8` for incompatible codecs; `cast_video` envelope now carries `content_type`
+
 ## v240
 
 - feat(gateway): add POST /debug/inject endpoint for automated UI/Cast testing without TTS
