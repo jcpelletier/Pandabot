@@ -1,5 +1,10 @@
 # Changelog
 
+## v244
+
+- chore(ci): add PR test workflow (`.github/workflows/test.yml`) — runs pytest with pandabot-core checked out, matching the other ecosystem repos
+- test: add `tests/test_merge_dir.py` covering the `manage_files` merge action
+
 ## v243
 
 - fix(cast): use user-scoped Jellyfin endpoint for movie/series search — unscoped /Items returns 0 results for video types on this server
