@@ -1,5 +1,9 @@
 # Changelog
 
+## v246
+
+- feat(stt): GPU-resident Whisper (cuda float32) with proactive VRAM eviction/reload poller. Frees ~1.8 GB within 60s of a Steam game launching without needing a voice turn; reloads automatically once VRAM recovers. Part of OP#153 latency reduction.
+
 ## v245
 
 - feat(bot): static system prompt for prompt caching; per-turn dynamic context (timestamp + variety seed) now rides on the user message instead. Adds an explicit "be varied / avoid default jokes" instruction in `pandabot_extras` paired with a `[Variety seed: <adj> <noun>]` hint per call to break the repetitive-joke pattern. Injection happens in `_run_claude_loop` so Discord text and voice STT paths both get it.
