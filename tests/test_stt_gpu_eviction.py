@@ -189,6 +189,7 @@ def test_poller_not_started_when_interval_zero(monkeypatch):
     monkeypatch.setenv("STT_COMPUTE_TYPE", "float32")
     monkeypatch.setenv("STT_GPU_MIN_FREE_MB", "1000")
     monkeypatch.setenv("STT_VRAM_POLL_INTERVAL_SECS", "0")
+    monkeypatch.setenv("STT_KOKORO_CONTAINER", "")
     fake_pkg = types.ModuleType("faster_whisper")
     fake_pkg.WhisperModel = _FakeWhisperModel
     monkeypatch.setitem(sys.modules, "faster_whisper", fake_pkg)
@@ -201,6 +202,76 @@ def test_poller_not_started_when_interval_zero(monkeypatch):
         threads_after = {t.name for t in threading.enumerate()}
         assert "stt-vram-poller" not in threads_after - threads_before
     finally:
+        sys.modules.pop("voice_gateway.stt", None)
+
+
+def test_poller_stops_kokoro_on_low_vram(stt_cuda, monkeypatch):
+    """Poller must call docker stop when VRAM drops, even when STT is on CPU."""
+    stopped = []
+    monkeypatch.setattr(stt_cuda, "STT_KOKORO_CONTAINER", "kokoro")
+    monkeypatch.setattr(stt_cuda, "_get_gpu_free_mb", _fake_free_mb(400))
+
+    def fake_run(cmd, **kw):
+        stopped.append(cmd)
+        class R: returncode = 0; stderr = ""
+        return R()
+    monkeypatch.setattr(stt_cuda.subprocess, "run", fake_run)
+
+    stt_cuda._stop_kokoro()
+
+    assert any("stop" in c and "kokoro" in c for c in stopped)
+    assert stt_cuda._kokoro_stopped is True
+
+
+def test_poller_starts_kokoro_on_vram_recovery(stt_cuda, monkeypatch):
+    """Poller must call docker start when VRAM recovers after gaming."""
+    stt_cuda._kokoro_stopped = True
+    started = []
+    monkeypatch.setattr(stt_cuda, "STT_KOKORO_CONTAINER", "kokoro")
+
+    def fake_run(cmd, **kw):
+        started.append(cmd)
+        class R: returncode = 0; stderr = ""
+        return R()
+    monkeypatch.setattr(stt_cuda.subprocess, "run", fake_run)
+
+    stt_cuda._start_kokoro()
+
+    assert any("start" in c and "kokoro" in c for c in started)
+    assert stt_cuda._kokoro_stopped is False
+
+
+def test_poller_skips_kokoro_when_container_name_empty(stt_cuda, monkeypatch):
+    """STT_KOKORO_CONTAINER='' must disable Kokoro management."""
+    monkeypatch.setattr(stt_cuda, "STT_KOKORO_CONTAINER", "")
+    calls = []
+    monkeypatch.setattr(stt_cuda.subprocess, "run", lambda *a, **k: calls.append(a))
+
+    stt_cuda._stop_kokoro()
+    stt_cuda._start_kokoro()
+
+    assert calls == []
+
+
+def test_poller_started_with_cpu_stt_when_kokoro_configured(monkeypatch):
+    """Poller must start even when STT_DEVICE=cpu, as long as Kokoro is configured."""
+    import asyncio
+    monkeypatch.setenv("STT_DEVICE", "cpu")
+    monkeypatch.setenv("STT_KOKORO_CONTAINER", "kokoro")
+    monkeypatch.setenv("STT_VRAM_POLL_INTERVAL_SECS", "60")
+    fake_pkg = types.ModuleType("faster_whisper")
+    fake_pkg.WhisperModel = _FakeWhisperModel
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_pkg)
+    _FakeWhisperModel.instances = []
+    sys.modules.pop("voice_gateway.stt", None)
+    stt = importlib.import_module("voice_gateway.stt")
+    try:
+        threads_before = {t.name for t in threading.enumerate()}
+        asyncio.run(stt.warm())
+        threads_after = {t.name for t in threading.enumerate()}
+        assert "stt-vram-poller" in threads_after - threads_before
+    finally:
+        stt._poller_stop.set()
         sys.modules.pop("voice_gateway.stt", None)
 
 

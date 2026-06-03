@@ -26,9 +26,11 @@ Environment variables:
     STT_VRAM_POLL_INTERVAL_SECS — How often (seconds) the background VRAM poller
                           checks GPU memory to proactively evict or reload the cuda
                           model without waiting for a voice turn (default: 60).
-                          Set to 0 to disable the poller (eviction then only
-                          happens on the first transcription call after a game
-                          launches).
+                          Set to 0 to disable the poller entirely.
+    STT_KOKORO_CONTAINER  — Name of the Kokoro TTS Docker container to stop/start
+                          alongside the Whisper model when VRAM pressure is detected
+                          (default: "kokoro"). Set to "" to disable Kokoro management.
+                          The process user must be in the docker group.
 """
 
 from __future__ import annotations
@@ -49,6 +51,7 @@ STT_COMPUTE_TYPE             = os.environ.get("STT_COMPUTE_TYPE",             "i
 STT_GPU_MIN_FREE_MB          = int(os.environ.get("STT_GPU_MIN_FREE_MB",          "1000"))
 STT_GPU_RELOAD_MIN_FREE_MB   = int(os.environ.get("STT_GPU_RELOAD_MIN_FREE_MB",   "3000"))
 STT_VRAM_POLL_INTERVAL_SECS  = int(os.environ.get("STT_VRAM_POLL_INTERVAL_SECS",  "60"))
+STT_KOKORO_CONTAINER         = os.environ.get("STT_KOKORO_CONTAINER",              "kokoro")
 
 _WHISPER_CACHE = "/opt/discord-bot/models"
 
@@ -57,9 +60,10 @@ _WHISPER_CACHE = "/opt/discord-bot/models"
 # _was_evicted distinguishes "_model_primary is None because we never loaded it"
 # (fresh boot — try to load on cuda) from "we deliberately unloaded it under VRAM
 # pressure" (stay on CPU until VRAM recovers past the reload threshold).
-_model_primary:  object | None = None
-_model_cpu:      object | None = None
-_was_evicted:    bool = False
+_model_primary:   object | None = None
+_model_cpu:       object | None = None
+_was_evicted:     bool = False
+_kokoro_stopped:  bool = False
 _model_lock = threading.Lock()
 _poller_stop  = threading.Event()
 
@@ -172,35 +176,77 @@ def _transcribe_sync(audio_path: str) -> str | None:
     return text or None
 
 
-def _vram_poll_loop() -> None:
-    """Background daemon thread: evict or reload the cuda model proactively.
+def _stop_kokoro() -> None:
+    """Stop the Kokoro Docker container to reclaim its GPU VRAM for gaming."""
+    global _kokoro_stopped
+    if _kokoro_stopped or not STT_KOKORO_CONTAINER:
+        return
+    logger.info("STT poller: stopping Kokoro container %r to free VRAM", STT_KOKORO_CONTAINER)
+    try:
+        r = subprocess.run(
+            ["docker", "stop", STT_KOKORO_CONTAINER],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode == 0:
+            _kokoro_stopped = True
+            logger.info("STT poller: Kokoro container stopped")
+        else:
+            logger.warning("STT poller: docker stop returned %d: %s", r.returncode, r.stderr.strip())
+    except Exception:
+        logger.exception("STT poller: failed to stop Kokoro container")
 
-    Polls nvidia-smi every STT_VRAM_POLL_INTERVAL_SECS seconds so the model is
-    freed as soon as a game launches, without waiting for the next voice turn.
-    Also reloads the model once VRAM recovers so the first post-game utterance
-    doesn't pay the load cost.
+
+def _start_kokoro() -> None:
+    """Start the Kokoro Docker container after VRAM recovers from a gaming session."""
+    global _kokoro_stopped
+    if not _kokoro_stopped or not STT_KOKORO_CONTAINER:
+        return
+    logger.info("STT poller: starting Kokoro container %r — VRAM recovered", STT_KOKORO_CONTAINER)
+    try:
+        r = subprocess.run(
+            ["docker", "start", STT_KOKORO_CONTAINER],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode == 0:
+            _kokoro_stopped = False
+            logger.info("STT poller: Kokoro container started")
+        else:
+            logger.warning("STT poller: docker start returned %d: %s", r.returncode, r.stderr.strip())
+    except Exception:
+        logger.exception("STT poller: failed to start Kokoro container")
+
+
+def _vram_poll_loop() -> None:
+    """Background daemon thread: proactively free and restore GPU residents.
+
+    On low VRAM (game launched): stops Kokoro container + unloads Whisper cuda model.
+    On VRAM recovery (game exited): starts Kokoro container + reloads Whisper cuda model.
+    Runs every STT_VRAM_POLL_INTERVAL_SECS seconds.
     """
     global _was_evicted
     logger.info("STT VRAM poller started (interval=%ds)", STT_VRAM_POLL_INTERVAL_SECS)
     while not _poller_stop.wait(STT_VRAM_POLL_INTERVAL_SECS):
-        if STT_DEVICE != "cuda" or STT_GPU_MIN_FREE_MB <= 0:
+        if STT_GPU_MIN_FREE_MB <= 0:
             continue
         free_mb = _get_gpu_free_mb()
         if free_mb is None:
             continue
-        if _model_primary is not None and free_mb < STT_GPU_MIN_FREE_MB:
-            logger.info(
-                "STT poller: GPU %d MB free (< %d) — evicting cuda model",
-                free_mb, STT_GPU_MIN_FREE_MB,
-            )
-            _unload_gpu_resident_model()
-        elif _model_primary is None and _was_evicted and free_mb >= STT_GPU_RELOAD_MIN_FREE_MB:
-            logger.info(
-                "STT poller: GPU %d MB free (≥ %d) — reloading cuda model",
-                free_mb, STT_GPU_RELOAD_MIN_FREE_MB,
-            )
-            _was_evicted = False
-            _get_primary_model()
+
+        if free_mb < STT_GPU_MIN_FREE_MB:
+            # VRAM low — evict all GPU residents
+            if not _kokoro_stopped:
+                logger.info("STT poller: GPU %d MB free (< %d) — evicting GPU residents", free_mb, STT_GPU_MIN_FREE_MB)
+            _stop_kokoro()
+            if STT_DEVICE == "cuda" and _model_primary is not None:
+                _unload_gpu_resident_model()
+        elif free_mb >= STT_GPU_RELOAD_MIN_FREE_MB:
+            # VRAM recovered — restore GPU residents
+            if _kokoro_stopped:
+                logger.info("STT poller: GPU %d MB free (≥ %d) — restoring GPU residents", free_mb, STT_GPU_RELOAD_MIN_FREE_MB)
+            _start_kokoro()
+            if STT_DEVICE == "cuda" and _model_primary is None and _was_evicted:
+                _was_evicted = False
+                _get_primary_model()
     logger.info("STT VRAM poller stopped")
 
 
@@ -208,7 +254,8 @@ async def warm() -> None:
     """Pre-load the primary Whisper model and start the VRAM poller. Safe to call multiple times."""
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _get_primary_model)
-    if STT_DEVICE == "cuda" and STT_VRAM_POLL_INTERVAL_SECS > 0:
+    # Start poller if it manages anything: Kokoro container or cuda Whisper model.
+    if STT_VRAM_POLL_INTERVAL_SECS > 0 and (STT_KOKORO_CONTAINER or STT_DEVICE == "cuda"):
         t = threading.Thread(target=_vram_poll_loop, name="stt-vram-poller", daemon=True)
         t.start()
 

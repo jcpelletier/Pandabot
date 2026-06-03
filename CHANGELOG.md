@@ -1,5 +1,9 @@
 # Changelog
 
+## v251
+
+- feat(stt): VRAM poller now manages Kokoro Docker container alongside Whisper. On low VRAM (game launched), stops Kokoro container to reclaim its ~870 MiB; restarts it when VRAM recovers. Poller now starts even with STT_DEVICE=cpu as long as STT_KOKORO_CONTAINER is set.
+
 ## v250
 
 - fix(voice): tighten brevity instruction — hard 3-sentence maximum with no exceptions, explicit prohibition on enumerating lists. Previous instruction had a loophole ("list everything" justified longer responses) that the model was exploiting.
