@@ -1,5 +1,9 @@
 # Changelog
 
+## v248
+
+- feat(voice): parallelize TTS sentence synthesis — sentence N+1's Kokoro call fires immediately while sentence N is being broadcast, cutting multi-sentence response time from sum(TTS) to max(TTS) + overhead. Part of OP#153 latency reduction.
+
 ## v247
 
 - feat(voice): LLM response streaming → sentence-boundary TTS. Voice gateway now synthesizes and broadcasts each sentence as LLM tokens arrive instead of waiting for the full response. First audio fires within ~1s of the LLM starting to answer. Part of OP#153 latency reduction.

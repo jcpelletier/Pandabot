@@ -471,21 +471,44 @@ async def _process_utterance(
         _SENT_RE = _re.compile(r'(?<=[.!?])\s+')
 
         async def _stream_tts() -> int:
-            """Drain delta_queue, synthesize at sentence boundaries, return seq count."""
-            buf = ""
-            seq = 0
+            """Drain delta_queue, synthesize sentences in parallel, broadcast in order.
+
+            Producer and consumer run concurrently: as soon as a sentence boundary is
+            found in the delta buffer, a TTS task is fired immediately. The consumer
+            awaits tasks in arrival order so audio is broadcast sequentially, but
+            sentence N+1's Kokoro call is already in flight while sentence N is playing.
+            """
+            tts_queue: asyncio.Queue[asyncio.Task | None] = asyncio.Queue()
             first_chunk = True
-            while True:
-                chunk = await delta_queue.get()
-                if chunk is None:
-                    break
-                buf += chunk
-                while m := _SENT_RE.search(buf):
-                    sentence = buf[:m.start()].strip()
-                    buf = buf[m.end():]
-                    if not sentence:
-                        continue
-                    mp3 = await tts.synthesize(sentence, http_session, voice=voice)
+
+            async def _produce() -> None:
+                buf = ""
+                while True:
+                    chunk = await delta_queue.get()
+                    if chunk is None:
+                        break
+                    buf += chunk
+                    while m := _SENT_RE.search(buf):
+                        sentence = buf[:m.start()].strip()
+                        buf = buf[m.end():]
+                        if sentence:
+                            await tts_queue.put(
+                                asyncio.create_task(tts.synthesize(sentence, http_session, voice=voice))
+                            )
+                if buf.strip():
+                    await tts_queue.put(
+                        asyncio.create_task(tts.synthesize(buf.strip(), http_session, voice=voice))
+                    )
+                await tts_queue.put(None)
+
+            async def _consume() -> int:
+                nonlocal first_chunk
+                seq = 0
+                while True:
+                    task = await tts_queue.get()
+                    if task is None:
+                        break
+                    mp3 = await task
                     if mp3:
                         if first_chunk:
                             await _broadcast({"state": "speaking", "device_id": device_id}, device_id)
@@ -497,19 +520,10 @@ async def _process_utterance(
                         )
                         logger.debug("speak_chunk seq=%d  %d bytes  device=%s", seq, len(mp3), device_id)
                         seq += 1
-            # Flush any trailing text without terminal punctuation.
-            if buf.strip():
-                mp3 = await tts.synthesize(buf.strip(), http_session, voice=voice)
-                if mp3:
-                    if first_chunk:
-                        await _broadcast({"state": "speaking", "device_id": device_id}, device_id)
-                    audio_b64 = base64.b64encode(mp3).decode()
-                    await _broadcast(
-                        {"type": "speak_chunk", "seq": seq, "audio_b64": audio_b64, "device_id": device_id},
-                        device_id,
-                    )
-                    seq += 1
-            return seq
+                return seq
+
+            consume_result, _ = await asyncio.gather(_consume(), _produce())
+            return consume_result
 
         response_text, streaming_seq = await asyncio.gather(
             event_loop.run_in_executor(None, _run_loop_with_ctx),
