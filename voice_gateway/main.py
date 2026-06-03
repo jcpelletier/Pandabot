@@ -473,13 +473,18 @@ async def _process_utterance(
         async def _stream_tts() -> int:
             """Drain delta_queue, synthesize sentences in parallel, broadcast in order.
 
-            Producer and consumer run concurrently: as soon as a sentence boundary is
-            found in the delta buffer, a TTS task is fired immediately. The consumer
-            awaits tasks in arrival order so audio is broadcast sequentially, but
-            sentence N+1's Kokoro call is already in flight while sentence N is playing.
+            Fires TTS tasks as sentences arrive but limits Kokoro to 2 concurrent
+            calls via a semaphore. Sentence N+1 is synthesizing while sentence N is
+            being broadcast, without hammering the TTS container with all sentences
+            at once (which causes timeouts on longer responses).
             """
             tts_queue: asyncio.Queue[asyncio.Task | None] = asyncio.Queue()
             first_chunk = True
+            _sem = asyncio.Semaphore(2)
+
+            async def _synthesize(sentence: str) -> bytes | None:
+                async with _sem:
+                    return await tts.synthesize(sentence, http_session, voice=voice)
 
             async def _produce() -> None:
                 buf = ""
@@ -492,13 +497,9 @@ async def _process_utterance(
                         sentence = buf[:m.start()].strip()
                         buf = buf[m.end():]
                         if sentence:
-                            await tts_queue.put(
-                                asyncio.create_task(tts.synthesize(sentence, http_session, voice=voice))
-                            )
+                            await tts_queue.put(asyncio.create_task(_synthesize(sentence)))
                 if buf.strip():
-                    await tts_queue.put(
-                        asyncio.create_task(tts.synthesize(buf.strip(), http_session, voice=voice))
-                    )
+                    await tts_queue.put(asyncio.create_task(_synthesize(buf.strip())))
                 await tts_queue.put(None)
 
             async def _consume() -> int:

@@ -1,5 +1,9 @@
 # Changelog
 
+## v249
+
+- fix(voice): cap parallel TTS at 2 concurrent Kokoro calls via semaphore. Unlimited parallelism overloaded the TTS container and caused timeouts on longer responses. Semaphore(2) keeps sentence N+1 in flight while N broadcasts without hammering Kokoro.
+
 ## v248
 
 - feat(voice): parallelize TTS sentence synthesis — sentence N+1's Kokoro call fires immediately while sentence N is being broadcast, cutting multi-sentence response time from sum(TTS) to max(TTS) + overhead. Part of OP#153 latency reduction.
