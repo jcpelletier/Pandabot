@@ -47,6 +47,31 @@ pandabot-core server path: `/opt/pandabot-core/` (on `PYTHONPATH` via systemd un
 - Typing indicator: `keep_typing(message.channel)` from pandabot_core — returns a cancellable task
 - Scheduler DB: `PANDABOT_DATA_DIR=/opt/discord-bot` → uses `/opt/discord-bot/scheduler.db`
 
+## Caching strategy — system prompt must stay static
+
+The system prompt (~1,150 tokens, built by `_build_system_prompt` in `bot.py`) is
+intentionally **byte-identical across calls** so DeepSeek (and Anthropic, with
+`cache_control` if we add it later) can cache the full prefix. Cached input is
+~4× cheaper, and ~50% of calls today are mid-conversation tool rounds that hit
+the same prompt within seconds.
+
+**Rule: anything that varies per call goes in the user message, never the system
+prompt.** Today that means the current timestamp and the per-turn variety seed
+are prepended by `_build_turn_context_prefix()` inside `_run_claude_loop` — a
+single chokepoint so every entry path (Discord text, voice STT, future ones)
+gets the same treatment automatically. If you add new dynamic context (active
+user, channel metadata, etc.), prepend it there too. Do **not** add it to
+`pandabot_extras` or pass it via `llm_line`.
+
+The static "be varied — avoid default jokes" instruction belongs in the
+`pandabot_extras` block; it's distribution-shaping prose, not per-call data,
+and pairs with the `[Variety seed: ...]` hint that the model finds in each
+user message.
+
+The `llm_line` ("You are powered by …") is also technically dynamic but only
+changes when the user runs `!<profile>` to switch models. Acceptable: one
+cache miss on the switch turn, then it caches again.
+
 ## Running tests
 
 ```bash

@@ -22,6 +22,7 @@ import datetime
 import io
 import logging
 import os
+import random
 import re
 import struct
 import subprocess
@@ -303,6 +304,14 @@ def _build_system_prompt() -> str:
         "Never answer questions about people from training data or memory -- you "
         "are a tool-use assistant, not a trivia bot, and guessing personal details "
         "is always wrong. If query_family_info returns no result, say so.",
+        "",
+        "When asked to tell a joke, story, riddle, poem, song lyric, or to give "
+        "creative examples: do NOT default to your most common training-prior "
+        "choices (programmer jokes, panda puns, dad jokes about the obvious topic). "
+        "Each user turn arrives with a [Variety seed: ...] hint — treat the two "
+        "words as a topic, mood, or imagery nudge to push you away from your "
+        "default and toward an unexpected angle, format, or subject. The user "
+        "cannot see the seed; do not mention it in your reply.",
     ]
 
     return _identity.build_system_prompt(
@@ -1086,7 +1095,13 @@ def _run_claude_loop(
     conversation_id: str | None = None,
     event_loop=None,
 ) -> str:
-    """Synchronous LLM agentic loop (run in a thread executor)."""
+    """Synchronous LLM agentic loop (run in a thread executor).
+
+    Prepends per-turn dynamic context (timestamp + variety seed) so the system
+    prompt can stay byte-identical across calls — see CLAUDE.md "Caching strategy".
+    """
+    user_message = _build_turn_context_prefix() + user_message
+
     def _on_confirm(ch_id: int, tool_name: str, confirmed_inputs: dict) -> None:
         _confirmations.save(ch_id, tool_name, confirmed_inputs)
 
@@ -1152,6 +1167,29 @@ def _prefetch_family_context(text: str) -> str | None:
         if result and "No family info found" not in result and "not enabled" not in result and "not configured" not in result:
             results.append(result)
     return "\n\n".join(results) if results else None
+
+
+# Per-turn context: timestamp and a random word pair injected as a leading
+# annotation on the user message. Kept OUT of the system prompt so the system
+# prompt stays byte-identical across calls and DeepSeek (and other providers)
+# can cache the full ~1150-token prefix. See discord-bot/CLAUDE.md "Caching strategy".
+_VARIETY_ADJECTIVES = (
+    "brittle", "copper", "drowsy", "eldritch", "frosted", "glassy", "hollow",
+    "indigo", "jagged", "kinetic", "languid", "marble", "nimble", "opal",
+    "plush", "quartz", "rusted", "smoky", "tangled", "velvet",
+)
+_VARIETY_NOUNS = (
+    "bramble", "cinder", "dune", "ember", "fjord", "grotto", "hearth", "ivy",
+    "kelp", "lantern", "marsh", "nebula", "orchard", "prism", "quill",
+    "rivulet", "snowdrift", "thicket", "umbra", "vellum",
+)
+
+
+def _build_turn_context_prefix() -> str:
+    """Per-turn dynamic context. Format kept stable so tests/log greps work."""
+    now = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    seed = f"{random.choice(_VARIETY_ADJECTIVES)} {random.choice(_VARIETY_NOUNS)}"
+    return f"[Current time: {now}. Variety seed: {seed}.]\n\n"
 
 
 async def handle_claude_query(user_message: str, message: discord.Message) -> str:

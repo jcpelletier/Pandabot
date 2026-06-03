@@ -98,9 +98,18 @@ For most home server setups — with some combination of Docker services, system
 4. **OAuth2 → URL Generator** → scopes: `bot` → permissions: `Send Messages`, `Read Message History`, `View Channels` → invite to your server
 5. In Discord: **Settings → Advanced → Developer Mode** → right-click your channel → **Copy Channel ID** → `DISCORD_CHANNEL_ID`
 
-### 2. Get an Anthropic API key
+### 2. Get an LLM API key
 
-Create a key at [console.anthropic.com](https://console.anthropic.com) → `ANTHROPIC_API_KEY`
+Pandabot uses a multi-profile system — you can define multiple providers in `.env` and
+switch between them at runtime with `!deepseek` / `!haiku` / etc. The **default** profile
+is DeepSeek (recommended for cost; ~10× cheaper than Claude Haiku at comparable quality
+for this workload).
+
+- **DeepSeek (default):** create a key at [platform.deepseek.com](https://platform.deepseek.com) → `PANDABOT_PROFILE_DEEPSEEK_KEY`
+- **Anthropic (alternative):** create a key at [console.anthropic.com](https://console.anthropic.com) → `ANTHROPIC_API_KEY`
+- **Local llama.cpp (optional):** no key needed; see the local-LLM section of `.env.example`
+
+Pick at least one. You can add the others later and switch with a Discord command.
 
 ### 3. Install on the server
 
@@ -121,9 +130,19 @@ sudo nano /opt/discord-bot/.env
 ```bash
 DISCORD_TOKEN=...
 DISCORD_CHANNEL_ID=...
-ANTHROPIC_API_KEY=...
+
+# LLM — DeepSeek profile (default; replace with your provider if not using DeepSeek)
+PANDABOT_PROFILE_DEEPSEEK_TYPE=openai_compat
+PANDABOT_PROFILE_DEEPSEEK_URL=https://api.deepseek.com
+PANDABOT_PROFILE_DEEPSEEK_KEY=sk-...
+PANDABOT_PROFILE_DEEPSEEK_PRIMARY=deepseek-v4-flash
+PANDABOT_DEFAULT_PROFILE=deepseek
+
 WEBHOOK_SECRET=$(openssl rand -hex 24)   # paste the output
 ```
+
+See `.env.example` for additional profiles (Anthropic Haiku, local llama.cpp models like
+Gemma and Qwen). Multiple profiles can coexist — switch live in Discord with `!<profile>`.
 
 **Disable features you don't have** (all default to `true`):
 ```bash
@@ -322,7 +341,7 @@ ssh yourserver "sudo git -C /opt/discord-bot pull origin main && sudo systemctl 
 
 **Credentials:**
 - Discord bot token with **Message Content Intent** enabled
-- LLM API key (tested with Deepseek r4 flash and Claude Haiku 4.5)
+- LLM API key (DeepSeek by default; also tested with Claude Haiku 4.5 and local llama.cpp models)
 - Jenkins API token (when `ENABLE_JENKINS=true`) — see SETUP.md §3
 - Jellyfin API key (when `ENABLE_JELLYFIN=true`)
 - Azure App Registration with Monitoring Reader on your App Insights resource — for `query_ripping: recent_rips` and telemetry (optional; see SETUP.md §2)

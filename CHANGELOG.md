@@ -1,5 +1,10 @@
 # Changelog
 
+## v245
+
+- feat(bot): static system prompt for prompt caching; per-turn dynamic context (timestamp + variety seed) now rides on the user message instead. Adds an explicit "be varied / avoid default jokes" instruction in `pandabot_extras` paired with a `[Variety seed: <adj> <noun>]` hint per call to break the repetitive-joke pattern. Injection happens in `_run_claude_loop` so Discord text and voice STT paths both get it.
+- docs: README and `.env.example` now show DeepSeek as the default LLM profile (matches production); Haiku moved to the commented "alternative" block. CLAUDE.md gains a "Caching strategy" section explaining why the system prompt must stay static.
+
 ## v244
 
 - chore(ci): add PR test workflow (`.github/workflows/test.yml`) — runs pytest with pandabot-core checked out, matching the other ecosystem repos
