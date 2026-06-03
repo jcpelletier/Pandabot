@@ -1,5 +1,9 @@
 # Changelog
 
+## v250
+
+- fix(voice): tighten brevity instruction — hard 3-sentence maximum with no exceptions, explicit prohibition on enumerating lists. Previous instruction had a loophole ("list everything" justified longer responses) that the model was exploiting.
+
 ## v249
 
 - fix(voice): cap parallel TTS at 2 concurrent Kokoro calls via semaphore. Unlimited parallelism overloaded the TTS container and caused timeouts on longer responses. Semaphore(2) keeps sentence N+1 in flight while N broadcasts without hammering Kokoro.
