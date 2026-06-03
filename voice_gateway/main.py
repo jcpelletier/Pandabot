@@ -437,6 +437,20 @@ async def _process_utterance(
                 "- If the user asks to stop casting, call stop_music.\n"
             )
 
+        # Streaming TTS bridge: LLM loop runs in a thread executor and calls
+        # on_delta with each text chunk. on_delta pushes chunks onto an asyncio
+        # queue via call_soon_threadsafe so the async consumer can synthesize
+        # and broadcast each sentence as it arrives rather than waiting for the
+        # full response.
+        event_loop = asyncio.get_event_loop()
+        delta_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        def on_delta(chunk: str) -> None:
+            # silent_tts is set by tool calls in earlier rounds; by the time
+            # on_delta fires for the final text round it is already stable.
+            if not voice_ctx['silent_tts']:
+                event_loop.call_soon_threadsafe(delta_queue.put_nowait, chunk)
+
         def _run_loop_with_ctx():
             set_voice_context(voice_ctx)
             try:
@@ -446,12 +460,61 @@ async def _process_utterance(
                     TOOL_DEFINITIONS,
                     execute_tool,
                     effective_prompt,
+                    on_text_delta=on_delta,
                 )
             finally:
                 set_voice_context(None)
+                # Always unblock the consumer — even on exception.
+                event_loop.call_soon_threadsafe(delta_queue.put_nowait, None)
 
-        loop = asyncio.get_event_loop()
-        response_text: str = await loop.run_in_executor(None, _run_loop_with_ctx)
+        # Sentence-boundary regex (same as tts._SENTENCE_SPLIT_RE but used as search).
+        _SENT_RE = _re.compile(r'(?<=[.!?])\s+')
+
+        async def _stream_tts() -> int:
+            """Drain delta_queue, synthesize at sentence boundaries, return seq count."""
+            buf = ""
+            seq = 0
+            first_chunk = True
+            while True:
+                chunk = await delta_queue.get()
+                if chunk is None:
+                    break
+                buf += chunk
+                while m := _SENT_RE.search(buf):
+                    sentence = buf[:m.start()].strip()
+                    buf = buf[m.end():]
+                    if not sentence:
+                        continue
+                    mp3 = await tts.synthesize(sentence, http_session, voice=voice)
+                    if mp3:
+                        if first_chunk:
+                            await _broadcast({"state": "speaking", "device_id": device_id}, device_id)
+                            first_chunk = False
+                        audio_b64 = base64.b64encode(mp3).decode()
+                        await _broadcast(
+                            {"type": "speak_chunk", "seq": seq, "audio_b64": audio_b64, "device_id": device_id},
+                            device_id,
+                        )
+                        logger.debug("speak_chunk seq=%d  %d bytes  device=%s", seq, len(mp3), device_id)
+                        seq += 1
+            # Flush any trailing text without terminal punctuation.
+            if buf.strip():
+                mp3 = await tts.synthesize(buf.strip(), http_session, voice=voice)
+                if mp3:
+                    if first_chunk:
+                        await _broadcast({"state": "speaking", "device_id": device_id}, device_id)
+                    audio_b64 = base64.b64encode(mp3).decode()
+                    await _broadcast(
+                        {"type": "speak_chunk", "seq": seq, "audio_b64": audio_b64, "device_id": device_id},
+                        device_id,
+                    )
+                    seq += 1
+            return seq
+
+        response_text, streaming_seq = await asyncio.gather(
+            event_loop.run_in_executor(None, _run_loop_with_ctx),
+            _stream_tts(),
+        )
 
     logger.info(
         "Claude response: %r  envelopes=%d silent_tts=%s",
@@ -480,28 +543,27 @@ async def _process_utterance(
         asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.2))
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    await _broadcast({"state": "speaking", "device_id": device_id}, device_id)
-
-    seq = 0
-    async for chunk_bytes in tts.synthesize_sentences(response_text, http_session, voice=voice):
-        audio_b64 = base64.b64encode(chunk_bytes).decode()
-        await _broadcast(
-            {
-                "type": "speak_chunk",
-                "seq": seq,
-                "audio_b64": audio_b64,
-                "device_id": device_id,
-            },
-            device_id,
-        )
-        logger.debug("speak_chunk seq=%d  %d bytes  device=%s", seq, len(chunk_bytes), device_id)
-        seq += 1
+    # For the LLM path, TTS was streamed concurrently above; just close the turn.
+    # For the music fast path, run the old sequential TTS path.
+    if intent is not None:
+        await _broadcast({"state": "speaking", "device_id": device_id}, device_id)
+        seq = 0
+        async for chunk_bytes in tts.synthesize_sentences(response_text, http_session, voice=voice):
+            audio_b64 = base64.b64encode(chunk_bytes).decode()
+            await _broadcast(
+                {"type": "speak_chunk", "seq": seq, "audio_b64": audio_b64, "device_id": device_id},
+                device_id,
+            )
+            logger.debug("speak_chunk seq=%d  %d bytes  device=%s", seq, len(chunk_bytes), device_id)
+            seq += 1
+    else:
+        seq = streaming_seq
 
     await _broadcast(
         {"type": "speak_done", "total": seq, "device_id": device_id},
         device_id,
     )
-    logger.info("TTS streaming done: %d chunk(s) for device %s", seq, device_id)
+    logger.info("TTS done: %d chunk(s) for device %s", seq, device_id)
 
     asyncio.create_task(_broadcast_idle_after_delay(device_id, delay=0.5))
 

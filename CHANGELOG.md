@@ -1,5 +1,9 @@
 # Changelog
 
+## v247
+
+- feat(voice): LLM response streaming → sentence-boundary TTS. Voice gateway now synthesizes and broadcasts each sentence as LLM tokens arrive instead of waiting for the full response. First audio fires within ~1s of the LLM starting to answer. Part of OP#153 latency reduction.
+
 ## v246
 
 - feat(stt): GPU-resident Whisper (cuda float32) with proactive VRAM eviction/reload poller. Frees ~1.8 GB within 60s of a Steam game launching without needing a voice turn; reloads automatically once VRAM recovers. Part of OP#153 latency reduction.
