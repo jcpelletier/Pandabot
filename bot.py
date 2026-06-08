@@ -1818,6 +1818,23 @@ async def task_service_watchdog():
 # Scheduler — poll SQLite, fire due tasks without an LLM call
 # ---------------------------------------------------------------------------
 
+def _render_results_template(template: str, results: list[str], combined: str) -> str:
+    """Substitute {results} (full blob) and {results[N]} (Nth tool output) in a prompt.
+
+    Indexed form is resolved first so the literal {results} pass doesn't eat
+    the '{results' prefix and leave '[N]}' behind. Out-of-range indices are
+    left untouched so the failure is visible to the operator.
+    """
+    import re as _re
+
+    def _sub(m: "_re.Match[str]") -> str:
+        idx = int(m.group(1))
+        return results[idx] if 0 <= idx < len(results) else m.group(0)
+
+    rendered = _re.sub(r"\{results\[(\d+)\]\}", _sub, template)
+    return rendered.replace("{results}", combined)
+
+
 async def fire_scheduled_task(task: dict) -> None:
     """Execute a single due task. Uses no LLM except when generative_prompt is set."""
     import re
@@ -1860,7 +1877,7 @@ async def fire_scheduled_task(task: dict) -> None:
             if met:
                 # generative_prompt takes priority over met_message when condition is satisfied
                 if task["generative_prompt"]:
-                    prompt = task["generative_prompt"].replace("{results}", combined)
+                    prompt = _render_results_template(task["generative_prompt"], results, combined)
                     _prov = get_provider()
                     _prov_name = get_provider_name()
                     _gen_msgs = [{"role": "user", "content": prompt}]
@@ -1914,7 +1931,7 @@ async def fire_scheduled_task(task: dict) -> None:
 
         elif task["generative_prompt"]:
             # One small LLM call for tasks that need fresh synthesis (one_shot / recurring)
-            prompt = task["generative_prompt"].replace("{results}", combined)
+            prompt = _render_results_template(task["generative_prompt"], results, combined)
             _prov = get_provider()
             _prov_name = get_provider_name()
             _gen_msgs = [{"role": "user", "content": prompt}]

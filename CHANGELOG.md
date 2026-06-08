@@ -1,5 +1,9 @@
 # Changelog
 
+## v252
+
+- fix(scheduler): support `{results[N]}` indexing in `generative_prompt`. The weekly Jellyfin digest was rendering a template with literal `{total_items}`/`{new_additions_count}` placeholders because its prompt used `{results[0]}`/`{results[1]}` indexing, which the substitution code did not understand. Unsubstituted tokens reached the LLM and triggered fill-in-the-blank hallucination. `_render_results_template()` now resolves indexed forms first, then the literal `{results}` blob; out-of-range indices are left untouched so failures stay visible.
+
 ## v251
 
 - feat(stt): VRAM poller now manages Kokoro Docker container alongside Whisper. On low VRAM (game launched), stops Kokoro container to reclaim its ~870 MiB; restarts it when VRAM recovers. Poller now starts even with STT_DEVICE=cpu as long as STT_KOKORO_CONTAINER is set.
