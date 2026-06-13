@@ -1978,6 +1978,35 @@ async def fire_scheduled_task(task: dict) -> None:
         )
 
 
+# Ids of tasks whose fire_scheduled_task coroutine is currently running. A task
+# is only marked done() *after* its (possibly slow) tool calls + LLM generation
+# finish, which can exceed the 60 s poll interval. Without this guard the next
+# poll re-fetches the still-`done=0` row and fires it a second time — and each
+# duplicate fire of a recurring task seeds another permanent future row, so the
+# task multiplies week over week. Skipping ids already in flight closes that gap.
+_inflight_task_ids: set[int] = set()
+
+
+async def _fire_scheduled_task_guarded(task: dict) -> None:
+    """Run fire_scheduled_task, releasing the in-flight guard when it finishes."""
+    try:
+        await fire_scheduled_task(task)
+    finally:
+        _inflight_task_ids.discard(task["id"])
+
+
+async def _poll_and_fire_due() -> None:
+    """One scheduler poll: fetch due tasks and fire any not already in flight."""
+    loop = asyncio.get_running_loop()
+    due = await loop.run_in_executor(None, scheduler.get_due_tasks)
+    for task in due:
+        task_id = task["id"]
+        if task_id in _inflight_task_ids:
+            continue  # already firing — don't double-fire before it marks done
+        _inflight_task_ids.add(task_id)
+        asyncio.create_task(_fire_scheduled_task_guarded(dict(task)))
+
+
 async def task_scheduler() -> None:
     """Poll SQLite every 60 s and fire any due tasks."""
     await bot.wait_until_ready()
@@ -1987,10 +2016,7 @@ async def task_scheduler() -> None:
 
     while not bot.is_closed():
         try:
-            loop = asyncio.get_running_loop()
-            due = await loop.run_in_executor(None, scheduler.get_due_tasks)
-            for task in due:
-                asyncio.create_task(fire_scheduled_task(dict(task)))
+            await _poll_and_fire_due()
         except Exception:
             log.exception("task_scheduler poll error")
         await asyncio.sleep(60)

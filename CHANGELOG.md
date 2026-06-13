@@ -1,5 +1,9 @@
 # Changelog
 
+## v253
+
+- fix(scheduler): guard against double-firing slow recurring tasks. The 60 s poll loop fired due tasks asynchronously but only marked them `done` after their tool calls + LLM generation finished. A task slower than the poll interval — e.g. the weekly OpenProject report (8 SSH-backed API calls plus a generation) — was re-fetched while still `done=0` and fired again, and each duplicate fire scheduled its own next occurrence, so the task multiplied week over week (1→2→4 pending rows observed). The poller now tracks in-flight task ids and skips any already running.
+
 ## v252
 
 - fix(scheduler): support `{results[N]}` indexing in `generative_prompt`. The weekly Jellyfin digest was rendering a template with literal `{total_items}`/`{new_additions_count}` placeholders because its prompt used `{results[0]}`/`{results[1]}` indexing, which the substitution code did not understand. Unsubstituted tokens reached the LLM and triggered fill-in-the-blank hallucination. `_render_results_template()` now resolves indexed forms first, then the literal `{results}` blob; out-of-range indices are left untouched so failures stay visible.

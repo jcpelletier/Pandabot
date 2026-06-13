@@ -450,3 +450,66 @@ async def test_recurring_schedules_next_occurrence(tmp_db, posted, fake_execute)
     assert len(pending) == 1
     assert pending[0]["description"] == "weekly digest"
     assert pending[0]["recurrence_rule"] == "weekly:1"
+
+
+# ---------------------------------------------------------------------------
+# Double-fire guard (_poll_and_fire_due / _fire_scheduled_task_guarded)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_poll_skips_task_already_in_flight(tmp_db, monkeypatch):
+    """A task still running (not yet marked done) must not be fired a second
+    time by the next poll. Without the in-flight guard the 60 s poll re-fetches
+    the still-`done=0` row of a slow task and double-fires it — the bug that
+    multiplied the weekly OpenProject report week over week."""
+    bot._inflight_task_ids.clear()
+
+    scheduler.add_task(
+        fire_at_local=_past(), channel_id=111222333,
+        description="slow recurring", task_type="recurring",
+        recurrence_rule="weekly:1", static_message="done",
+    )
+
+    fire_count = 0
+    release = asyncio.Event()
+
+    async def slow_fire(task):
+        nonlocal fire_count
+        fire_count += 1
+        await release.wait()  # simulate slow tool calls + LLM — task stays done=0
+
+    monkeypatch.setattr(bot, "fire_scheduled_task", slow_fire)
+
+    # First poll: due task fires once and is registered as in flight.
+    await bot._poll_and_fire_due()
+    await asyncio.sleep(0)
+    assert fire_count == 1
+    assert bot._inflight_task_ids
+
+    # Second poll while it is still running: row is still due (done=0) but the
+    # guard must skip it.
+    await bot._poll_and_fire_due()
+    await asyncio.sleep(0)
+    assert fire_count == 1
+
+    # Let it finish — the guard releases the id.
+    release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert bot._inflight_task_ids == set()
+
+
+@pytest.mark.asyncio
+async def test_guard_releases_id_on_exception(monkeypatch):
+    """The in-flight id is released even if fire_scheduled_task raises, so a
+    failed run does not permanently block the task from ever firing again."""
+    bot._inflight_task_ids.clear()
+    bot._inflight_task_ids.add(7)
+
+    async def boom(task):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(bot, "fire_scheduled_task", boom)
+    with pytest.raises(RuntimeError):
+        await bot._fire_scheduled_task_guarded({"id": 7})
+    assert 7 not in bot._inflight_task_ids
