@@ -51,8 +51,19 @@ from pandabot_core.discord_comms import (
 )
 from pandabot_core import identity as _identity
 from pandabot_core import scheduler  # used in fire_scheduled_task and task_scheduler
+from pandabot_core.channels import (
+    BotChannelMap, make_message_bot_tool, send_to_bot_threadsafe,
+)
 
 from tools import TOOL_DEFINITIONS, execute_tool, ENABLE_LOCAL_LLM, ENABLE_FAMILY, FAMILY_SPREADSHEET_ID  # noqa: E402
+
+# Inter-bot messaging (channel-as-inbox). Lets Pandabot relay requests to its
+# siblings — e.g. ask PandaBot-Dev to start a goal, or PandaBot-Devops for infra.
+_BOT_NAME = os.environ.get("BOT_NAME", "pandabot")
+_CHANNEL_MAP = BotChannelMap.from_env()
+_TOOL_DEFINITIONS = [*TOOL_DEFINITIONS]
+if _CHANNEL_MAP:
+    _TOOL_DEFINITIONS.append(make_message_bot_tool(_CHANNEL_MAP))
 import llama_manager
 
 # ---------------------------------------------------------------------------
@@ -1106,6 +1117,14 @@ def _run_claude_loop(
         _confirmations.save(ch_id, tool_name, confirmed_inputs)
 
     def _execute_tool_with_banner(name: str, inputs: dict) -> str:
+        if name == "message_bot":
+            if not (event_loop and _CHANNEL_MAP):
+                return "message_bot is not available right now."
+            return send_to_bot_threadsafe(
+                bot, event_loop, _CHANNEL_MAP,
+                inputs.get("target", ""), inputs.get("request", ""),
+                sender=_BOT_NAME,
+            )
         result = execute_tool(name, inputs)
         if name == "switch_model" and event_loop and channel_id and not result.startswith("Unknown"):
             from pandabot_core.llm.provider import get_active_profile_name, get_provider
@@ -1121,7 +1140,7 @@ def _run_claude_loop(
     return _run_claude_loop_core(
         user_message=user_message,
         history=history,
-        tool_definitions=TOOL_DEFINITIONS,
+        tool_definitions=_TOOL_DEFINITIONS,
         execute_tool=_execute_tool_with_banner,
         system_prompt=_build_system_prompt(),
         channel_id=channel_id,

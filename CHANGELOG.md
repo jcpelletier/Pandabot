@@ -1,5 +1,9 @@
 # Changelog
 
+## v255
+
+- feat: wire the `message_bot` inter-bot tool (channel-as-inbox). Pandabot can now relay requests to its siblings — e.g. ask PandaBot-Dev to start a long-term goal or report goal progress, or ask PandaBot-Devops for infrastructure changes — by posting in the target bot's channel. Built from `BOT_CHANNELS`; one-way (the target acts and replies in its own channel). No new dependencies.
+
 ## v254
 
 - feat(tools): switch project-management tools from OpenProject to GitHub Issues. Replaced the OpenProject tool group with GitHub issue tools (`list_github_issues`, `get_github_issue`, `list_github_sub_issues`, `search_github_issues`, `list_github_milestones`, `create_github_issue`, `update_github_issue`) backed by `pandabot_core.pm.github` and gated by `ENABLE_GITHUB_PM`. Requires `GITHUB_TOKEN` in `.env`. OpenProject (`OP_URL`/`OP_API_KEY`/`ENABLE_OPENPROJECT`) is removed.
