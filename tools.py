@@ -32,6 +32,8 @@ except ImportError:
     from family.sheet_reader import SheetReader  # noqa: F811
     from family.cache import Cache  # noqa: F811
 
+from pandabot_core.pm import github as _ghpm
+
 logger = logging.getLogger("panda-bot")
 
 # ---------------------------------------------------------------------------
@@ -45,7 +47,7 @@ ENABLE_SMART         = os.environ.get("ENABLE_SMART",         "true").lower() ==
 ENABLE_WRITE_ACTIONS     = os.environ.get("ENABLE_WRITE_ACTIONS",     "true").lower()  == "true"
 ENABLE_GAMING            = os.environ.get("ENABLE_GAMING",            "true").lower()  == "true"
 ENABLE_CRAWL_ANALYTICS   = os.environ.get("ENABLE_CRAWL_ANALYTICS",   "false").lower() == "true"
-ENABLE_OPENPROJECT       = os.environ.get("ENABLE_OPENPROJECT",       "false").lower() == "true"
+ENABLE_GITHUB_PM         = os.environ.get("ENABLE_GITHUB_PM",         "false").lower() == "true"
 ENABLE_LOCAL_LLM         = os.environ.get("ENABLE_LOCAL_LLM",         "false").lower() == "true"
 ENABLE_FAMILY            = os.environ.get("ENABLE_FAMILY",            "false").lower() == "true"
 ENABLE_DEV_AGENT         = os.environ.get("ENABLE_DEV_AGENT",         "false").lower() == "true"
@@ -103,9 +105,6 @@ AZURE_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 
 CRAWL_ANALYTICS_URL   = os.environ.get("CRAWL_ANALYTICS_URL",   "")
 CRAWL_ANALYTICS_TOKEN = os.environ.get("CRAWL_ANALYTICS_TOKEN", "")
-
-OP_URL     = os.environ.get("OPENPROJECT_URL",     "").rstrip("/")
-OP_API_KEY = os.environ.get("OPENPROJECT_API_KEY", "")
 
 # Weather (optional, gated by ENABLE_WEATHER)
 HOME_LATITUDE  = os.environ.get("HOME_LATITUDE",  "")
@@ -3165,314 +3164,40 @@ def query_llm_usage(action: str = "recent", days: int = 30, limit: int = 20) -> 
 
 
 # ---------------------------------------------------------------------------
-# OpenProject
+# GitHub Issues (project-management backend; thin wrappers over pandabot_core.pm.github)
 # ---------------------------------------------------------------------------
 
-def _op(method: str, path: str, **kwargs) -> dict:
-    url = f"{OP_URL}/api/v3{path}"
-    r = requests.request(method, url, auth=("apikey", OP_API_KEY),
-                         headers={"Content-Type": "application/json"}, timeout=15, **kwargs)
-    r.raise_for_status()
-    return r.json() if r.content else {}
+def list_github_issues(repo: str, status: str = "open", limit: int = 25) -> str:
+    return _ghpm.list_issues(repo, state=status, limit=limit)
 
 
-def _op_slim_wp(wp: dict) -> dict:
-    lnk = wp.get("_links", {})
-    return {
-        "id":          wp.get("id"),
-        "subject":     wp.get("subject"),
-        "type":        lnk.get("type", {}).get("title"),
-        "status":      lnk.get("status", {}).get("title"),
-        "priority":    lnk.get("priority", {}).get("title"),
-        "assignee":    lnk.get("assignee", {}).get("title"),
-        "version":     lnk.get("version", {}).get("title"),
-        "project":     lnk.get("project", {}).get("title"),
-        "description": (wp.get("description") or {}).get("raw", ""),
-        "due_date":    wp.get("dueDate"),
-        "start_date":  wp.get("startDate"),
-        "created_at":  wp.get("createdAt"),
-        "updated_at":  wp.get("updatedAt"),
-    }
+def get_github_issue(repo: str, number: int) -> str:
+    return _ghpm.get_issue(repo, number)
 
 
-def _op_slim_project(p: dict) -> dict:
-    return {
-        "id":          p.get("id"),
-        "identifier":  p.get("identifier"),
-        "name":        p.get("name"),
-        "description": (p.get("description") or {}).get("raw", ""),
-        "active":      p.get("active", True),
-        "created_at":  p.get("createdAt"),
-    }
+def list_github_sub_issues(repo: str, number: int) -> str:
+    return _ghpm.list_sub_issues(repo, number)
 
 
-def list_op_projects() -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        data = _op("GET", "/projects?pageSize=100")
-        projects = [_op_slim_project(p) for p in data.get("_embedded", {}).get("elements", [])]
-        return json.dumps(projects, indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
+def search_github_issues(query: str, repo: str = "", limit: int = 25) -> str:
+    return _ghpm.search_issues(query, repo=repo, limit=limit)
 
 
-def get_op_project(project: str) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        data = _op("GET", f"/projects/{project}")
-        return json.dumps(_op_slim_project(data), indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
+def list_github_milestones(repo: str) -> str:
+    return _ghpm.list_milestones(repo)
 
 
-def list_op_work_packages(project: str, status: str = "open", limit: int = 25) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        if status == "open":
-            filters = json.dumps([{"status": {"operator": "o", "values": []}}])
-        elif status == "closed":
-            filters = json.dumps([{"status": {"operator": "c", "values": []}}])
-        else:
-            filters = json.dumps([])
-        import urllib.parse
-        params = f"?filters={urllib.parse.quote(filters)}&pageSize={limit}&sortBy=%5B%5B%22updatedAt%22%2C%22desc%22%5D%5D"
-        data = _op("GET", f"/projects/{project}/work_packages{params}")
-        wps = [_op_slim_wp(wp) for wp in data.get("_embedded", {}).get("elements", [])]
-        return json.dumps({"total": data.get("total", len(wps)), "shown": len(wps), "work_packages": wps}, indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
+def create_github_issue(repo: str, title: str, body: str = "", labels: str = "",
+                        assignee: str = "", milestone: int = 0, parent: int = 0) -> str:
+    return _ghpm.create_issue(repo, title, body=body, labels=labels,
+                              assignee=assignee, milestone=milestone, parent=parent)
 
 
-def get_op_work_package(wp_id: int) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        return json.dumps(_op_slim_wp(_op("GET", f"/work_packages/{wp_id}")), indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def list_op_versions(project: str) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        data = _op("GET", f"/projects/{project}/versions")
-        versions = [
-            {"id": v.get("id"), "name": v.get("name"), "status": v.get("status"),
-             "start_date": v.get("startDate"), "end_date": v.get("endDate")}
-            for v in data.get("_embedded", {}).get("elements", [])
-        ]
-        return json.dumps(versions, indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def list_op_version_tickets(version_id: int) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        import urllib.parse
-        filters = urllib.parse.quote(json.dumps([{"version": {"operator": "=", "values": [str(version_id)]}}]))
-        data = _op("GET", f"/work_packages?filters={filters}&pageSize=100")
-        wps = [_op_slim_wp(wp) for wp in data.get("_embedded", {}).get("elements", [])]
-        return json.dumps({"version_id": version_id, "count": len(wps), "work_packages": wps}, indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def search_op_work_packages(query: str, project: str = "", limit: int = 25) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        import urllib.parse
-        filters = urllib.parse.quote(json.dumps([{"subjectOrId": {"operator": "**", "values": [query]}}]))
-        path = f"/projects/{project}/work_packages" if project else "/work_packages"
-        data = _op("GET", f"{path}?filters={filters}&pageSize={limit}")
-        wps = [_op_slim_wp(wp) for wp in data.get("_embedded", {}).get("elements", [])]
-        return json.dumps({"query": query, "total": data.get("total", len(wps)), "shown": len(wps), "work_packages": wps}, indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def list_op_project_members(project: str) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        data = _op("GET", f"/projects/{project}/members?pageSize=100")
-        members = [
-            {"id": m.get("id"),
-             "name": m.get("_links", {}).get("principal", {}).get("title"),
-             "roles": [r.get("title") for r in m.get("_links", {}).get("roles", [])]}
-            for m in data.get("_embedded", {}).get("elements", [])
-        ]
-        return json.dumps(members, indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def create_op_project(name: str, identifier: str, description: str = "", parent: str = "") -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        body: dict = {"name": name, "identifier": identifier}
-        if description:
-            body["description"] = {"format": "markdown", "raw": description}
-        if parent:
-            body["_links"] = {"parent": {"href": f"/api/v3/projects/{parent}"}}
-        return json.dumps(_op_slim_project(_op("POST", "/projects", json=body)), indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def set_op_project_parent(project: str, parent: str) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        if parent in ("", "none", "null"):
-            body = {"_links": {"parent": {"href": None}}}
-        else:
-            body = {"_links": {"parent": {"href": f"/api/v3/projects/{parent}"}}}
-        return json.dumps(_op_slim_project(_op("PATCH", f"/projects/{project}", json=body)), indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def create_op_work_package(project: str, subject: str, type_id: int = 1,
-                            description: str = "", assignee: str = "",
-                            start_date: str = "", due_date: str = "",
-                            parent_wp_id: int = 0) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        body: dict = {"subject": subject, "_links": {"type": {"href": f"/api/v3/types/{type_id}"}}}
-        if description:
-            body["description"] = {"format": "markdown", "raw": description}
-        if start_date:
-            body["startDate"] = start_date
-        if due_date:
-            body["dueDate"] = due_date
-        if assignee:
-            user = _op_find_user(assignee)
-            if not user:
-                return f"User not found: {assignee!r}"
-            body["_links"]["assignee"] = {"href": user["_links"]["self"]["href"]}
-        if parent_wp_id:
-            body["_links"]["parent"] = {"href": f"/api/v3/work_packages/{parent_wp_id}"}
-        return json.dumps(_op_slim_wp(_op("POST", f"/projects/{project}/work_packages", json=body)), indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def update_op_work_package(wp_id: int, subject: str = "", type_id: int = 0,
-                            description: str = "", assignee: str = "",
-                            status: str = "", start_date: str = "",
-                            due_date: str = "", parent_wp_id: int = 0) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        current = _op("GET", f"/work_packages/{wp_id}")
-        lock_version = current.get("lockVersion", 0)
-        body: dict = {"lockVersion": lock_version, "_links": {}}
-        if subject:
-            body["subject"] = subject
-        if description:
-            body["description"] = {"format": "markdown", "raw": description}
-        if start_date:
-            body["startDate"] = start_date
-        if due_date:
-            body["dueDate"] = due_date
-        if type_id:
-            body["_links"]["type"] = {"href": f"/api/v3/types/{type_id}"}
-        if assignee:
-            user = _op_find_user(assignee)
-            if not user:
-                return f"User not found: {assignee!r}"
-            body["_links"]["assignee"] = {"href": user["_links"]["self"]["href"]}
-        if status:
-            statuses = _op("GET", "/statuses").get("_embedded", {}).get("elements", [])
-            match = next((s for s in statuses if s.get("name", "").lower() == status.lower()), None)
-            if not match:
-                names = [s.get("name") for s in statuses]
-                return f"Status not found: {status!r}. Available: {names}"
-            body["_links"]["status"] = {"href": match["_links"]["self"]["href"]}
-        if parent_wp_id == -1:
-            body["_links"]["parent"] = {"href": None}
-        elif parent_wp_id > 0:
-            body["_links"]["parent"] = {"href": f"/api/v3/work_packages/{parent_wp_id}"}
-        return json.dumps(_op_slim_wp(_op("PATCH", f"/work_packages/{wp_id}", json=body)), indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def list_op_types(project: str = "") -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        path = f"/projects/{project}/types" if project else "/types"
-        data = _op("GET", path)
-        types = [{"id": t.get("id"), "name": t.get("name")}
-                 for t in data.get("_embedded", {}).get("elements", [])]
-        return json.dumps(types, indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def _op_find_user(login_or_email: str) -> dict | None:
-    import urllib.parse
-    for field in ("login", "email"):
-        filters = urllib.parse.quote(json.dumps([{field: {"operator": "=", "values": [login_or_email]}}]))
-        elements = _op("GET", f"/users?filters={filters}").get("_embedded", {}).get("elements", [])
-        if elements:
-            return elements[0]
-    return None
-
-
-def _op_find_role(name: str) -> dict | None:
-    for r in _op("GET", "/roles").get("_embedded", {}).get("elements", []):
-        if r.get("name", "").lower() == name.lower():
-            return r
-    return None
-
-
-def add_op_project_member(project: str, user: str, role: str) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        user_obj = _op_find_user(user)
-        if not user_obj:
-            return f"User not found: {user!r}"
-        role_obj = _op_find_role(role)
-        if not role_obj:
-            names = [r.get("name") for r in _op("GET", "/roles").get("_embedded", {}).get("elements", [])]
-            return f"Role not found: {role!r}. Available: {names}"
-        body = {"_links": {
-            "project":   {"href": _op("GET", f"/projects/{project}")["_links"]["self"]["href"]},
-            "principal": {"href": user_obj["_links"]["self"]["href"]},
-            "roles":     [{"href": role_obj["_links"]["self"]["href"]}],
-        }}
-        result = _op("POST", "/memberships", json=body)
-        lnk = result.get("_links", {})
-        return json.dumps({
-            "membership_id": result.get("id"),
-            "user":    lnk.get("principal", {}).get("title"),
-            "project": lnk.get("project", {}).get("title"),
-            "roles":   [r.get("title") for r in lnk.get("roles", [])],
-        }, indent=2)
-    except Exception as e:
-        return f"OpenProject error: {e}"
-
-
-def remove_op_project_member(membership_id: int) -> str:
-    if not ENABLE_OPENPROJECT:
-        return "OpenProject integration is not enabled."
-    try:
-        _op("DELETE", f"/memberships/{membership_id}")
-        return f"Membership {membership_id} removed."
-    except Exception as e:
-        return f"OpenProject error: {e}"
+def update_github_issue(repo: str, number: int, title: str = "", body: str = "",
+                        state: str = "", labels: str = "", assignee: str = "",
+                        milestone: int = 0) -> str:
+    return _ghpm.update_issue(repo, number, title=title, body=body, state=state,
+                              labels=labels, assignee=assignee, milestone=milestone)
 
 
 # ---------------------------------------------------------------------------
@@ -4402,194 +4127,113 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
 
-    # --- OpenProject ---
-    if ENABLE_OPENPROJECT and OP_URL:
+    # --- GitHub Issues ---
+    if ENABLE_GITHUB_PM:
         tools += [
             {
-                "name": "list_op_projects",
-                "description": "List all OpenProject projects visible to this bot.",
-                "input_schema": {"type": "object", "properties": {}, "required": []},
-            },
-            {
-                "name": "get_op_project",
-                "description": "Get details for a specific OpenProject project by ID or identifier slug.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "project": {"type": "string", "description": "Project ID or identifier slug."},
-                    },
-                    "required": ["project"],
-                },
-            },
-            {
-                "name": "list_op_work_packages",
+                "name": "list_github_issues",
                 "description": (
-                    "List work packages (tickets) in a project, sorted by last update. "
+                    "List issues in a repo, most-recently-updated first. "
                     "Filter by status: open (default), closed, or all."
                 ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "project": {"type": "string", "description": "Project ID or identifier."},
-                        "status":  {"type": "string", "enum": ["open", "closed", "all"], "description": "Status filter. Default: open.", "default": "open"},
-                        "limit":   {"type": "integer", "description": "Max results. Default: 25.", "default": 25},
+                        "repo":   {"type": "string", "description": "Repo short name (e.g. 'Pandabot') or 'owner/repo'."},
+                        "status": {"type": "string", "enum": ["open", "closed", "all"], "description": "Status filter. Default: open.", "default": "open"},
+                        "limit":  {"type": "integer", "description": "Max results. Default: 25.", "default": 25},
                     },
-                    "required": ["project"],
+                    "required": ["repo"],
                 },
             },
             {
-                "name": "get_op_work_package",
-                "description": "Get full details for a specific work package by numeric ID.",
+                "name": "get_github_issue",
+                "description": "Get full details for a specific issue by number.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "id": {"type": "integer", "description": "Work package numeric ID."},
+                        "repo":   {"type": "string", "description": "Repo short name or 'owner/repo'."},
+                        "number": {"type": "integer", "description": "Issue number."},
                     },
-                    "required": ["id"],
+                    "required": ["repo", "number"],
                 },
             },
             {
-                "name": "list_op_versions",
-                "description": "List versions (releases/sprints) defined in a project.",
+                "name": "list_github_sub_issues",
+                "description": "List the child (sub-)issues of an issue — use on an epic to find all its stories/tasks.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "project": {"type": "string", "description": "Project ID or identifier."},
+                        "repo":   {"type": "string", "description": "Repo short name or 'owner/repo'."},
+                        "number": {"type": "integer", "description": "Parent issue number."},
                     },
-                    "required": ["project"],
+                    "required": ["repo", "number"],
                 },
             },
             {
-                "name": "list_op_version_tickets",
-                "description": "List all work packages assigned to a specific version/release by version ID.",
+                "name": "search_github_issues",
+                "description": "Full-text search across issues. Optionally scope to a repo.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "version_id": {"type": "integer", "description": "Version numeric ID (from list_op_versions)."},
-                    },
-                    "required": ["version_id"],
-                },
-            },
-            {
-                "name": "search_op_work_packages",
-                "description": "Full-text search across work packages by subject or ID. Optionally scope to a project.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "query":   {"type": "string", "description": "Search text."},
-                        "project": {"type": "string", "description": "Optional project ID or identifier to scope the search.", "default": ""},
-                        "limit":   {"type": "integer", "description": "Max results. Default: 25.", "default": 25},
+                        "query": {"type": "string", "description": "Search text."},
+                        "repo":  {"type": "string", "description": "Optional repo short name or 'owner/repo' to scope the search.", "default": ""},
+                        "limit": {"type": "integer", "description": "Max results. Default: 25.", "default": 25},
                     },
                     "required": ["query"],
                 },
             },
             {
-                "name": "list_op_project_members",
-                "description": "List members and their roles in a project.",
+                "name": "list_github_milestones",
+                "description": "List open milestones (releases/sprints) for a repo.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "project": {"type": "string", "description": "Project ID or identifier."},
+                        "repo": {"type": "string", "description": "Repo short name or 'owner/repo'."},
                     },
-                    "required": ["project"],
+                    "required": ["repo"],
                 },
             },
             {
-                "name": "create_op_project",
-                "description": "Create a new OpenProject project, optionally nested under a parent project.",
+                "name": "create_github_issue",
+                "description": (
+                    "Create an issue in a repo. labels is a comma-separated string "
+                    "(use 'type: epic|story|task|bug' for the work-item type). "
+                    "Pass parent to link the new issue as a sub-issue of that epic/parent."
+                ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "name":        {"type": "string", "description": "Human-readable project name."},
-                        "identifier":  {"type": "string", "description": "URL slug (lowercase, hyphens). Must be unique."},
-                        "description": {"type": "string", "description": "Optional markdown description.", "default": ""},
-                        "parent":      {"type": "string", "description": "Optional parent project ID or identifier slug.", "default": ""},
+                        "repo":      {"type": "string", "description": "Repo short name or 'owner/repo'."},
+                        "title":     {"type": "string", "description": "Issue title."},
+                        "body":      {"type": "string", "description": "Optional markdown body.", "default": ""},
+                        "labels":    {"type": "string", "description": "Optional comma-separated labels, e.g. 'type: bug, status: new'.", "default": ""},
+                        "assignee":  {"type": "string", "description": "Optional GitHub login to assign.", "default": ""},
+                        "milestone": {"type": "integer", "description": "Optional milestone number.", "default": 0},
+                        "parent":    {"type": "integer", "description": "Optional parent issue number to nest under as a sub-issue.", "default": 0},
                     },
-                    "required": ["name", "identifier"],
+                    "required": ["repo", "title"],
                 },
             },
             {
-                "name": "set_op_project_parent",
-                "description": "Set or remove the parent project for an existing OpenProject project, establishing the hierarchy. Pass parent='none' to make it a top-level project.",
+                "name": "update_github_issue",
+                "description": (
+                    "Update an existing issue. Only provided fields are changed. "
+                    "state is 'open' or 'closed'. labels is comma-separated and replaces the label set."
+                ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "project": {"type": "string", "description": "Project ID or identifier to update."},
-                        "parent":  {"type": "string", "description": "Parent project ID or identifier, or 'none' to remove the parent."},
+                        "repo":      {"type": "string", "description": "Repo short name or 'owner/repo'."},
+                        "number":    {"type": "integer", "description": "Issue number."},
+                        "title":     {"type": "string", "description": "New title.", "default": ""},
+                        "body":      {"type": "string", "description": "New markdown body.", "default": ""},
+                        "state":     {"type": "string", "enum": ["open", "closed"], "description": "Open or close the issue.", "default": ""},
+                        "labels":    {"type": "string", "description": "Comma-separated labels (replaces the set).", "default": ""},
+                        "assignee":  {"type": "string", "description": "GitHub login to assign.", "default": ""},
+                        "milestone": {"type": "integer", "description": "Milestone number, or -1 to clear. 0=no change.", "default": 0},
                     },
-                    "required": ["project", "parent"],
-                },
-            },
-            {
-                "name": "create_op_work_package",
-                "description": "Create a work package (ticket) in a project. type_id: 1=Task, 2=Milestone, 3=Summary task, 4=Feature, 5=Epic, 6=User story, 7=Bug.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "project":      {"type": "string", "description": "Project ID or identifier."},
-                        "subject":      {"type": "string", "description": "Title of the work package."},
-                        "type_id":      {"type": "integer", "description": "Type: 1=Task, 2=Milestone, 3=Summary task, 4=Feature, 5=Epic, 6=User story, 7=Bug. Default: 1.", "default": 1},
-                        "description":  {"type": "string", "description": "Optional markdown description.", "default": ""},
-                        "assignee":     {"type": "string", "description": "Optional user login or email to assign.", "default": ""},
-                        "start_date":   {"type": "string", "description": "Optional start date (YYYY-MM-DD).", "default": ""},
-                        "due_date":     {"type": "string", "description": "Optional due date (YYYY-MM-DD).", "default": ""},
-                        "parent_wp_id": {"type": "integer", "description": "Optional parent work package ID to nest under.", "default": 0},
-                    },
-                    "required": ["project", "subject"],
-                },
-            },
-            {
-                "name": "update_op_work_package",
-                "description": "Update an existing work package. Only provided fields are changed. type_id: 1=Task, 2=Milestone, 3=Summary task, 4=Feature, 5=Epic, 6=User story, 7=Bug.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "wp_id":        {"type": "integer", "description": "Work package numeric ID."},
-                        "subject":      {"type": "string", "description": "New title.", "default": ""},
-                        "type_id":      {"type": "integer", "description": "Type: 1=Task, 2=Milestone, 3=Summary task, 4=Feature, 5=Epic, 6=User story, 7=Bug. 0=no change.", "default": 0},
-                        "description":  {"type": "string", "description": "New markdown description.", "default": ""},
-                        "assignee":     {"type": "string", "description": "User login or email to assign.", "default": ""},
-                        "status":       {"type": "string", "description": "Status name (e.g. 'In Progress', 'Closed').", "default": ""},
-                        "start_date":   {"type": "string", "description": "Start date (YYYY-MM-DD).", "default": ""},
-                        "due_date":     {"type": "string", "description": "Due date (YYYY-MM-DD).", "default": ""},
-                        "parent_wp_id": {"type": "integer", "description": "Set parent work package ID, or -1 to remove the parent (make top-level). 0=no change.", "default": 0},
-                    },
-                    "required": ["wp_id"],
-                },
-            },
-            {
-                "name": "list_op_types",
-                "description": "List available work package types. Optionally scope to a project to see only that project's enabled types.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "project": {"type": "string", "description": "Optional project ID or identifier to scope to that project's types.", "default": ""},
-                    },
-                    "required": [],
-                },
-            },
-            {
-                "name": "add_op_project_member",
-                "description": "Add a user to a project with a specified role. Accepts user login or email and role name.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "project": {"type": "string", "description": "Project ID or identifier."},
-                        "user":    {"type": "string", "description": "User login or email address."},
-                        "role":    {"type": "string", "description": "Role name (e.g. 'Member', 'Project admin')."},
-                    },
-                    "required": ["project", "user", "role"],
-                },
-            },
-            {
-                "name": "remove_op_project_member",
-                "description": "Remove a user from a project by membership ID (from list_op_project_members).",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "membership_id": {"type": "integer", "description": "Membership ID to remove."},
-                    },
-                    "required": ["membership_id"],
+                    "required": ["repo", "number"],
                 },
             },
         ]
@@ -4646,7 +4290,7 @@ def _build_tool_definitions() -> list[dict]:
                 "Use when the user asks for a code change, new feature, or bug fix to any "
                 "Pandabot repo (Pandabot, pandabot-core, PandabotQA, MediaManagement, etc.). "
                 "Describe exactly what needs to change and why. "
-                "Pandabot-Dev will consult OpenProject for context, submit the task to Jules, "
+                "Pandabot-Dev will consult GitHub Issues for context, submit the task to Jules, "
                 "review the resulting PR with DeepSeek, and post all updates in #pandabot-dev."
             ),
             "input_schema": {
@@ -4661,7 +4305,7 @@ def _build_tool_definitions() -> list[dict]:
                     },
                     "context": {
                         "type": "string",
-                        "description": "Optional extra context such as an OpenProject ticket number or related background.",
+                        "description": "Optional extra context such as a GitHub issue number or related background.",
                     },
                 },
                 "required": ["task"],
@@ -5362,46 +5006,28 @@ def execute_tool(name: str, inputs: dict) -> str:
             days=inputs.get("days", 30),
             limit=inputs.get("limit", 20),
         )
-    if name == "list_op_projects":
-        return list_op_projects()
-    if name == "get_op_project":
-        return get_op_project(inputs["project"])
-    if name == "list_op_work_packages":
-        return list_op_work_packages(inputs["project"], inputs.get("status", "open"), inputs.get("limit", 25))
-    if name == "get_op_work_package":
-        return get_op_work_package(inputs["id"])
-    if name == "list_op_versions":
-        return list_op_versions(inputs["project"])
-    if name == "list_op_version_tickets":
-        return list_op_version_tickets(inputs["version_id"])
-    if name == "search_op_work_packages":
-        return search_op_work_packages(inputs["query"], inputs.get("project", ""), inputs.get("limit", 25))
-    if name == "list_op_project_members":
-        return list_op_project_members(inputs["project"])
-    if name == "create_op_project":
-        return create_op_project(inputs["name"], inputs["identifier"], inputs.get("description", ""), inputs.get("parent", ""))
-    if name == "set_op_project_parent":
-        return set_op_project_parent(inputs["project"], inputs["parent"])
-    if name == "create_op_work_package":
-        return create_op_work_package(
-            inputs["project"], inputs["subject"],
-            inputs.get("type_id", 1), inputs.get("description", ""),
-            inputs.get("assignee", ""), inputs.get("start_date", ""),
-            inputs.get("due_date", ""), inputs.get("parent_wp_id", 0),
+    if name == "list_github_issues":
+        return list_github_issues(inputs["repo"], inputs.get("status", "open"), inputs.get("limit", 25))
+    if name == "get_github_issue":
+        return get_github_issue(inputs["repo"], inputs["number"])
+    if name == "list_github_sub_issues":
+        return list_github_sub_issues(inputs["repo"], inputs["number"])
+    if name == "search_github_issues":
+        return search_github_issues(inputs["query"], inputs.get("repo", ""), inputs.get("limit", 25))
+    if name == "list_github_milestones":
+        return list_github_milestones(inputs["repo"])
+    if name == "create_github_issue":
+        return create_github_issue(
+            inputs["repo"], inputs["title"], inputs.get("body", ""),
+            inputs.get("labels", ""), inputs.get("assignee", ""),
+            inputs.get("milestone", 0), inputs.get("parent", 0),
         )
-    if name == "update_op_work_package":
-        return update_op_work_package(
-            inputs["wp_id"], inputs.get("subject", ""), inputs.get("type_id", 0),
-            inputs.get("description", ""), inputs.get("assignee", ""),
-            inputs.get("status", ""), inputs.get("start_date", ""), inputs.get("due_date", ""),
-            inputs.get("parent_wp_id", 0),
+    if name == "update_github_issue":
+        return update_github_issue(
+            inputs["repo"], inputs["number"], inputs.get("title", ""),
+            inputs.get("body", ""), inputs.get("state", ""), inputs.get("labels", ""),
+            inputs.get("assignee", ""), inputs.get("milestone", 0),
         )
-    if name == "list_op_types":
-        return list_op_types(inputs.get("project", ""))
-    if name == "add_op_project_member":
-        return add_op_project_member(inputs["project"], inputs["user"], inputs["role"])
-    if name == "remove_op_project_member":
-        return remove_op_project_member(inputs["membership_id"])
     # ── Family ───────────────────────────────────────────────────────────────
     if name == "query_family_info":
         if not ENABLE_FAMILY:

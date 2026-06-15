@@ -1,5 +1,9 @@
 # Changelog
 
+## v254
+
+- feat(tools): switch project-management tools from OpenProject to GitHub Issues. Replaced the OpenProject tool group with GitHub issue tools (`list_github_issues`, `get_github_issue`, `list_github_sub_issues`, `search_github_issues`, `list_github_milestones`, `create_github_issue`, `update_github_issue`) backed by `pandabot_core.pm.github` and gated by `ENABLE_GITHUB_PM`. Requires `GITHUB_TOKEN` in `.env`. OpenProject (`OP_URL`/`OP_API_KEY`/`ENABLE_OPENPROJECT`) is removed.
+
 ## v253
 
 - fix(scheduler): guard against double-firing slow recurring tasks. The 60 s poll loop fired due tasks asynchronously but only marked them `done` after their tool calls + LLM generation finished. A task slower than the poll interval — e.g. the weekly OpenProject report (8 SSH-backed API calls plus a generation) — was re-fetched while still `done=0` and fired again, and each duplicate fire scheduled its own next occurrence, so the task multiplied week over week (1→2→4 pending rows observed). The poller now tracks in-flight task ids and skips any already running.
