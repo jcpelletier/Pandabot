@@ -884,18 +884,22 @@ def _transcribe_pcm_sync(pcm_bytes: bytes) -> str | None:
                  float(np.max(np.abs(samples))),
                  float(np.sqrt(np.mean(samples**2))))
 
-        # Debug: save the resampled + normalized audio so we can verify what Whisper is hearing
-        try:
-            import wave as _wave
-            dbg_path = "/opt/discord-bot/stt_debug_latest.wav"
-            with _wave.open(dbg_path, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(16000)
-                wf.writeframes((samples * 32767).astype(np.int16).tobytes())
-            log.info("Whisper: debug WAV saved to %s (%.2fs)", dbg_path, duration)
-        except Exception as _dbg_err:
-            log.debug("Debug WAV save failed: %s", _dbg_err)
+        # Debug: optionally save the resampled + normalized audio so we can verify
+        # what Whisper is hearing. Off by default — set STT_DEBUG_SAVE_WAV=true to
+        # enable (writes to STT_DEBUG_DIR, or the system temp dir if unset).
+        if os.getenv("STT_DEBUG_SAVE_WAV", "").lower() in ("1", "true", "yes"):
+            try:
+                import tempfile
+                dbg_dir = os.getenv("STT_DEBUG_DIR") or tempfile.gettempdir()
+                dbg_path = os.path.join(dbg_dir, "stt_debug_latest.wav")
+                with wave.open(dbg_path, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(16000)
+                    wf.writeframes((samples * 32767).astype(np.int16).tobytes())
+                log.info("Whisper: debug WAV saved to %s (%.2fs)", dbg_path, duration)
+            except Exception as _dbg_err:
+                log.debug("Debug WAV save failed: %s", _dbg_err)
 
         # Step 4: Transcribe — NO VAD filter (it was removing all audio due to
         # resampling artifacts).  Whisper's own internal processing handles

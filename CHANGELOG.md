@@ -1,5 +1,10 @@
 # Changelog
 
+## v255
+
+- chore(stt): gate the per-utterance debug WAV write behind `STT_DEBUG_SAVE_WAV` (off by default) and write to `STT_DEBUG_DIR`/system temp instead of a hardcoded `/opt/discord-bot/` path — it previously ran unconditionally on every transcription
+- chore: gitignore `REVIEW.md` and the STT debug capture files
+
 ## v254
 
 - feat(tools): switch project-management tools from OpenProject to GitHub Issues. Replaced the OpenProject tool group with GitHub issue tools (`list_github_issues`, `get_github_issue`, `list_github_sub_issues`, `search_github_issues`, `list_github_milestones`, `create_github_issue`, `update_github_issue`) backed by `pandabot_core.pm.github` and gated by `ENABLE_GITHUB_PM`. Requires `GITHUB_TOKEN` in `.env`. OpenProject (`OP_URL`/`OP_API_KEY`/`ENABLE_OPENPROJECT`) is removed.
