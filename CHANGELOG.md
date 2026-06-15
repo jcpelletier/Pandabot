@@ -1,8 +1,13 @@
 # Changelog
 
-## v255
+## v256
 
 - feat: wire the `message_bot` inter-bot tool (channel-as-inbox). Pandabot can now relay requests to its siblings — e.g. ask PandaBot-Dev to start a long-term goal or report goal progress, or ask PandaBot-Devops for infrastructure changes — by posting in the target bot's channel. Built from `BOT_CHANNELS`; one-way (the target acts and replies in its own channel). No new dependencies.
+
+## v255
+
+- chore(stt): gate the per-utterance debug WAV write behind `STT_DEBUG_SAVE_WAV` (off by default) and write to `STT_DEBUG_DIR`/system temp instead of a hardcoded `/opt/discord-bot/` path — it previously ran unconditionally on every transcription
+- chore: gitignore `REVIEW.md` and the STT debug capture files
 
 ## v254
 

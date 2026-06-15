@@ -16,3 +16,11 @@ __pycache__/
 # Runtime state — must not be overwritten by git pull
 scheduler.db
 llm_usage.db
+
+# Local-only internal docs
+REVIEW.md
+
+# STT debug captures (only written when STT_DEBUG_SAVE_WAV=true)
+stt_debug_latest.wav
+stt_raw_pcm.wav
+stt_utterance_packets.json
