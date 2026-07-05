@@ -1,5 +1,9 @@
 # Changelog
 
+## v257
+
+- chore: trunk-based development cutover (PandaEcosystem epic #9) — `main` is the only branch; merge = release, gated by the per-PR PandaQA validation. Deploy workflow is main-only, restarts `discord-bot` **and** `pandabot-voice` (the voice gateway moves off the retired staging clone), and health-checks both after deploy. `promote-to-prod.sh` removed.
+
 ## v256
 
 - feat: wire the `message_bot` inter-bot tool (channel-as-inbox). Pandabot can now relay requests to its siblings — e.g. ask PandaBot-Dev to start a long-term goal or report goal progress, or ask PandaBot-Devops for infrastructure changes — by posting in the target bot's channel. Built from `BOT_CHANNELS`; one-way (the target acts and replies in its own channel). No new dependencies.

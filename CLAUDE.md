@@ -82,43 +82,20 @@ python -m pytest tests/ -v
 The pre-commit hook runs tests automatically. `tests/conftest.py` adds pandabot-core to
 `sys.path` so tests work without installing it — the path is computed relative to this repo.
 
-## Deploying
+## Deploying (trunk-based, since 2026-07-05)
 
-**Staging-first rule: every change goes to staging and passes PandaQA before production.**
-Never commit directly to `main` or deploy directly to production.
-
-Branch convention:
-- `staging` — work-in-progress; deploys to `discord-bot-staging` / `#pandabot-staging`
-- `main` — production; only updated by `promote-to-prod.sh`
+`main` is the only branch — merge = release. Every change lands via a PR that has
+passed CI, the DeepSeek pre-filter, and the PandaQA acceptance gate (QA validates
+the PR branch *before* merge). The old staging branch, `discord-bot-staging`
+tracking deploy, and `promote-to-prod.sh` are retired (PandaEcosystem epic #9);
+the former staging instance is being repurposed as an on-demand test bench.
 
 Deployment is automatic via GitHub Actions (`.github/workflows/deploy.yml`):
-- Push to `staging` → Actions deploys to `discord-bot-staging` automatically
-- Push to `main` → Actions deploys to production automatically (only via `promote-to-prod.sh`)
+push to `main` → server pulls `/opt/discord-bot`, restarts `discord-bot` and
+`pandabot-voice`, then health-checks both.
 
-**Do NOT run the SSH deploy command manually** — pushing to GitHub is the only deploy step needed.
-
-Workflow:
-1. Make changes on the `staging` branch
-2. Push — GitHub Actions deploys to staging automatically; QA validates in `#pandabot-staging`
-3. After QA passes → run `promote-to-prod.sh` (merges `staging → main`, pushes, triggers Actions deploy)
-
-```bash
-# 1. Work on staging branch
-git checkout staging
-# ... make changes, commit ...
-git push origin staging
-# GitHub Actions deploys automatically — no SSH step needed
-
-# 2. Run QA against staging (in #pandabot-qa)
-#    "run smoke tests in staging"
-
-# 3. After QA passes — promote to production
-cd "C:\Users\genes\GitHub\PandaEcosystem\discord-bot"
-./promote-to-prod.sh           # dry-run first: ./promote-to-prod.sh --dry-run
-# GitHub Actions deploys production automatically on push to main
-```
-
-If you also changed pandabot-core, deploy that first (see pandabot-core CLAUDE.md).
+**Do NOT run the SSH deploy command manually** — pushing to GitHub is the only
+deploy step needed. Rollback is `git revert` + push.
 
 ## Systemd unit env vars added for pandabot-core
 
