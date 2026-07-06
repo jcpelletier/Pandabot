@@ -33,6 +33,7 @@ except ImportError:
     from family.cache import Cache  # noqa: F811
 
 from pandabot_core.pm import github as _ghpm
+from pandabot_core.code_qa import query_codebase as _query_codebase
 
 logger = logging.getLogger("panda-bot")
 
@@ -4277,12 +4278,34 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
 
+    _avail_str = ""
+    _local_profile = os.environ.get("LOCAL_LLM_PROFILE_NAME", "gemma")
     if ENABLE_LOCAL_LLM:
         from pandabot_core.llm.provider import get_available_profiles as _get_profiles
-        _local_profile = os.environ.get("LOCAL_LLM_PROFILE_NAME", "gemma")
         _avail = _get_profiles()
         _avail_str = ", ".join(f"'{p}'" for p in _avail)
     if ENABLE_DEV_AGENT:
+        tools.append({
+            "name": "query_codebase",
+            "description": (
+                "Search the ecosystem codebase for answers to natural-language questions. "
+                "Use this to answer questions about how things are implemented, "
+                "where specific logic lives, or how the various Pandabot repos "
+                "interact. Answers cite specific files and line references. "
+                "This tool is read-only and cannot modify code."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "Natural-language question about the codebase.",
+                    },
+                },
+                "required": ["question"],
+            },
+        })
+
         tools.append({
             "name": "trigger_dev_agent",
             "description": (
@@ -4527,6 +4550,14 @@ def _query_family_info(person: str, relationship: str = "") -> str:
 # ---------------------------------------------------------------------------
 # Dev agent handoff (optional, gated by ENABLE_DEV_AGENT)
 # ---------------------------------------------------------------------------
+
+def query_codebase(question: str) -> str:
+    """
+    Search the ecosystem codebase for answers to natural-language questions.
+    Answers cite specific files and line references.
+    """
+    return _query_codebase(question)
+
 
 def trigger_dev_agent(task: str, context: str = "") -> str:
     """Forward a development task to Pandabot-Dev via its local webhook."""
@@ -5045,6 +5076,11 @@ def execute_tool(name: str, inputs: dict) -> str:
         if not model_name:
             return "Error: switch_model requires a non-empty 'model_name' parameter."
         return switch_model(model_name)
+    if name == "query_codebase":
+        question = inputs.get("question")
+        if not question:
+            return "Error: query_codebase requires a non-empty 'question' parameter."
+        return query_codebase(question)
     if name == "trigger_dev_agent":
         return trigger_dev_agent(
             task=inputs.get("task", ""),
