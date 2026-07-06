@@ -2326,7 +2326,7 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
     elif action == "rename":
         if not dest:
             return "rename requires dest — the new name only (not a path)."
-        if os.sep in dest or "/" in dest:
+        if os.sep in dest or "/" in dest or "\\" in dest:
             return (
                 "rename dest must be a bare name with no path separators. "
                 "To relocate a file, use move instead."

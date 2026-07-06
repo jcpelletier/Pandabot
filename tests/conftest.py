@@ -16,10 +16,26 @@ import sys
 import pytest
 from unittest.mock import MagicMock
 
+# discord-bot root on sys.path
+_HERE = os.path.dirname(__file__)
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+# pandabot-core — sibling directory; needed since bot.py now imports from pandabot_core
+_PANDABOT_CORE = os.path.join(os.path.dirname(_ROOT), "pandabot-core")
+if os.path.isdir(_PANDABOT_CORE) and _PANDABOT_CORE not in sys.path:
+    sys.path.insert(0, _PANDABOT_CORE)
+
 # --- Mock pandabot_core if missing ---
 try:
     import pandabot_core
+    # Verify it has what we need, otherwise treat as missing
+    import pandabot_core.llm
+    import pandabot_core.code_qa
+    _ACTUAL_CORE = True
 except ImportError:
+    _ACTUAL_CORE = False
     # Create a mock pandabot_core package
     pandabot_core = MagicMock()
     sys.modules["pandabot_core"] = pandabot_core
@@ -78,29 +94,18 @@ except ImportError:
     pandabot_core.scheduler.cancel_task.side_effect = cancel_task
     pandabot_core.scheduler.mark_done.side_effect = mark_done
 
-# discord-bot root on sys.path
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-# pandabot-core — sibling directory; needed since bot.py now imports from pandabot_core
-_PANDABOT_CORE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "pandabot-core",
-)
-if os.path.isdir(_PANDABOT_CORE):
-    sys.path.insert(0, _PANDABOT_CORE)
-
 # --- Required env vars ---
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
 os.environ.setdefault("DISCORD_CHANNEL_ID", "123456789012345678")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 # --- Stub heavy runtime deps via pandabot_core.testing ---
-from pandabot_core.testing import stub_discord
-if isinstance(stub_discord, MagicMock):
-    # If it was mocked above, it won't do anything, which is fine for unit tests
+try:
+    from pandabot_core.testing import stub_discord
+    if not isinstance(stub_discord, MagicMock):
+        stub_discord()
+except (ImportError, AttributeError):
     pass
-else:
-    stub_discord()
 
 
 @pytest.fixture
@@ -115,9 +120,10 @@ def tmp_db(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("PANDABOT_DATA_DIR", str(tmp_path))
 
-    # Reset internal task list for each test using tmp_db
-    global _tasks
-    _tasks = []
+    if not _ACTUAL_CORE:
+        # Reset internal task list for each test using tmp_db
+        global _tasks
+        _tasks = []
 
     from pandabot_core import scheduler as core_sched
     if not isinstance(core_sched, MagicMock):
