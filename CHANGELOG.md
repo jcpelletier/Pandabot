@@ -1,5 +1,9 @@
 # Changelog
 
+## v257
+
+- fix(tools): `query_llm_usage` imported the deleted local `llm_usage.py` module (removed as dead code, superseded by `pandabot_core.llm.usage`) and crashed with `No module named 'llm_usage'` on every call. Now imports `pandabot_core.llm.usage` directly.
+
 ## v256
 
 - feat: wire the `message_bot` inter-bot tool (channel-as-inbox). Pandabot can now relay requests to its siblings — e.g. ask PandaBot-Dev to start a long-term goal or report goal progress, or ask PandaBot-Devops for infrastructure changes — by posting in the target bot's channel. Built from `BOT_CHANNELS`; one-way (the target acts and replies in its own channel). No new dependencies.

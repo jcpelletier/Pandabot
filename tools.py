@@ -3159,7 +3159,7 @@ def query_crawl_analytics(action: str = "summary") -> str:
 
 def query_llm_usage(action: str = "recent", days: int = 30, limit: int = 20) -> str:
     """Query the LLM usage log — token counts and estimated API cost."""
-    import llm_usage as _llm
+    from pandabot_core.llm import usage as _llm
     return _llm.query_usage(action=action, days=days, limit=limit)
 
 
