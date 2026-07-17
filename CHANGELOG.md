@@ -1,5 +1,9 @@
 # Changelog
 
+## v258
+
+- feat(tools): add a `mkdir` action to `manage_files` so the bot can create a new show/season folder before moving episodes into it. `move` will not create missing destination parents, which dead-ended one-off manual sorting of compilation discs (e.g. Jake and the Never Land Pirates) into a not-yet-existing show or season directory. `mkdir` creates parents (`mkdir -p`), is idempotent, keeps the `confirmed=False` preview gate, and stays sandboxed to `MEDIA_PATH`/`STAGING_PATH`.
+
 ## v257
 
 - fix(tools): `query_llm_usage` imported the deleted local `llm_usage.py` module (removed as dead code, superseded by `pandabot_core.llm.usage`) and crashed with `No module named 'llm_usage'` on every call. Now imports `pandabot_core.llm.usage` directly.

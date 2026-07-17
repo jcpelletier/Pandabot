@@ -2208,7 +2208,7 @@ def manage_schedule(action: str, **kwargs) -> str:
 
 def manage_files(action: str, source: str, dest: str = "", confirmed: bool = False) -> str:
     """
-    Move, rename, or delete files and folders within the media library.
+    Move, rename, delete, or create files and folders within the media library.
     All paths must stay within MEDIA_PATH or STAGING_PATH.
     Always call with confirmed=False first — returns a preview.
     Only call with confirmed=True after the user explicitly says 'yes'.
@@ -2284,6 +2284,30 @@ def manage_files(action: str, source: str, dest: str = "", confirmed: bool = Fal
         return f"Source path not allowed. Must be under: {', '.join(ALLOWED_ROOTS)}"
     if _is_root(src):
         return "Cannot operate on a root library path directly."
+
+    # ── mkdir ───────────────────────────────────────────────────────────────
+    # Handled ahead of the existence check below: the point of mkdir is that the
+    # target does not exist yet. Creates parents too (mkdir -p) so a new show and
+    # its season folder can be made in one call before episodes are moved in.
+    if action == "mkdir":
+        if os.path.isdir(src):
+            return f"Directory already exists: {src}"
+        if os.path.exists(src):
+            return f"Cannot create directory: a file already exists at {src}"
+        if not confirmed:
+            return "\n".join([
+                "Ready to create directory (with any missing parents):",
+                f"  {src}",
+                "",
+                "Reply **yes** to confirm.",
+            ])
+        _sync_before_write()
+        try:
+            os.makedirs(src, exist_ok=True)
+            return f"✅ Created directory: {src}"
+        except Exception as e:
+            return f"mkdir failed: {e}"
+
     if not os.path.exists(src):
         return f"Not found: {src}"
 
@@ -3927,20 +3951,22 @@ def _build_tool_definitions() -> list[dict]:
                 "rename_all: renames every file in a directory to sequential generic names in one operation — "
                 "dest is the name pattern (e.g. rip_{n:02d}); file extensions are preserved; "
                 "use this to bulk-reset identified media filenames back to generic rip names for reprocessing. "
-                "move: relocates source to dest directory or full destination path."
+                "move: relocates source to dest directory or full destination path. "
+                "mkdir: creates a directory (and any missing parents) at source — use this to make a new "
+                "show/season folder before moving episodes into it, since move will not create missing parents."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["move", "merge", "rename", "rename_all", "delete", "delete_matching"],
+                        "enum": ["move", "merge", "rename", "rename_all", "delete", "delete_matching", "mkdir"],
                         "description": "Operation to perform.",
                     },
                     "source": {
                         "type": "string",
                         "description": (
-                            "Path to the file or folder to act on. "
+                            "Path to the file or folder to act on (for mkdir, the directory to create). "
                             "Relative paths are resolved from the media library root."
                         ),
                     },
@@ -3953,7 +3979,7 @@ def _build_tool_definitions() -> list[dict]:
                             "For rename_all: name pattern with {n} as the counter, e.g. rip_{n:02d} "
                             "(default: rip_{n:02d}). Extensions are always preserved. "
                             "For delete_matching: comma-separated glob pattern(s), e.g. *.srt or *.srt,*.ass,*.sup. "
-                            "Not used for delete."
+                            "Not used for delete or mkdir."
                         ),
                         "default": "",
                     },
