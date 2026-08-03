@@ -1,8 +1,22 @@
 # Changelog
 
+## v260
+
+- docs(llm): documented `PANDABOT_PROFILE_DEEPSEEK_EFFORT` (`none`/`low`/`high`/`max`) and set it to `low` in the example. Pandabot is the latency-sensitive path — Discord chat and, worse, the voice gateway, where the user hears silence while the model thinks — and its work is mostly tool dispatch rather than deep reasoning, so DeepSeek's default `high` effort buys little and costs response time. Requires the pandabot-core `reasoning_effort` plumbing.
+- docs: corrected the local llama.cpp section against the live server. The profiles are commented out in `.env.example` but are set and live in `/opt/discord-bot/.env`: `ENABLE_LOCAL_LLM=true`, `llama-server.service` running with Gemma 3 1B resident, `:8081` healthy, `active_model.txt` = `deepseek`. Names both systemd units (`llama-server`, `llama-server-qwen`) and the 4 GB VRAM reason they are mutually exclusive.
+
+## v259
+
+- feat(tools): add a `mkdir` action to `manage_files` so the bot can create a new show/season folder before moving episodes into it. `move` will not create missing destination parents, which dead-ended one-off manual sorting of compilation discs (e.g. Jake and the Never Land Pirates) into a not-yet-existing show or season directory. `mkdir` creates parents (`mkdir -p`), is idempotent, keeps the `confirmed=False` preview gate, and stays sandboxed to `MEDIA_PATH`/`STAGING_PATH`.
+
+## v258
+
+- fix(tools): `query_llm_usage` imported the deleted local `llm_usage.py` module (removed as dead code, superseded by `pandabot_core.llm.usage`) and crashed with `No module named 'llm_usage'` on every call. Now imports `pandabot_core.llm.usage` directly.
+
 ## v257
 
 - chore: trunk-based development cutover (PandaEcosystem epic #9) — `main` is the only branch; merge = release, gated by the per-PR PandaQA validation. Deploy workflow is main-only, restarts `discord-bot` **and** `pandabot-voice` (the voice gateway moves off the retired staging clone), and health-checks both after deploy. `promote-to-prod.sh` removed.
+
 
 ## v256
 

@@ -136,6 +136,7 @@ PANDABOT_PROFILE_DEEPSEEK_TYPE=openai_compat
 PANDABOT_PROFILE_DEEPSEEK_URL=https://api.deepseek.com
 PANDABOT_PROFILE_DEEPSEEK_KEY=sk-...
 PANDABOT_PROFILE_DEEPSEEK_PRIMARY=deepseek-v4-flash
+PANDABOT_PROFILE_DEEPSEEK_EFFORT=low     # thinking effort: none|low|high|max (DeepSeek only)
 PANDABOT_DEFAULT_PROFILE=deepseek
 
 WEBHOOK_SECRET=$(openssl rand -hex 24)   # paste the output
