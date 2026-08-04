@@ -1,5 +1,9 @@
 # Changelog
 
+## v261
+
+- fix(bot): the pending-confirmation shortcut only ever tracked one queued destructive action per channel, so a preview turn that proposed several calls at once (e.g. four file moves) silently dropped all but the last one when the user said "yes" — matches a live bug where PandaBot created a directory on confirmation but never executed the file moves previewed alongside it. Now consumes the full batch from pandabot-core's updated `ConfirmationManager`/`on_confirm` contract in both the text-reply and button-confirm paths, and wraps the text shortcut in `keep_typing()` so a long-running move doesn't leave the channel silent. Requires the matching pandabot-core fix to be live first.
+
 ## v260
 
 - docs(llm): documented `PANDABOT_PROFILE_DEEPSEEK_EFFORT` (`none`/`low`/`high`/`max`) and set it to `low` in the example. Pandabot is the latency-sensitive path — Discord chat and, worse, the voice gateway, where the user hears silence while the model thinks — and its work is mostly tool dispatch rather than deep reasoning, so DeepSeek's default `high` effort buys little and costs response time. Requires the pandabot-core `reasoning_effort` plumbing.

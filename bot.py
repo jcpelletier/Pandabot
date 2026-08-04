@@ -1117,8 +1117,8 @@ def _run_claude_loop(
     """
     user_message = _build_turn_context_prefix() + user_message
 
-    def _on_confirm(ch_id: int, tool_name: str, confirmed_inputs: dict) -> None:
-        _confirmations.save(ch_id, tool_name, confirmed_inputs)
+    def _on_confirm(ch_id: int, actions: list[dict]) -> None:
+        _confirmations.save(ch_id, actions)
 
     def _execute_tool_with_banner(name: str, inputs: dict) -> str:
         if name == "message_bot":
@@ -1559,19 +1559,29 @@ async def on_message(message: discord.Message):
 
     # --- Pending-confirmation shortcut ---
     # If this looks like a "yes" reply to a destructive-action preview, execute
-    # the tool directly instead of sending to Claude (which is unreliable here).
+    # the tool(s) directly instead of sending to Claude (which is unreliable here).
+    # A single preview turn can queue more than one action (e.g. four file moves),
+    # so every entry in the batch is run, not just the first/last one.
     channel_id = message.channel.id
-    pending = _confirmations.consume(channel_id, content)
-    if pending is not None:
-        log.info("Executing pending confirmation: %s(%s)", pending["name"], pending["inputs"])
+    pending_actions = _confirmations.consume(channel_id, content)
+    if pending_actions is not None:
+        log.info("Executing %d pending confirmation(s) for channel %s", len(pending_actions), channel_id)
         loop = asyncio.get_running_loop()
+        typing_task = keep_typing(message.channel)
         try:
-            reply = await loop.run_in_executor(
-                None, execute_tool, pending["name"], pending["inputs"]
-            )
-        except Exception as e:
-            log.exception("Pending confirmation execution failed")
-            reply = f"Error executing confirmed action: {e}"
+            replies = []
+            for action in pending_actions:
+                try:
+                    result = await loop.run_in_executor(
+                        None, execute_tool, action["name"], action["inputs"]
+                    )
+                except Exception as e:
+                    log.exception("Pending confirmation execution failed")
+                    result = f"Error executing confirmed action: {e}"
+                replies.append(result)
+        finally:
+            typing_task.cancel()
+        reply = "\n\n".join(replies)
         for chunk in split_message(reply):
             await send_with_retry(message.channel, chunk)
         await bot.process_commands(message)
@@ -1601,16 +1611,20 @@ async def on_message(message: discord.Message):
         event_loop = asyncio.get_running_loop()
 
         async def _do_confirm() -> str:
-            action = _confirmations.force_consume(ch_id)
-            if not action:
+            actions = _confirmations.force_consume(ch_id)
+            if not actions:
                 return "No pending action found (may have already been confirmed or cancelled)."
-            try:
-                return await event_loop.run_in_executor(
-                    None, execute_tool, action["name"], action["inputs"]
-                )
-            except Exception as exc:
-                log.exception("Button-confirmed action failed")
-                return f"❌ Error: {exc}"
+            replies = []
+            for action in actions:
+                try:
+                    result = await event_loop.run_in_executor(
+                        None, execute_tool, action["name"], action["inputs"]
+                    )
+                except Exception as exc:
+                    log.exception("Button-confirmed action failed")
+                    result = f"❌ Error: {exc}"
+                replies.append(result)
+            return "\n\n".join(replies)
 
         def _do_cancel() -> None:
             _confirmations.clear(ch_id)
