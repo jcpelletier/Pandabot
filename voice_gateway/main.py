@@ -15,6 +15,7 @@ Environment variables:
     TTS_VOICE             — Kokoro voice (default am_santa)
     DISCORD_VOICE_CHANNEL_ID / DISCORD_CHANNEL_ID — Discord mirror channel
     DISCORD_BOT_TOKEN     — Discord bot token for mirror posts
+    APK_DIR               — directory of published APKs (default /opt/apk)
 
 WebSocket envelope schema (server → client):
     {state: 'thinking'|'speaking'|'idle', device_id}
@@ -83,10 +84,10 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from voice_gateway import discord_mirror, session, stt, tts
+from voice_gateway import apk, discord_mirror, session, stt, tts
 from voice_gateway.session import SessionManager
 
 # ---------------------------------------------------------------------------
@@ -1026,6 +1027,48 @@ async def debug_inject(
         "envelopes": pending_envelopes,
         "silent_tts": voice_ctx['silent_tts'],
     })
+
+
+# ---------------------------------------------------------------------------
+# GET /apk/latest  — newest published build for a flavor
+# GET /apk/download — the APK bytes
+#
+# Together these are the app's self-update channel. The terminal checks
+# /apk/latest on launch and installs the result itself, so pushing a new build
+# to the device no longer needs Developer options or a USB cable. See apk.py
+# for the directory convention.
+# ---------------------------------------------------------------------------
+
+@app.get("/apk/latest")
+async def apk_latest(
+    flavor: str = "staging",
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    _check_bearer(authorization)
+    if flavor.lower() not in apk.FLAVORS:
+        return JSONResponse({"error": f"unknown flavor {flavor!r}"}, status_code=400)
+    release = apk.latest(flavor)
+    if release is None:
+        return JSONResponse({"error": "no build published"}, status_code=404)
+    return JSONResponse(release.to_dict())
+
+
+@app.get("/apk/download")
+async def apk_download(
+    flavor: str = "staging",
+    authorization: str | None = Header(default=None),
+) -> Response:
+    _check_bearer(authorization)
+    if flavor.lower() not in apk.FLAVORS:
+        return JSONResponse({"error": f"unknown flavor {flavor!r}"}, status_code=400)
+    release = apk.latest(flavor)
+    if release is None:
+        return JSONResponse({"error": "no build published"}, status_code=404)
+    return FileResponse(
+        release.path,
+        media_type="application/vnd.android.package-archive",
+        filename=release.path.name,
+    )
 
 
 # ---------------------------------------------------------------------------

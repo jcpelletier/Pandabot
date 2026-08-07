@@ -1,5 +1,9 @@
 # Changelog
 
+## v262
+
+- feat(gateway): serve the terminal's APK update channel. The Flutter app has been checking `/apk/latest` on launch and installing the result itself since it shipped, but the server half was never deployed — the route did not exist, so every check 404'd and `voice_test.py publish` dropped 174 MB builds into `/opt/apk` where nothing could reach them. Getting a build onto the device therefore still needed adb and Developer options, which is exactly what the channel was meant to remove. Adds `apk.py` (directory convention, JSON sidecar parsing, sha256, newest-build-per-flavor selection) plus `/apk/latest` (metadata) and `/apk/download` (bytes), both Bearer-authed like the rest of the gateway, so the channel is only reachable on the LAN or over Tailscale.
+
 ## v261
 
 - fix(bot): the pending-confirmation shortcut only ever tracked one queued destructive action per channel, so a preview turn that proposed several calls at once (e.g. four file moves) silently dropped all but the last one when the user said "yes" — matches a live bug where PandaBot created a directory on confirmation but never executed the file moves previewed alongside it. Now consumes the full batch from pandabot-core's updated `ConfirmationManager`/`on_confirm` contract in both the text-reply and button-confirm paths, and wraps the text shortcut in `keep_typing()` so a long-running move doesn't leave the channel silent. Requires the matching pandabot-core fix to be live first.
