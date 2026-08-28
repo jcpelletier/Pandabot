@@ -19,11 +19,11 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.PANDA_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H 100.65.72.102 >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.PANDA_HOST }} >> ~/.ssh/known_hosts
 
       - name: Deploy to production
         run: |
-          ssh genesis@100.65.72.102 \
+          ssh ${{ secrets.PANDA_USER }}@${{ secrets.PANDA_HOST }} \
             "sudo git -C /opt/discord-bot pull origin main && \
              sudo chown discord-bot:discord-bot /opt/discord-bot/scheduler.db && \
              sudo systemctl restart discord-bot pandabot-voice"
@@ -31,5 +31,5 @@ jobs:
       - name: Post-deploy health check
         run: |
           sleep 15
-          ssh genesis@100.65.72.102 \
+          ssh ${{ secrets.PANDA_USER }}@${{ secrets.PANDA_HOST }} \
             "sudo systemctl is-active discord-bot pandabot-voice"

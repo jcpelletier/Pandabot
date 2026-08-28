@@ -1,5 +1,9 @@
 # Changelog
 
+## v263
+
+- security: deploy.yml hardcoded the real Tailscale IP and SSH username in three places; parameterize via `PANDA_HOST`/`PANDA_USER` repo secrets, matching pandabot-core's own `deploy.yml`. Also scrub a LAN IP and a real username out of older changelog entries now that the repo is public.
+
 ## v262
 
 - feat(gateway): serve the terminal's APK update channel. The Flutter app has been checking `/apk/latest` on launch and installing the result itself since it shipped, but the server half was never deployed — the route did not exist, so every check 404'd and `voice_test.py publish` dropped 174 MB builds into `/opt/apk` where nothing could reach them. Getting a build onto the device therefore still needed adb and Developer options, which is exactly what the channel was meant to remove. Adds `apk.py` (directory convention, JSON sidecar parsing, sha256, newest-build-per-flavor selection) plus `/apk/latest` (metadata) and `/apk/download` (bytes), both Bearer-authed like the rest of the gateway, so the channel is only reachable on the LAN or over Tailscale.
@@ -189,7 +193,7 @@
 
 ## v219
 
-- Cast (Story #125): add `JELLYFIN_CAST_BASE_URL` env var; `_cast_stream_url` now uses it so Cast streams go via the HTTPS reverse proxy (`https://jellyfin.jpelletier.com`) rather than `http://192.168.1.100:8096`. Newer Cast firmware blocks HTTP media. Falls back to `JELLYFIN_PUBLIC_URL` when not set.
+- Cast (Story #125): add `JELLYFIN_CAST_BASE_URL` env var; `_cast_stream_url` now uses it so Cast streams go via the HTTPS reverse proxy (`https://jellyfin.jpelletier.com`) rather than the bare LAN address. Newer Cast firmware blocks HTTP media. Falls back to `JELLYFIN_PUBLIC_URL` when not set.
 
 ## v218
 
@@ -721,7 +725,7 @@
 - Fix `launch_steam` sudoers mismatch — remove `setsid` from sudo call so the rule matches, add PATH to env
 
 ## v77
-- Fix `launch_steam` running as wrong user — now runs as `genesis` via sudoers so Steam can access its own home directory
+- Fix `launch_steam` running as wrong user — now runs as the server user via sudoers so Steam can access its own home directory
 
 ## v76
 - Add `launch_steam` — launch Steam in Big Picture mode on the server's local display
