@@ -90,12 +90,19 @@ the PR branch *before* merge). The old staging branch, `discord-bot-staging`
 tracking deploy, and `promote-to-prod.sh` are retired (PandaEcosystem epic #9);
 the former staging instance is being repurposed as an on-demand test bench.
 
-Deployment is automatic via GitHub Actions (`.github/workflows/deploy.yml`):
-push to `main` → server pulls `/opt/discord-bot`, restarts `discord-bot` and
-`pandabot-voice`, then health-checks both.
+Deployed by **panda-deployer** on panda (PandaEcosystem `deployer/README.md`): it
+pulls `main` every 10 minutes with its own read-only token, restarts `discord-bot` and `pandabot-voice`,
+health-checks, and rolls back on failure. GitHub Actions never connects to panda
+(no Tailscale or SSH secrets). To ship now instead of waiting:
 
-**Do NOT run the SSH deploy command manually** — pushing to GitHub is the only
-deploy step needed. Rollback is `git revert` + push.
+```bash
+git push origin main
+bash ../deployer/deploy-now.sh pandabot     # or ask PandaBot-Dev: "deploy pandabot now"
+```
+
+The deployer only deploys a commit once its `Test` workflow has passed on it, and rolls
+back by itself when a restart fails its health check. A deliberate rollback is still
+`git revert` + push.
 
 ## Systemd unit env vars added for pandabot-core
 

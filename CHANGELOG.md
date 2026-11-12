@@ -1,5 +1,9 @@
 # Changelog
 
+## v264
+
+- ci: push deploys removed; panda-deployer on panda now pulls `main` every 10 minutes (or on demand) and health-checks with rollback. No Tailscale or SSH secrets in CI.
+
 ## v263
 
 - security: deploy.yml hardcoded the real Tailscale IP and SSH username in three places; parameterize via `PANDA_HOST`/`PANDA_USER` repo secrets, matching pandabot-core's own `deploy.yml`. Also scrub a LAN IP and a real username out of older changelog entries now that the repo is public.
