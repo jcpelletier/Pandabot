@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# /notify shared secret, read by notify-discord.sh (Jenkins, rip scripts, panda-deployer)
+webhook.secret
 
 # Python virtualenv
 venv/

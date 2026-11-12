@@ -1,5 +1,9 @@
 # Changelog
 
+## v265
+
+- chore: gitignore `webhook.secret`, the /notify shared secret that now sits in the clone on panda.
+
 ## v264
 
 - ci: push deploys removed; panda-deployer on panda now pulls `main` every 10 minutes (or on demand) and health-checks with rollback. No Tailscale or SSH secrets in CI.
