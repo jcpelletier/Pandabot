@@ -32,6 +32,8 @@ except ImportError:
     from family.sheet_reader import SheetReader  # noqa: F811
     from family.cache import Cache  # noqa: F811
 
+import family_board
+
 from pandabot_core.pm import github as _ghpm
 from pandabot_core.code_qa import query_codebase as _query_codebase
 
@@ -54,6 +56,9 @@ ENABLE_FAMILY            = os.environ.get("ENABLE_FAMILY",            "false").l
 ENABLE_DEV_AGENT         = os.environ.get("ENABLE_DEV_AGENT",         "false").lower() == "true"
 ENABLE_WEATHER           = os.environ.get("ENABLE_WEATHER",           "false").lower() == "true"
 ENABLE_STREAMING         = os.environ.get("ENABLE_STREAMING",         "false").lower() == "true"
+# Family wall board (FamilyChores): chores, task metrics, family calendar.
+# Server URL in FAMILY_BOARD_URL (see family_board.py).
+ENABLE_FAMILY_BOARD      = os.environ.get("ENABLE_FAMILY_BOARD",      "false").lower() == "true"
 _DEV_AGENT_URL           = os.environ.get("DEV_AGENT_URL",            "http://localhost:8766")
 _VOICE_GATEWAY_URL       = os.environ.get("VOICE_GATEWAY_URL",        "http://127.0.0.1:8900")
 _VOICE_GATEWAY_TOKEN     = os.environ.get("VOICE_GATEWAY_TOKEN",      "")
@@ -4304,6 +4309,10 @@ def _build_tool_definitions() -> list[dict]:
             },
         })
 
+    # --- Family wall board (gated — opt-in via ENABLE_FAMILY_BOARD) ---
+    if ENABLE_FAMILY_BOARD:
+        tools += family_board.tool_definitions()
+
     _avail_str = ""
     _local_profile = os.environ.get("LOCAL_LLM_PROFILE_NAME", "gemma")
     if ENABLE_LOCAL_LLM:
@@ -5125,4 +5134,7 @@ def execute_tool(name: str, inputs: dict) -> str:
         return radio_status()
     if name == "list_speakers":
         return list_speakers()
+    family_result = family_board.execute(name, inputs)
+    if family_result is not None:
+        return family_result
     return f"Unknown tool: {name}"

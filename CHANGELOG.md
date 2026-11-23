@@ -1,5 +1,9 @@
 # Changelog
 
+## v266
+
+- feat(family): family wall board tools behind `ENABLE_FAMILY_BOARD`: `query_family_board`, `family_task_metrics`, `manage_family_chore`, `mark_family_chore` and `family_calendar`. They talk to the FamilyChores board server over HTTP (`FAMILY_BOARD_URL`), so the board keeps its database, audit trail and calendar credentials. Writes preview first and run on "yes" (passed as `extra_confirm_tools`). Requires FamilyChores' `/api/board/today` and `/api/board/instances`.
+
 ## v265
 
 - chore: gitignore `webhook.secret`, the /notify shared secret that now sits in the clone on panda.
