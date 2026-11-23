@@ -56,6 +56,7 @@ from pandabot_core.channels import (
 )
 
 from tools import TOOL_DEFINITIONS, execute_tool, ENABLE_LOCAL_LLM, ENABLE_FAMILY, FAMILY_SPREADSHEET_ID  # noqa: E402
+import family_board  # noqa: E402
 
 # Inter-bot messaging (channel-as-inbox). Lets Pandabot relay requests to its
 # siblings — e.g. ask PandaBot-Dev to start a goal, or PandaBot-Devops for infra.
@@ -1150,6 +1151,8 @@ def _run_claude_loop(
         channel_id=channel_id,
         conversation_id=conversation_id,
         on_confirm=_on_confirm,
+        # Family-board writes preview first; a "yes" runs the queued call.
+        extra_confirm_tools=family_board.WRITE_TOOLS,
     )
 
 

@@ -33,6 +33,7 @@ pandabot-core server path: `/opt/pandabot-core/` (on `PYTHONPATH` via systemd un
 |---|---|
 | `bot.py` | Discord client, webhook server, on_message handler, scheduler polling, TTS/STT |
 | `tools.py` | All tool implementations and Claude tool schema definitions |
+| `family_board.py` | Family wall board tools (chores, task metrics, family calendar); see "Family wall board" below |
 | `scheduler.py` | **Dead code** — superseded by `pandabot_core.scheduler`; safe to delete |
 | `llm_usage.py` | **Dead code** — superseded by `pandabot_core.llm.usage`; safe to delete |
 | `llm_provider.py` | **Dead code** — superseded by `pandabot_core.llm.provider`; safe to delete |
@@ -113,3 +114,34 @@ Environment=PANDABOT_DATA_DIR=/opt/discord-bot
 
 These are set directly in `/etc/systemd/system/discord-bot.service` (not in `.env`).
 `PANDABOT_DATA_DIR` points the core scheduler/usage DB to the existing `/opt/discord-bot/scheduler.db`.
+
+## Family wall board (`family_board.py`)
+
+Five tools for the FamilyChores wall board (`jcpelletier/FamilyChores`, systemd
+`familychores` on panda, port 8417), gated by `ENABLE_FAMILY_BOARD`:
+
+| Tool | Does |
+|---|---|
+| `query_family_board` | today's board by person, one person's day and stars, chore list, one chore's history, rewards |
+| `family_task_metrics` | completion rate (done / (done + missed)) per person over N days vs the N before, most-missed chores, streaks |
+| `manage_family_chore` | create / edit / reassign / delete a chore |
+| `mark_family_chore` | done / undo / skip / unskip one instance (credits stars, moves a round-robin turn) |
+| `family_calendar` | list events; create or edit events on the family Google Calendar (no delete) |
+
+It only talks to the board's HTTP API, never its SQLite file or Google directly,
+so the board keeps its write lock, audit trail and calendar credentials. "What is
+due when" comes from the board's `/api/board/today` and `/api/board/instances`,
+which are served by FamilyChores' `board_schedule.py` (a port of the wall board's
+JavaScript rules), so Pandabot has no copy of the recurrence logic.
+
+Writes use the confirmation flow: `family_board.WRITE_TOOLS` is passed to
+`run_claude_loop` as `extra_confirm_tools`, and every write's preview ends in
+"Reply **yes** to confirm".
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `ENABLE_FAMILY_BOARD` | `false` | Expose the tools |
+| `FAMILY_BOARD_URL` | `http://127.0.0.1:8417` | Board server |
+| `FAMILY_BOARD_TZ` | `TZ_NAME`, else host zone | Zone for "today" and calendar times |
+
+Tests: `tests/test_family_board.py` (fake board API, no network).
